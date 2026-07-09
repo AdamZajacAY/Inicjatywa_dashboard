@@ -82,6 +82,7 @@ TABLES = {
     "raporty_statusowe": ("id", None, None),
     "podwykonawcy": ("ID_Podwykonawcy", "SUB", 3),
     "przypisania_podwykonawcow": ("ID_Przypisania_Podw", "SUBA", 3),
+    "users": ("ID_Uzytkownika", "USR", 3),
 }
 
 # tabela SQL -> klucz w odpowiedzi /api/bootstrap (nazwy pol STATE.* w dashboard/app.js)
@@ -141,7 +142,113 @@ def next_id(conn, table, pk, prefix, width):
 def parse_payload(conn, table, exclude=()):
     data = request.get_json(force=True, silent=True) or {}
     valid_cols = table_columns(conn, table)
+    exclude = set(exclude) | set(ALWAYS_STRIP_FIELDS.get(table, ()))
     return {k: v for k, v in data.items() if k in valid_cols and k not in exclude}
+
+
+# ---------------------------------------------------------------- role i uprawnienia (RBAC)
+#
+# COO i Admin maja identyczne uprawnienia (ustalone wprost z uzytkownikiem) - rozne etykiety,
+# nie rozne prawa. Specjalista i Architekt_PM maja zakres opisany w macierzy w README/planie;
+# szczegoly ponizej w can_write(). Kolumna Rola=NULL (konto Oczekujace) nigdy nie dociera tutaj
+# jako g.user - before_request blokuje ja wczesniej (patrz load_user).
+
+FULL_ACCESS_ROLES = {"COO", "Admin"}
+VALID_ROLES = {None, "Specjalista", "Architekt_PM", "COO", "Admin"}
+
+# "global" = ta sama tabela dla wszystkich (np. rejestr zespolu), "root_project" = sama
+# tabela projekty (jej wlasny PK ID_Projektu = "czyj to projekt"), "project_scoped" = ma
+# kolumne FK ID_Projektu wskazujaca na projekty, "admin_only" = wylacznie COO/Admin.
+TABLE_SCOPE = {
+    "projekty": "root_project",
+    "zespol": "global",
+    "podwykonawcy": "global",
+    "przypisania": "project_scoped",
+    "harmonogram": "project_scoped",
+    "zadania_tickety": "project_scoped",
+    "kamienie_milowe": "project_scoped",
+    "ryzyka_i_problemy": "project_scoped",
+    "raporty_statusowe": "project_scoped",
+    "przypisania_podwykonawcow": "project_scoped",
+    "users": "admin_only",
+}
+
+# Pola zerowane w odpowiedzi GET wylacznie dla roli Specjalista (nigdy nie usuwane - fmtMoney()/
+# num() w app.js juz renderuja null jako "—", wiec ukrywanie dziala bez zmian frontendu).
+FINANCIAL_FIELDS = {
+    "projekty": ["Budzet_calkowity", "Budzet_wydany", "Przychod_planowany",
+                 "Przychod_rzeczywisty", "Stawka_godzinowa_srednia"],
+    "zespol": ["Stawka_godzinowa"],
+    "zadania_tickety": ["Wycena_podwykonawcy"],
+    "przypisania_podwykonawcow": ["Wartosc_umowy"],
+    "raporty_statusowe": ["Budzet_wydany_skumulowany"],
+}
+
+# Pola bezwarunkowo usuwane z kazdej odpowiedzi GET i niemozliwe do ustawienia przez
+# parse_payload (patrz wyzej) - nawet Admin nie widzi tego w JSON-ie, hasla ustawiaja
+# wylacznie dedykowane endpointy /api/auth/change-password i /api/users/<id>/reset-password.
+ALWAYS_STRIP_FIELDS = {"users": ["Haslo_Hash", "Google_Sub"]}
+
+
+def assigned_project_ids(conn, person_id):
+    # Kierownik_projektu w tabeli projekty to wolny tekst, nie FK - za mala pewnosc pod
+    # uprawnienia. przypisania jest juz poprawnie FK-owane, wiec to ono jest zrodlem prawdy
+    # o tym, do jakich projektow dana osoba ma dostep (niezaleznie od Rola_w_projekcie -
+    # ograniczenie tylko do "Kierownik projektu" odcieloby PM-owi zarzadzanie projektem
+    # kolegi, na ktorym jest czlonkiem wspierajacym).
+    if not person_id:
+        return set()
+    rows = conn.execute("SELECT DISTINCT ID_Projektu FROM przypisania WHERE ID_Osoby = ?", (person_id,)).fetchall()
+    return {r["ID_Projektu"] for r in rows}
+
+
+def can_write(conn, user, action, table, row):
+    """action: "create" | "update" | "delete". row: sparsowany payload (create) albo
+    istniejacy wiersz z bazy (update/delete) - zawsze dict, nigdy None."""
+    if user["Rola"] in FULL_ACCESS_ROLES:
+        return True
+    scope = TABLE_SCOPE.get(table)
+    if scope in ("admin_only", None):
+        return False
+    if user["Rola"] == "Specjalista":
+        if table != "zadania_tickety" or action == "delete":
+            return False
+        if action == "create":
+            return row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"])
+        return row.get("ID_Osoby_przypisanej") == user["ID_Osoby"]  # edycja tylko wlasnego ticketu
+    if user["Rola"] == "Architekt_PM":
+        if table == "zespol":
+            return False
+        if table == "projekty" and action == "delete":
+            return False  # kaskadowe usuniecie zbyt ryzykowne nawet dla wlasnego projektu
+        if table == "podwykonawcy":
+            return action != "delete"  # wspolna biblioteka - usuwanie tylko COO/Admin
+        if table == "projekty" and action == "create":
+            return True  # nowy projekt - brak jeszcze wlasciciela na tym etapie
+        return row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"])
+    return False
+
+
+def redact_row(user, table, row):
+    if row is None:
+        return None
+    for field in ALWAYS_STRIP_FIELDS.get(table, ()):
+        row.pop(field, None)
+    if user["Rola"] == "Specjalista":
+        for field in FINANCIAL_FIELDS.get(table, ()):
+            if field in row:
+                row[field] = None
+    return row
+
+
+def validate_user_payload(data, existing):
+    if "Rola" in data and data["Rola"] not in VALID_ROLES:
+        return "Nieprawidłowa rola."
+    merged_role = data["Rola"] if "Rola" in data else (existing.get("Rola") if existing else None)
+    merged_person = data["ID_Osoby"] if "ID_Osoby" in data else (existing.get("ID_Osoby") if existing else None)
+    if merged_role in ("Specjalista", "Architekt_PM") and not merged_person:
+        return "Ta rola wymaga powiązania z osobą z zespołu."
+    return None
 
 
 # ---------------------------------------------------------------- konta / logowanie / sesje
@@ -319,7 +426,9 @@ def bootstrap():
     result = {}
     for table, key in BOOTSTRAP_KEYS.items():
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
-        result[key] = [dict(r) for r in rows]
+        result[key] = [redact_row(g.user, table, dict(r)) for r in rows]
+    result["me"] = public_user(g.user)
+    result["me"]["assignedProjectIds"] = sorted(assigned_project_ids(conn, g.user["ID_Osoby"]))
     return jsonify(result)
 
 
@@ -331,10 +440,18 @@ def collection(table):
     conn = get_db()
 
     if request.method == "GET":
+        if TABLE_SCOPE.get(table) == "admin_only" and g.user["Rola"] not in FULL_ACCESS_ROLES:
+            abort(403)
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
-        return jsonify([dict(r) for r in rows])
+        return jsonify([redact_row(g.user, table, dict(r)) for r in rows])
 
     data = parse_payload(conn, table)
+    if not can_write(conn, g.user, "create", table, data):
+        abort(403)
+    if table == "users":
+        error = validate_user_payload(data, None)
+        if error:
+            return jsonify({"error": error}), 400
     if prefix:
         data[pk] = next_id(conn, table, pk, prefix, width)
     cols = list(data.keys())
@@ -347,7 +464,7 @@ def collection(table):
     except sqlite3.IntegrityError as e:
         return jsonify({"error": str(e)}), 409
     pk_val = data.get(pk) or cur.lastrowid
-    return jsonify(fetch_row(conn, table, pk, pk_val)), 201
+    return jsonify(redact_row(g.user, table, fetch_row(conn, table, pk, pk_val))), 201
 
 
 @app.route("/api/<table>/<path:item_id>", methods=["PUT", "DELETE"])
@@ -357,7 +474,15 @@ def item(table, item_id):
     pk, _prefix, _width = TABLES[table]
     conn = get_db()
 
+    existing = fetch_row(conn, table, pk, item_id)
+    if existing is None:
+        abort(404)
+
     if request.method == "DELETE":
+        if table == "projekty" and g.user["Rola"] not in FULL_ACCESS_ROLES:
+            abort(403)  # kaskadowe usuniecie - nawet PM nie usuwa wlasnego projektu
+        if not can_write(conn, g.user, "delete", table, existing):
+            abort(403)
         try:
             cur = conn.execute(f"DELETE FROM {table} WHERE {pk} = ?", (item_id,))
             conn.commit()
@@ -367,9 +492,21 @@ def item(table, item_id):
             abort(404)
         return "", 204
 
+    if not can_write(conn, g.user, "update", table, existing):
+        abort(403)
     data = parse_payload(conn, table, exclude={pk})
     if not data:
         return jsonify({"error": "Brak pól do aktualizacji"}), 400
+    # jesli payload zmienia pole zakresu (ID_Projektu), sprawdz uprawnienia TEZ na obrazie
+    # po zmianie - inaczej dawaloby sie "wypchnac"/"wciagnac" wiersz do projektu bez dostepu,
+    # sprawdzajac tylko stan sprzed edycji
+    if "ID_Projektu" in data and data["ID_Projektu"] != existing.get("ID_Projektu"):
+        if not can_write(conn, g.user, "update", table, {**existing, **data}):
+            abort(403)
+    if table == "users":
+        error = validate_user_payload(data, existing)
+        if error:
+            return jsonify({"error": error}), 400
     set_clause = ", ".join(f"{c} = ?" for c in data.keys())
     try:
         cur = conn.execute(f"UPDATE {table} SET {set_clause} WHERE {pk} = ?", [*data.values(), item_id])
@@ -378,12 +515,13 @@ def item(table, item_id):
         return jsonify({"error": str(e)}), 409
     if cur.rowcount == 0:
         abort(404)
-    return jsonify(fetch_row(conn, table, pk, item_id))
+    return jsonify(redact_row(g.user, table, fetch_row(conn, table, pk, item_id)))
 
 
 @app.route("/api/backup", methods=["GET", "POST"])
 def backup():
-    # TODO(Czesc C.4): ograniczyc POST/GET do roli COO/Admin, gdy istnieje g.user
+    if g.user["Rola"] not in FULL_ACCESS_ROLES:
+        abort(403)
     if request.method == "GET":
         return jsonify([{"name": name, "size": size} for name, size, _path in list_backups()])
     try:
@@ -392,6 +530,26 @@ def backup():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"name": os.path.basename(dest_path), "removed": removed}), 201
+
+
+@app.route("/api/users/<item_id>/reset-password", methods=["POST"])
+def admin_reset_password(item_id):
+    if g.user["Rola"] not in FULL_ACCESS_ROLES:
+        abort(403)
+    conn = get_db()
+    target = fetch_row(conn, "users", "ID_Uzytkownika", item_id)
+    if target is None:
+        abort(404)
+    data = request.get_json(force=True, silent=True) or {}
+    new_password = data.get("new_password") or ""
+    if len(new_password) < 8:
+        return jsonify({"error": "Nowe hasło musi mieć co najmniej 8 znaków."}), 400
+    conn.execute(
+        "UPDATE users SET Haslo_Hash = ? WHERE ID_Uzytkownika = ?",
+        (generate_password_hash(new_password, method=PASSWORD_HASH_METHOD), item_id),
+    )
+    conn.commit()
+    return "", 204
 
 
 @app.errorhandler(404)
