@@ -22,39 +22,48 @@
     <button class="secondary" id="btnExport" style="display:none">Eksportuj do Excela</button>
     <button class="secondary" id="btnPrint" style="display:none">Drukuj widok</button>
     <button class="secondary" id="btnExecReport" style="display:none" title="Generuje podsumowanie portfela projektów do wydruku / zapisu jako PDF (przez okno drukowania przeglądarki)">📄 Raport dla zarządu (PDF)</button>
+    <div class="user-menu" id="userMenu" style="display:none">
+      <span class="user-menu-name" id="userMenuName"></span>
+      <span class="user-menu-role badge badge-muted" id="userMenuRole"></span>
+      <button class="secondary" id="btnLogout">Wyloguj</button>
+    </div>
   </div>
 </header>
 
-<nav class="tabs" id="tabs" style="display:none">
-  <button class="tab-btn active" data-view="przeglad">Przegląd</button>
-  <button class="tab-btn" data-view="projekty">Projekty</button>
-  <button class="tab-btn" data-view="zespol">Zespół</button>
-  <button class="tab-btn" data-view="podwykonawcy">Podwykonawcy</button>
-  <button class="tab-btn" data-view="zadania">Zadania</button>
-  <button class="tab-btn" data-view="gantt">Harmonogram / Gantt</button>
-  <button class="tab-btn" data-view="ryzyka">Ryzyka i problemy</button>
-</nav>
+<div class="app-body">
+  <nav class="tabs" id="tabs" style="display:none">
+    <button class="tab-btn active" data-view="przeglad" data-roles="Specjalista,Architekt_PM,COO,Admin">Przegląd</button>
+    <button class="tab-btn" data-view="projekty" data-roles="Specjalista,Architekt_PM,COO,Admin">Projekty</button>
+    <button class="tab-btn" data-view="zespol" data-roles="Specjalista,Architekt_PM,COO,Admin">Zespół</button>
+    <button class="tab-btn" data-view="podwykonawcy" data-roles="Specjalista,Architekt_PM,COO,Admin">Podwykonawcy</button>
+    <button class="tab-btn" data-view="zadania" data-roles="Specjalista,Architekt_PM,COO,Admin">Zadania</button>
+    <button class="tab-btn" data-view="gantt" data-roles="Specjalista,Architekt_PM,COO,Admin">Harmonogram / Gantt</button>
+    <button class="tab-btn" data-view="ryzyka" data-roles="Specjalista,Architekt_PM,COO,Admin">Ryzyka i problemy</button>
+    <button class="tab-btn" data-view="uzytkownicy" data-roles="COO,Admin">Użytkownicy</button>
+  </nav>
 
-<main>
+  <main>
 
-  <div class="empty-state" id="emptyState">
-    <h2>Ładowanie danych z serwera…</h2>
-    <p>Jeśli to się nie zmieni, uruchom backend: <code>python3 server.py</code> w katalogu projektu.</p>
-  </div>
+    <div class="empty-state" id="emptyState">
+      <h2>Ładowanie danych z serwera…</h2>
+      <p>Jeśli to się nie zmieni, uruchom backend: <code>python3 server.py</code> w katalogu projektu.</p>
+    </div>
 
-  <section class="view active" id="view-przeglad"></section>
-  <section class="view" id="view-projekty"></section>
-  <section class="view" id="view-zespol"></section>
-  <section class="view" id="view-podwykonawcy"></section>
-  <section class="view" id="view-zadania"></section>
-  <section class="view" id="view-gantt"></section>
-  <section class="view" id="view-ryzyka"></section>
+    <section class="view active" id="view-przeglad"></section>
+    <section class="view" id="view-projekty"></section>
+    <section class="view" id="view-zespol"></section>
+    <section class="view" id="view-podwykonawcy"></section>
+    <section class="view" id="view-zadania"></section>
+    <section class="view" id="view-gantt"></section>
+    <section class="view" id="view-ryzyka"></section>
+    <section class="view" id="view-uzytkownicy"></section>
 
-  <div class="footer-note" id="footerNote" style="display:none">
-    Wszystkie zmiany zapisują się od razu do wspólnej bazy danych na serwerze (SQLite). Przycisk
-    „Eksportuj do Excela” tworzy jednorazową migawkę do wysyłki/raportowania poza dashboardem.
-  </div>
-</main>
+    <div class="footer-note" id="footerNote" style="display:none">
+      Wszystkie zmiany zapisują się od razu do wspólnej bazy danych na serwerze (SQLite). Przycisk
+      „Eksportuj do Excela” tworzy jednorazową migawkę do wysyłki/raportowania poza dashboardem.
+    </div>
+  </main>
+</div>
 
 <div class="overlay" id="overlay"></div>
 <aside class="detail-panel" id="detailPanel">

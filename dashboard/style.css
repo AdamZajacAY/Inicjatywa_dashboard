@@ -119,24 +119,46 @@ button:hover { opacity: .82; }
 button.secondary:hover { opacity: 1; background: var(--grid); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 
+.app-body { display: flex; align-items: flex-start; }
+
 .tabs {
-  display: flex; gap: 4px; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 2px; padding: 16px 12px;
   background: var(--surface-1);
-  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   position: sticky; top: 57px; z-index: 19;
-  overflow-x: auto;
+  flex: 0 0 220px;
+  height: calc(100vh - 57px);
+  overflow-x: hidden; overflow-y: auto;
 }
 .tab-btn {
+  display: flex; align-items: center; text-align: left;
   background: transparent; color: var(--text-secondary); font-weight: 600;
-  border: none; border-bottom: 2px solid transparent; border-radius: 0;
-  padding: 10px 14px; font-size: 13px; white-space: nowrap;
+  border: none; border-radius: 8px;
+  padding: 9px 12px; font-size: 13px; white-space: nowrap;
 }
-.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-btn:hover:not(.active) { color: var(--text-primary); }
+.tab-btn.active { color: var(--accent-contrast); background: var(--accent); }
+.tab-btn:hover:not(.active) { color: var(--text-primary); background: var(--grid); }
 
-main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 80px; }
+main { flex: 1; min-width: 0; max-width: 1400px; padding: 20px 24px 80px; }
 .view { display: none; }
 .view.active { display: block; }
+
+/* sidebar nie ma sensu na waskim ekranie - z powrotem do poziomego paska */
+@media (max-width: 860px) {
+  .app-body { flex-direction: column; }
+  .tabs {
+    flex: 0 0 auto; flex-direction: row; gap: 4px; position: sticky; top: 57px;
+    width: 100%; height: auto; padding: 8px 12px;
+    overflow-x: auto; overflow-y: visible;
+    border-right: none; border-bottom: 1px solid var(--border);
+  }
+}
+
+.user-menu {
+  display: flex; align-items: center; gap: 8px;
+  padding-left: 10px; margin-left: 4px; border-left: 1px solid var(--border);
+}
+.user-menu-name { font-size: 12.5px; font-weight: 600; color: var(--text-primary); white-space: nowrap; }
 
 /* ---------- Empty state ---------- */
 .empty-state {
