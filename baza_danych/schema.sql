@@ -168,6 +168,24 @@ CREATE TABLE IF NOT EXISTS przypisania_podwykonawcow (
   Uwagi TEXT
 );
 
+-- Konta logowania + role (Specjalista / Architekt_PM / COO / Admin). Rola NULL = konto
+-- Oczekujace na zatwierdzenie (zero dostepu do danych, patrz server.py before_request).
+-- Osobna tabela od `zespol` (rejestr osob/roboczogodzin) - login moze, ale nie musi,
+-- byc powiazany z konkretna osoba z zespolu (ID_Osoby), np. konta COO/Admin czysto
+-- systemowe moga zostac niepowiazane.
+CREATE TABLE IF NOT EXISTS users (
+  ID_Uzytkownika TEXT PRIMARY KEY,
+  Email TEXT NOT NULL UNIQUE,
+  Imie_i_nazwisko TEXT,
+  Haslo_Hash TEXT,                 -- NULL = konto zalozone wylacznie przez Google
+  Google_Sub TEXT UNIQUE,          -- stabilny identyfikator 'sub' z Google; NULL = konto haslowe
+  Rola TEXT,                       -- NULL=Oczekujace | Specjalista | Architekt_PM | COO | Admin
+  ID_Osoby TEXT UNIQUE REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
+  Aktywny INTEGER NOT NULL DEFAULT 1,
+  Data_utworzenia TEXT,
+  Data_ostatniego_logowania TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_przypisania_projekt ON przypisania(ID_Projektu);
 CREATE INDEX IF NOT EXISTS idx_harmonogram_projekt ON harmonogram(ID_Projektu);
 CREATE INDEX IF NOT EXISTS idx_tickety_projekt ON zadania_tickety(ID_Projektu);
@@ -175,3 +193,4 @@ CREATE INDEX IF NOT EXISTS idx_kamienie_projekt ON kamienie_milowe(ID_Projektu);
 CREATE INDEX IF NOT EXISTS idx_ryzyka_projekt ON ryzyka_i_problemy(ID_Projektu);
 CREATE INDEX IF NOT EXISTS idx_raporty_projekt ON raporty_statusowe(ID_Projektu);
 CREATE INDEX IF NOT EXISTS idx_przypisania_podw_projekt ON przypisania_podwykonawcow(ID_Projektu);
+CREATE INDEX IF NOT EXISTS idx_users_osoba ON users(ID_Osoby);

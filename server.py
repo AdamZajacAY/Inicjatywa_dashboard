@@ -16,13 +16,19 @@ Otwiera:       http://localhost:8000/dashboard/index.html
 Zatrzymanie:   Ctrl+C
 """
 
+import datetime
+import json
 import os
 import re
+import secrets
 import sqlite3
 import sys
+import time
 import webbrowser
+from collections import defaultdict
 
-from flask import Flask, abort, g, jsonify, request, send_from_directory
+from flask import Flask, abort, g, jsonify, request, send_from_directory, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
 
@@ -31,6 +37,36 @@ DB_PATH = os.path.join(ROOT, "baza_danych", "baza_projektow.db")
 PORT = 8000
 
 app = Flask(__name__, static_folder=None)
+
+# python3 na macOS (system Python, linkowany z LibreSSL) nie ma hashlib.scrypt, czyli
+# domyslna metoda generate_password_hash() (scrypt) rzuca AttributeError - zweryfikowane
+# bezposrednio. pbkdf2:sha256 dziala wszedzie, wiec jest jedyna dopuszczalna metoda w tym pliku.
+PASSWORD_HASH_METHOD = "pbkdf2:sha256"
+_DUMMY_PASSWORD_HASH = generate_password_hash("nie-jest-to-prawdziwe-haslo", method=PASSWORD_HASH_METHOD)
+
+
+def _load_or_create_secret_key():
+    env_key = os.environ.get("SECRET_KEY")
+    if env_key:
+        return env_key
+    key_path = os.path.join(ROOT, "baza_danych", "secret_key.txt")
+    if os.path.exists(key_path):
+        with open(key_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    key = secrets.token_hex(32)
+    with open(key_path, "w", encoding="utf-8") as f:
+        f.write(key)
+    return key
+
+
+app.secret_key = _load_or_create_secret_key()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Brak HTTPS na LAN dzis - musi zostac False, inaczej przegladarka nigdy nie wysle
+    # ciasteczka. Udokumentowane ograniczenie w README (patrz sekcja logowania).
+    SESSION_COOKIE_SECURE=False,
+)
 
 # tabela -> (kolumna klucza glownego, prefiks generowanych ID, szerokosc zer wiodacych)
 # prefix=None oznacza autoincrement SQLite (np. raporty_statusowe, ktore w Excelu
@@ -106,6 +142,175 @@ def parse_payload(conn, table, exclude=()):
     data = request.get_json(force=True, silent=True) or {}
     valid_cols = table_columns(conn, table)
     return {k: v for k, v in data.items() if k in valid_cols and k not in exclude}
+
+
+# ---------------------------------------------------------------- konta / logowanie / sesje
+
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 15 * 60
+_login_attempts = defaultdict(list)  # "{ip}:{email}" -> [timestampy nieudanych prob]
+# W pamieci procesu, nie przetrwa restartu - to jest jeden proces app.run() obslugujacy
+# kilkanascie osob na LAN, nie produkcyjny multi-worker deployment. Wystarczajace tarcie,
+# nie prawdziwa ochrona przed rozproszonym atakiem.
+
+
+def _rate_limit_key(email):
+    return f"{request.remote_addr}:{email}"
+
+
+def _is_locked_out(key):
+    now = time.time()
+    _login_attempts[key] = [t for t in _login_attempts[key] if now - t < LOGIN_LOCKOUT_SECONDS]
+    return len(_login_attempts[key]) >= LOGIN_MAX_ATTEMPTS
+
+
+def _record_failed_attempt(key):
+    _login_attempts[key].append(time.time())
+
+
+def get_current_user():
+    # Swieze zapytanie do bazy na kazdy request (nigdy nie ufa niczemu poza golym uid z
+    # podpisanego ciasteczka) - dzieki temu dezaktywacja konta (Aktywny=0) dziala natychmiast
+    # na kolejnym requescie, bez potrzeby wylogowania/wygasniecia ciasteczka.
+    uid = session.get("uid")
+    if not uid:
+        return None
+    row = get_db().execute("SELECT * FROM users WHERE ID_Uzytkownika = ?", (uid,)).fetchone()
+    if row is None or not row["Aktywny"]:
+        return None
+    return dict(row)
+
+
+def public_user(row):
+    return {
+        "id": row["ID_Uzytkownika"],
+        "email": row["Email"],
+        "name": row["Imie_i_nazwisko"],
+        "role": row["Rola"],
+        "personId": row["ID_Osoby"],
+        "pending": row["Rola"] is None,
+    }
+
+
+def _google_oauth_config():
+    """Client id/secret/redirect_uri, albo None jesli logowanie Google nie jest skonfigurowane.
+    Zmienne srodowiskowe nadpisuja baza_danych/oauth_config.json (ten drugi gitignorowany,
+    wygodny lokalnie; zmienne srodowiskowe wygodne pod Render - patrz README)."""
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI")
+    cfg_path = os.path.join(ROOT, "baza_danych", "oauth_config.json")
+    if not (client_id and client_secret) and os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            cfg = {}
+        client_id = client_id or cfg.get("client_id")
+        client_secret = client_secret or cfg.get("client_secret")
+        redirect_uri = redirect_uri or cfg.get("redirect_uri")
+    if not (client_id and client_secret):
+        return None
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri or f"http://localhost:{PORT}/api/auth/google/callback",
+    }
+
+
+PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/google/login", "/api/auth/google/callback", "/api/auth/config"}
+PENDING_OK_PATHS = {"/api/auth/me", "/api/auth/logout", "/api/auth/change-password"}
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@app.before_request
+def csrf_guard():
+    # SameSite=Lax juz samo w sobie wystarcza (nie dolacza ciasteczka do cross-site
+    # POST/PUT/DELETE niezaleznie od <form> czy fetch()), a brak nagłowkow CORS blokuje
+    # cross-origin fetch() z JSON-em przez nieudany preflight. Ten naglowek to tani,
+    # dodatkowy check na wypadek nietypowej konfiguracji przegladarki - kazde wywolanie
+    # apiRequest() w app.js go wysyla.
+    if (request.method not in SAFE_METHODS and request.path.startswith("/api/")
+            and request.headers.get("X-Requested-With") != "fetch"):
+        abort(403)
+
+
+@app.before_request
+def load_user():
+    g.user = get_current_user()
+    if not request.path.startswith("/api/") or request.path in PUBLIC_API_PATHS:
+        return
+    if g.user is None:
+        abort(401)
+    if request.path in PENDING_OK_PATHS:
+        return
+    if g.user["Rola"] is None:
+        abort(403)  # konto Oczekujace - zero dostepu do danych, dopoki COO/Admin nie nada roli
+
+
+@app.route("/api/auth/config")
+def auth_config():
+    return jsonify({"googleEnabled": _google_oauth_config() is not None})
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    data = request.get_json(force=True, silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+    key = _rate_limit_key(email)
+    if _is_locked_out(key):
+        return jsonify({"error": "Zbyt wiele nieudanych prób logowania. Spróbuj ponownie za 15 minut."}), 429
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE lower(Email) = ?", (email,)).fetchone()
+    # Haszujemy tez gdy konto nie istnieje (wzgledem sztucznego hasza) - inaczej brak
+    # wpisu odpowiada szybciej niz istniejacy, co zdradza czyjs e-mail przez pomiar czasu.
+    stored_hash = row["Haslo_Hash"] if (row and row["Haslo_Hash"]) else _DUMMY_PASSWORD_HASH
+    password_ok = check_password_hash(stored_hash, password)
+    if not row or not row["Haslo_Hash"] or not password_ok or not row["Aktywny"]:
+        _record_failed_attempt(key)
+        return jsonify({"error": "Nieprawidłowy e-mail lub hasło."}), 401
+
+    _login_attempts.pop(key, None)
+    session.clear()
+    session["uid"] = row["ID_Uzytkownika"]
+    conn.execute(
+        "UPDATE users SET Data_ostatniego_logowania = ? WHERE ID_Uzytkownika = ?",
+        (datetime.datetime.now().isoformat(timespec="seconds"), row["ID_Uzytkownika"]),
+    )
+    conn.commit()
+    return jsonify(public_user(dict(row)))
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    session.clear()
+    return "", 204
+
+
+@app.route("/api/auth/me")
+def auth_me():
+    return jsonify(public_user(g.user))
+
+
+@app.route("/api/auth/change-password", methods=["POST"])
+def auth_change_password():
+    data = request.get_json(force=True, silent=True) or {}
+    current_password = data.get("current_password") or ""
+    new_password = data.get("new_password") or ""
+    if len(new_password) < 8:
+        return jsonify({"error": "Nowe hasło musi mieć co najmniej 8 znaków."}), 400
+    stored_hash = g.user["Haslo_Hash"] or _DUMMY_PASSWORD_HASH
+    if not g.user["Haslo_Hash"] or not check_password_hash(stored_hash, current_password):
+        return jsonify({"error": "Obecne hasło jest nieprawidłowe."}), 401
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET Haslo_Hash = ? WHERE ID_Uzytkownika = ?",
+        (generate_password_hash(new_password, method=PASSWORD_HASH_METHOD), g.user["ID_Uzytkownika"]),
+    )
+    conn.commit()
+    return "", 204
 
 
 @app.route("/api/bootstrap")
