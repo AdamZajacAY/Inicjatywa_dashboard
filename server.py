@@ -24,10 +24,13 @@ import secrets
 import sqlite3
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import webbrowser
 from collections import defaultdict
 
-from flask import Flask, abort, g, jsonify, request, send_from_directory, session
+from flask import Flask, abort, g, jsonify, redirect, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
@@ -418,6 +421,110 @@ def auth_change_password():
     )
     conn.commit()
     return "", 204
+
+
+# ---------------------------------------------------------------- logowanie Google (OAuth2)
+#
+# Reczny Authorization Code flow przez stdlib urllib - bez Authlib/google-auth. Tozsamosc
+# weryfikowana wywolaniem REST endpointu userinfo Google z tokenem bearer (nie recznym
+# dekodowaniem/weryfikacja JWT id_token), wiec zero potrzeby kryptografii RS256.
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+
+def _truthy(v):
+    return v is True or v == "true"
+
+
+@app.route("/api/auth/google/login")
+def auth_google_login():
+    config = _google_oauth_config()
+    if not config:
+        abort(404)
+    state = secrets.token_urlsafe(24)
+    session["oauth_state"] = state
+    params = {
+        "client_id": config["client_id"],
+        "redirect_uri": config["redirect_uri"],
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+    }
+    return redirect(f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}")
+
+
+@app.route("/api/auth/google/callback")
+def auth_google_callback():
+    config = _google_oauth_config()
+    if not config:
+        abort(404)
+    # Weryfikacja `state` to CSRF-ochrona samego handshake'u OAuth (osobna od csrf_guard()
+    # powyzej, ktory i tak nie dotyczy GET-ow) - jednorazowa wartosc z sesji sprzed przekierowania.
+    state = request.args.get("state")
+    if not state or state != session.pop("oauth_state", None):
+        abort(400)
+    code = request.args.get("code")
+    if not code:
+        abort(400)
+
+    token_body = urllib.parse.urlencode({
+        "code": code,
+        "client_id": config["client_id"],
+        "client_secret": config["client_secret"],
+        "redirect_uri": config["redirect_uri"],
+        "grant_type": "authorization_code",
+    }).encode()
+    try:
+        token_req = urllib.request.Request(GOOGLE_TOKEN_URL, data=token_body, method="POST")
+        with urllib.request.urlopen(token_req, timeout=10) as resp:
+            access_token = json.loads(resp.read())["access_token"]
+        userinfo_req = urllib.request.Request(GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
+        with urllib.request.urlopen(userinfo_req, timeout=10) as resp:
+            userinfo = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, KeyError, json.JSONDecodeError):
+        abort(502)
+
+    if "email_verified" in userinfo and not _truthy(userinfo["email_verified"]):
+        abort(403)
+    google_sub = userinfo.get("sub")
+    email = (userinfo.get("email") or "").strip().lower()
+    if not google_sub or not email:
+        abort(502)
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE Google_Sub = ?", (google_sub,)).fetchone()
+    if row is None:
+        # opportunistyczne polaczenie z istniejacym kontem haslowym po tym samym mailu -
+        # Google_Sub (nie e-mail) zostaje kluczem tozsamosci od teraz, bo e-mail moze sie zmienic
+        row = conn.execute("SELECT * FROM users WHERE lower(Email) = ?", (email,)).fetchone()
+        if row is not None:
+            conn.execute("UPDATE users SET Google_Sub = ? WHERE ID_Uzytkownika = ?", (google_sub, row["ID_Uzytkownika"]))
+            conn.commit()
+    if row is None:
+        # nowe konto Oczekujace (Rola=NULL) - zero dostepu, dopoki COO/Admin nie nada roli
+        uid = next_id(conn, "users", "ID_Uzytkownika", "USR", 3)
+        conn.execute(
+            "INSERT INTO users (ID_Uzytkownika, Email, Imie_i_nazwisko, Google_Sub, Rola, Aktywny, Data_utworzenia) "
+            "VALUES (?, ?, ?, ?, NULL, 1, ?)",
+            (uid, email, userinfo.get("name") or email, google_sub, datetime.datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+        row = fetch_row(conn, "users", "ID_Uzytkownika", uid)
+
+    if not row["Aktywny"]:
+        abort(403)
+    session.clear()
+    session["uid"] = row["ID_Uzytkownika"]
+    conn.execute(
+        "UPDATE users SET Data_ostatniego_logowania = ? WHERE ID_Uzytkownika = ?",
+        (datetime.datetime.now().isoformat(timespec="seconds"), row["ID_Uzytkownika"]),
+    )
+    conn.commit()
+    # Swiadomie bez parametru ?next= (zawsze na "/") - usuwa cala klase podatnosci
+    # open-redirect kosztem zera UX, bo SPA i tak zawsze laduje na tym samym URL.
+    return redirect("/")
 
 
 @app.route("/api/bootstrap")
