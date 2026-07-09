@@ -5,7 +5,7 @@
 
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
-  subcontractors: [], subcontractorAssignments: [], tickets: [], users: [],
+  subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -308,6 +308,13 @@ async function loadFromApi() {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
     assignedProjectIds: data.me.assignedProjectIds || [],
   };
+  // users/backups nie wchodza w sklad /api/bootstrap (widoczne tylko dla COO/Admin, po co
+  // ciagnac je przy kazdym logowaniu kazdej roli) - dociagane osobno, ale tylko raz tutaj,
+  // tak zeby renderUsers() nizej mogl pozostac zwyklym synchronicznym render*() jak reszta.
+  if (FULL_ACCESS_ROLES.includes(STATE.me.role)) {
+    STATE.users = await apiGet("/api/users");
+    STATE.backups = await apiGet("/api/backup");
+  }
   Object.keys(DATE_FIELDS).forEach(key => reviveDates(STATE[key], DATE_FIELDS[key]));
   reindex();
   showDashboard();
@@ -1251,6 +1258,136 @@ function renderRyzyka() {
     </div>`;
   $("#fRiskProj").addEventListener("change", e => { riskFilters.projekt = e.target.value; renderRyzyka(); });
   $("#fRiskStatus").addEventListener("change", e => { riskFilters.status = e.target.value; renderRyzyka(); });
+}
+
+/* ================================================================== VIEW: UZYTKOWNICY (tylko COO/Admin) */
+function roleBadgeClass(role) { return role == null ? "warning" : role === "Admin" || role === "COO" ? "good" : "muted"; }
+function fmtBytes(n) { return n == null ? "—" : n < 1024 * 1024 ? Math.round(n / 1024) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB"; }
+
+function renderUsers() {
+  $("#view-uzytkownicy").innerHTML = `
+    <div class="section-head"><h2>Użytkownicy</h2><button data-add-user="1">+ Dodaj użytkownika</button></div>
+    <div class="panel" style="overflow-x:auto">
+      <table class="data-table">
+        <thead><tr>
+          <th>E-mail</th><th>Imię i nazwisko</th><th>Rola</th><th>Powiązana osoba</th><th>Aktywny</th><th>Ostatnie logowanie</th><th></th>
+        </tr></thead>
+        <tbody>
+          ${STATE.users.map(u => `
+            <tr>
+              <td>${esc(u.Email)}</td>
+              <td>${esc(u.Imie_i_nazwisko || "—")}</td>
+              <td>${badge(u.Rola == null ? "Oczekujące" : (ROLE_LABELS[u.Rola] || u.Rola), roleBadgeClass(u.Rola))}</td>
+              <td>${esc(personName(u.ID_Osoby) || "—")}</td>
+              <td>${badge(u.Aktywny ? "Tak" : "Nie", u.Aktywny ? "good" : "critical")}</td>
+              <td>${u.Data_ostatniego_logowania ? fmtDate(parseDateInput(u.Data_ostatniego_logowania.slice(0, 10))) : "—"}</td>
+              <td class="item-actions">
+                <button class="icon-btn" data-edit-user="${esc(u.ID_Uzytkownika)}">Edytuj</button>
+                <button class="icon-btn" data-reset-password-user="${esc(u.ID_Uzytkownika)}">Hasło</button>
+                <button class="icon-btn ${u.Aktywny ? "danger" : ""}" data-toggle-active-user="${esc(u.ID_Uzytkownika)}">${u.Aktywny ? "Dezaktywuj" : "Aktywuj"}</button>
+              </td>
+            </tr>`).join("") || `<tr><td colspan="7" class="empty-hint">Brak użytkowników.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-head"><h2>Backup bazy danych</h2><button data-backup-now="1">Backup teraz</button></div>
+    <div class="panel" style="overflow-x:auto">
+      <table class="data-table">
+        <thead><tr><th>Plik</th><th>Rozmiar</th></tr></thead>
+        <tbody>
+          ${STATE.backups.slice(0, 15).map(b => `<tr><td>${esc(b.name)}</td><td class="num">${fmtBytes(b.size)}</td></tr>`).join("")
+            || `<tr><td colspan="2" class="empty-hint">Brak backupów — kliknij „Backup teraz” albo poczekaj na start serwera.</td></tr>`}
+        </tbody>
+      </table>
+      ${STATE.backups.length > 15 ? `<div class="empty-hint">... i ${STATE.backups.length - 15} starszych (widoczne w baza_danych/backups/)</div>` : ""}
+    </div>
+  `;
+}
+
+function unlinkedTeamOptionsPairs(currentUid) {
+  const linkedElsewhere = new Set(STATE.users.filter(u => u.ID_Uzytkownika !== currentUid && u.ID_Osoby).map(u => u.ID_Osoby));
+  return [["", "— brak —"], ...STATE.team.filter(t => !linkedElsewhere.has(t.ID_Osoby)).map(t => [t.ID_Osoby, t.Imie_i_nazwisko])];
+}
+
+function openUserForm(uid = null) {
+  const u = uid ? STATE.users.find(x => x.ID_Uzytkownika === uid) : {};
+  if (!requireExisting(u, "użytkownik")) return;
+  const body = `
+    ${fInput("E-mail *", "Email", u.Email, "email", "required")}
+    ${fInput("Imię i nazwisko", "Imie_i_nazwisko", u.Imie_i_nazwisko)}
+    ${fSelect("Rola", "Rola", [["", "Oczekujące (brak dostępu)"], ["Specjalista", "Specjalista"], ["Architekt_PM", "Architekt/PM"], ["COO", "COO"], ["Admin", "Admin"]], u.Rola || "")}
+    ${fSelect("Powiązana osoba z zespołu", "ID_Osoby", unlinkedTeamOptionsPairs(uid), u.ID_Osoby)}
+    ${fSelect("Aktywny", "Aktywny", [["Tak", "Tak"], ["Nie", "Nie"]], u.Aktywny === 0 ? "Nie" : "Tak")}
+    <div class="empty-hint full" style="grid-column:1/-1">Role Specjalista i Architekt/PM wymagają powiązanej osoby z zespołu (do niej odnoszą się przydzielone projekty i tickety).</div>
+  `;
+  openModal(uid ? "Edytuj użytkownika" : "Nowy użytkownik", body, {
+    submitLabel: "Zapisz",
+    onSubmit: (data) => saveUserFromForm(data, uid),
+  });
+}
+
+async function saveUserFromForm(data, uid) {
+  if (!data.Email) { alert("Podaj adres e-mail."); return; }
+  const isNew = !uid;
+  const existing = isNew ? {} : STATE.users.find(x => x.ID_Uzytkownika === uid);
+  if (!requireExisting(existing, "użytkownik")) return;
+  const fields = {
+    Email: data.Email.trim().toLowerCase(), Imie_i_nazwisko: data.Imie_i_nazwisko,
+    Rola: data.Rola || null, ID_Osoby: data.ID_Osoby || null,
+    Aktywny: data.Aktywny === "Nie" ? 0 : 1,
+  };
+  let saved;
+  try {
+    saved = isNew ? await apiPost("/api/users", fields) : await apiPut(`/api/users/${uid}`, fields);
+  } catch (e) {
+    alert("Nie udało się zapisać użytkownika: " + e.message);
+    return;
+  }
+  if (isNew) STATE.users.push(saved); else Object.assign(existing, saved);
+  closeModal();
+  renderAll();
+  if (isNew) resetUserPassword(saved.ID_Uzytkownika, true);
+}
+
+async function resetUserPassword(uid, isInitial = false) {
+  const pw = prompt(isInitial
+    ? "Ustaw hasło początkowe dla nowego konta (min. 8 znaków):"
+    : "Nowe hasło dla tego użytkownika (min. 8 znaków):");
+  if (pw == null) return;
+  if (pw.length < 8) { alert("Hasło musi mieć co najmniej 8 znaków."); return; }
+  try {
+    await apiPost(`/api/users/${uid}/reset-password`, { new_password: pw });
+    alert("Hasło zostało ustawione.");
+  } catch (e) {
+    alert("Nie udało się ustawić hasła: " + e.message);
+  }
+}
+
+async function toggleUserActive(uid) {
+  const u = STATE.users.find(x => x.ID_Uzytkownika === uid);
+  if (!requireExisting(u, "użytkownik")) return;
+  const nextActive = u.Aktywny ? 0 : 1;
+  if (!nextActive && !confirm(`Dezaktywować konto ${u.Email}? Straci dostęp natychmiast, nawet jeśli jest aktualnie zalogowane.`)) return;
+  try {
+    const saved = await apiPut(`/api/users/${uid}`, { Aktywny: nextActive });
+    Object.assign(u, saved);
+  } catch (e) {
+    alert("Nie udało się zmienić statusu konta: " + e.message);
+    return;
+  }
+  renderAll();
+}
+
+async function triggerBackupNow() {
+  try {
+    await apiPost("/api/backup");
+    STATE.backups = await apiGet("/api/backup");
+  } catch (e) {
+    alert("Nie udało się utworzyć backupu: " + e.message);
+    return;
+  }
+  renderAll();
 }
 
 /* ================================================================== MODAL / FORMULARZE */
@@ -2228,6 +2365,7 @@ function renderAll() {
   renderTickets();
   renderGanttView();
   renderRyzyka();
+  if (FULL_ACCESS_ROLES.includes(STATE.me.role)) renderUsers();
   // Kazdy render*() odbudowuje swoj kawalek DOM od zera (innerHTML), wiec [data-roles] trzeba
   // ponownie wymietc na koniec kazdego pelnego przebiegu, nie tylko raz po boot().
   applyRoleGating();
@@ -2431,6 +2569,17 @@ document.addEventListener("click", (e) => {
   if (editSubAssign) { openSubcontractorAssignmentForm(editSubAssign.getAttribute("data-project"), editSubAssign.getAttribute("data-edit-subcontractor-assignment")); return; }
   const deleteSubAssignBtn = e.target.closest("[data-delete-subcontractor-assignment]");
   if (deleteSubAssignBtn) { deleteSubcontractorAssignment(deleteSubAssignBtn.getAttribute("data-delete-subcontractor-assignment"), deleteSubAssignBtn.getAttribute("data-project")); return; }
+
+  const addUser = e.target.closest("[data-add-user]");
+  if (addUser) { openUserForm(); return; }
+  const editUser = e.target.closest("[data-edit-user]");
+  if (editUser) { openUserForm(editUser.getAttribute("data-edit-user")); return; }
+  const resetPwUser = e.target.closest("[data-reset-password-user]");
+  if (resetPwUser) { resetUserPassword(resetPwUser.getAttribute("data-reset-password-user")); return; }
+  const toggleActiveUser = e.target.closest("[data-toggle-active-user]");
+  if (toggleActiveUser) { toggleUserActive(toggleActiveUser.getAttribute("data-toggle-active-user")); return; }
+  const backupNowBtn = e.target.closest("[data-backup-now]");
+  if (backupNowBtn) { triggerBackupNow(); return; }
 
   // klik w pasek/wiersz Gantta = edycja etapu (sprawdzane po przyciskach add/delete, żeby nie kolidowało)
   const taskRow = e.target.closest("[data-task-id]");
