@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inicjatywa Projektowa — Pulpit Projektów</title>
+<link rel="icon" href="vendor/logo-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <img src="vendor/logo-icon.png" alt="Inicjatywa Projektowa">
+    <div class="brand-text">
+      <h1>inicjatywa projektowa</h1>
+      <div class="subtitle">Pulpit portfela projektów</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="file-info" id="fileInfo">Łączenie z serwerem…</span>
+    <button class="secondary" id="btnExport" style="display:none">Eksportuj do Excela</button>
+    <button class="secondary" id="btnPrint" style="display:none">Drukuj widok</button>
+    <button class="secondary" id="btnExecReport" style="display:none" title="Generuje podsumowanie portfela projektów do wydruku / zapisu jako PDF (przez okno drukowania przeglądarki)">📄 Raport dla zarządu (PDF)</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs" style="display:none">
+  <button class="tab-btn active" data-view="przeglad">Przegląd</button>
+  <button class="tab-btn" data-view="projekty">Projekty</button>
+  <button class="tab-btn" data-view="zespol">Zespół</button>
+  <button class="tab-btn" data-view="podwykonawcy">Podwykonawcy</button>
+  <button class="tab-btn" data-view="zadania">Zadania</button>
+  <button class="tab-btn" data-view="gantt">Harmonogram / Gantt</button>
+  <button class="tab-btn" data-view="ryzyka">Ryzyka i problemy</button>
+</nav>
+
+<main>
+
+  <div class="empty-state" id="emptyState">
+    <h2>Ładowanie danych z serwera…</h2>
+    <p>Jeśli to się nie zmieni, uruchom backend: <code>python3 server.py</code> w katalogu projektu.</p>
+  </div>
+
+  <section class="view active" id="view-przeglad"></section>
+  <section class="view" id="view-projekty"></section>
+  <section class="view" id="view-zespol"></section>
+  <section class="view" id="view-podwykonawcy"></section>
+  <section class="view" id="view-zadania"></section>
+  <section class="view" id="view-gantt"></section>
+  <section class="view" id="view-ryzyka"></section>
+
+  <div class="footer-note" id="footerNote" style="display:none">
+    Wszystkie zmiany zapisują się od razu do wspólnej bazy danych na serwerze (SQLite). Przycisk
+    „Eksportuj do Excela” tworzy jednorazową migawkę do wysyłki/raportowania poza dashboardem.
+  </div>
+</main>
+
+<div class="overlay" id="overlay"></div>
+<aside class="detail-panel" id="detailPanel">
+  <button class="dp-close" id="dpClose">✕</button>
+  <div id="dpContent"></div>
+</aside>
+
+<div id="execReport"></div>
+
+<div class="overlay" id="modalOverlay"></div>
+<div class="modal-box" id="modalBox">
+  <button class="dp-close" id="modalClose">✕</button>
+  <h3 id="modalTitle"></h3>
+  <form id="modalForm">
+    <div class="form-grid" id="modalBody"></div>
+    <div class="modal-actions">
+      <button type="button" class="secondary" id="modalCancel">Anuluj</button>
+      <button type="submit" id="modalSubmit">Zapisz</button>
+    </div>
+  </form>
+</div>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

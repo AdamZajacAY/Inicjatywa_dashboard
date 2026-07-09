@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Dane firmowe / realne dane biznesowe — nigdy w historii gita
+baza_danych/baza_projektow.db
+baza_danych/baza_projektow.db-journal
+baza_danych/baza_projektow.db-wal
+baza_danych/baza_projektow.db-shm
+baza_danych/Baza_Projektow.xlsx
+baza_danych/~$*.xlsx
+baza_danych/backups/
+Propozycja_Macierzy_Projektow.xlsx
+~$*.xlsx
+_backup_*/
+
+# Sekrety wygenerowane/uzupełniane w runtime (konta, Google OAuth)
+baza_danych/secret_key.txt
+baza_danych/oauth_config.json
+.env
+
+# Stan lokalny Claude Code
+.claude/
