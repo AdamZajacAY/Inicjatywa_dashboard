@@ -15,7 +15,8 @@ w sekcji „Konta, role i logowanie” niżej. Nawigacja żyje w lewym sidebarze
 ```
 server.py                      <- URUCHOM TO: python3 server.py -> backend + dashboard na http://localhost:8000
 requirements.txt                <- zaleznosci Pythona (Flask, openpyxl, gunicorn) - pip3 install -r requirements.txt
-Procfile / render.yaml          <- pod wdrozenie na Render (patrz sekcja "Wdrozenie na Render")
+Procfile / render.yaml          <- pod wdrozenie na Render (patrz DEPLOY_RENDER.md)
+DEPLOY_RENDER.md                <- pelna instrukcja wdrozenia na Render, krok po kroku
 .gitignore                      <- wyklucza baze/dane realne/sekrety z historii gita
 analiza/
   Analiza_systemu_PMO.md      <- pełna analiza PMO: co i dlaczego jest w systemie
@@ -25,6 +26,7 @@ baza_danych/
   excel_to_sqlite.py            <- jednorazowy migrator Baza_Projektow.xlsx -> baza_projektow.db
   create_admin.py              <- tworzy pierwsze konto COO/Admin (potrzebne po instalacji)
   backup_db.py                  <- backup bazy (recznie albo cron/launchd) - patrz sekcja Backup
+  migrate_to_remote.py          <- przenosi lokalne dane na wdrozona instancje (np. Render) przez API
   backups/                      <- kopie zapasowe bazy (poza gitem)
   Baza_Projektow.xlsx          <- historyczny plik Excela (źródło pierwszej migracji, realne dane)
   generuj_baze.py             <- skrypt, który generuje/odtwarza ten plik xlsx od zera
@@ -145,21 +147,15 @@ uruchom serwer ponownie.
 `Procfile` i `render.yaml` w katalogu głównym przygotowują ten sam kod (Flask + SQLite) pod
 hosting na [Render](https://render.com) — to podniesienie obecnego stosu do chmury, nie
 przepisanie na inną bazę (Postgres to osobny, późniejszy krok — patrz „Ścieżka rozwoju”).
+Repo jest już na GitHubie: `AdamZajacAY/Inicjatywa_dashboard`.
 
-1. Wypchnij repo na GitHub (prywatne repo — baza/dane realne i tak są poza gitem przez
-   `.gitignore`, ale kod i struktura są wtedy widoczne, więc bez wyraźnej potrzeby trzymaj
-   prywatnie).
-2. W panelu Render: „New” → „Blueprint” → wskaż to repo — `render.yaml` opisuje usługę,
-   dysk trwały i zmienne środowiskowe automatycznie.
-3. **Wymaga płatnego planu instancji** — SQLite potrzebuje zamontowanego dysku trwałego
-   (`/var/data`), a darmowy tier Render ma ulotny system plików (dane znikałyby przy każdym
-   redeployu).
-4. W zakładce „Environment” dopisz ręcznie `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` /
-   `GOOGLE_REDIRECT_URI`, jeśli chcesz logowania Google na produkcji (redirect URI musi wtedy
-   wskazywać na adres Render, nie na `localhost` — zarejestruj go też w Google Cloud Console).
-5. Pierwsze uruchomienie na świeżym dysku startuje z **pustą** bazą (schemat, zero danych) —
-   `python3 baza_danych/create_admin.py` trzeba wtedy odpalić przez powłokę Render (`Shell` w
-   panelu usługi) albo załadować dane inną drogą (np. podmieniając plik na dysku backupem).
+Pełna instrukcja krok po kroku (Blueprint, zmienne środowiskowe, pierwsze konto, przeniesienie
+realnych danych z lokalnej bazy, Google OAuth na produkcji) jest w **[`DEPLOY_RENDER.md`](DEPLOY_RENDER.md)**.
+W skrócie: wymaga płatnego planu instancji (SQLite potrzebuje dysku trwałego, którego nie ma
+darmowy tier), a przeniesienie realnych danych na świeży deploy robi
+`baza_danych/migrate_to_remote.py` — lokalny skrypt, który loguje się na zdalną instancję i
+tworzy wiersze przez to samo REST API, którego i tak używa dashboard (zero nowych, specjalnych
+mechanizmów po stronie serwera).
 
 ## Zarządzanie portfelem — wszystko wyklikane w dashboardzie
 
