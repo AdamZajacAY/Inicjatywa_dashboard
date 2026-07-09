@@ -36,8 +36,37 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(ROOT, "baza_danych", "baza_projektow.db")
-PORT = 8000
+# Lokalnie zawsze domyslna sciezka w repo (baza juz tam jest). DATABASE_PATH ustawiane w
+# srodowisku - typowo pod Render, gdzie wskazuje na zamontowany "persistent disk", bo
+# katalog repo jest tam ulotny i znika przy kazdym redeployu (patrz README, sekcja Render).
+DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(ROOT, "baza_danych", "baza_projektow.db"))
+PORT = int(os.environ.get("PORT", 8000))
+
+
+def ensure_database_ready():
+    # Wywolywane raz przy imporcie modulu (nie tylko w main()) - gunicorn pod Render
+    # importuje "server:app" bezposrednio i nigdy nie woła main(), wiec ten check musi
+    # zyc na poziomie modulu, zeby zadzialac tez tam.
+    if os.path.exists(DB_PATH):
+        return
+    if not os.environ.get("DATABASE_PATH"):
+        # lokalne uzycie bez jawnie ustawionej zmiennej - najpewniej ktos zapomnial
+        # zmigrowac dane; lepiej przerwac z jasna instrukcja niz cicho wystartowac pusto
+        print(f"Brak bazy danych: {DB_PATH}")
+        print("Uruchom najpierw: python3 baza_danych/excel_to_sqlite.py")
+        sys.exit(1)
+    # DATABASE_PATH ustawione jawnie (typowo swiezy "persistent disk" na Render) - zainicjuj
+    # pusty schemat zamiast wymagac recznego dostepu do powloki przy pierwszym wdrozeniu
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    schema_path = os.path.join(ROOT, "baza_danych", "schema.sql")
+    conn = sqlite3.connect(DB_PATH)
+    with open(schema_path, encoding="utf-8") as f:
+        conn.executescript(f.read())
+    conn.close()
+    print(f"Zainicjowano pustą bazę danych pod {DB_PATH} (schema.sql) - DATABASE_PATH było ustawione, a plik nie istniał.")
+
+
+ensure_database_ready()
 
 app = Flask(__name__, static_folder=None)
 
@@ -684,11 +713,9 @@ def static_files(path):
 
 
 def main():
-    if not os.path.exists(DB_PATH):
-        print(f"Brak bazy danych: {DB_PATH}")
-        print("Uruchom najpierw: python3 baza_danych/excel_to_sqlite.py")
-        sys.exit(1)
-
+    # ensure_database_ready() już się wykonało przy imporcie modułu (patrz wyżej) - tutaj
+    # tylko lokalny wygodny dodatek (backup startowy, otwarcie przeglądarki), nie wołany
+    # w ogóle pod gunicornem/Render.
     try:
         backup_path = create_backup()
         enforce_retention()

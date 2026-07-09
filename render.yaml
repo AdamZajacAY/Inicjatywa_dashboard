@@ -1,0 +1,34 @@
+# Blueprint dla Render (https://render.com) - lift-and-shift obecnego stosu Flask+SQLite,
+# NIE przepisanie na Postgres (to osobny, pozniejszy krok - patrz README "Sciezka rozwoju").
+#
+# Wymaga plyty trwalej ("persistent disk"), wiec instancja musi byc na platnym planie -
+# darmowy tier Render ma ulotny system plikow (dane znikalyby przy kazdym redeployu).
+#
+# Po polaczeniu repo w panelu Render, GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/
+# GOOGLE_REDIRECT_URI (sync: false) trzeba wpisac recznie w zakladce Environment -
+# nigdy w tym pliku ani w repo.
+
+services:
+  - type: web
+    name: inicjatywa-projektowa-dashboard
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_PATH
+        value: /var/data/baza_projektow.db
+      - key: BACKUPS_DIR
+        value: /var/data/backups
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+    disk:
+      name: dashboard-data
+      mountPath: /var/data
+      sizeGB: 1
