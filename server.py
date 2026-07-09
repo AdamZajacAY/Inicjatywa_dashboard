@@ -24,6 +24,8 @@ import webbrowser
 
 from flask import Flask, abort, g, jsonify, request, send_from_directory
 
+from baza_danych.backup_db import create_backup, enforce_retention, list_backups
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "baza_danych", "baza_projektow.db")
 PORT = 8000
@@ -174,6 +176,19 @@ def item(table, item_id):
     return jsonify(fetch_row(conn, table, pk, item_id))
 
 
+@app.route("/api/backup", methods=["GET", "POST"])
+def backup():
+    # TODO(Czesc C.4): ograniczyc POST/GET do roli COO/Admin, gdy istnieje g.user
+    if request.method == "GET":
+        return jsonify([{"name": name, "size": size} for name, size, _path in list_backups()])
+    try:
+        dest_path = create_backup()
+        removed = enforce_retention()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"name": os.path.basename(dest_path), "removed": removed}), 201
+
+
 @app.errorhandler(404)
 def not_found(_e):
     return jsonify({"error": "not found"}), 404
@@ -204,11 +219,20 @@ def main():
         print("Uruchom najpierw: python3 baza_danych/excel_to_sqlite.py")
         sys.exit(1)
 
+    try:
+        backup_path = create_backup()
+        enforce_retention()
+        backup_note = f"Backup przy starcie: {os.path.basename(backup_path)}"
+    except Exception as e:
+        # nieudany backup nie moze zablokowac startu serwera - tylko ostrzezenie
+        backup_note = f"Backup przy starcie nie powiódł się (serwer i tak startuje): {e}"
+
     url = f"http://localhost:{PORT}/dashboard/index.html"
     print("=" * 60)
     print("Serwer działa. Dashboard:")
     print(f"  {url}")
     print(f"Baza danych: {DB_PATH}")
+    print(backup_note)
     print("Zatrzymanie: Ctrl+C")
     print("=" * 60)
     webbrowser.open(url)
