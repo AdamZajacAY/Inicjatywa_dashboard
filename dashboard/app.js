@@ -5,9 +5,49 @@
 
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
-  subcontractors: [], subcontractorAssignments: [], tickets: [],
+  subcontractors: [], subcontractorAssignments: [], tickets: [], users: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(),
+  me: { role: null, personId: null, assignedProjectIds: [] },
 };
+
+// Lustrzane odbicie TABLE_SCOPE/can_write z server.py - jawnie tylko UX (ukrywanie przyciskow,
+// ktorych klikniecie i tak skonczy sie 403 z backendu). Backend jest jedynym prawdziwym
+// egzekwowaniem uprawnien i weryfikuje niezaleznie przy kazdym zapisie.
+const TABLE_SCOPE = {
+  projekty: "root_project", zespol: "global", podwykonawcy: "global",
+  przypisania: "project_scoped", harmonogram: "project_scoped", zadania_tickety: "project_scoped",
+  kamienie_milowe: "project_scoped", ryzyka_i_problemy: "project_scoped",
+  raporty_statusowe: "project_scoped", przypisania_podwykonawcow: "project_scoped", users: "admin_only",
+};
+const FULL_ACCESS_ROLES = ["COO", "Admin"];
+
+function can(action, table, row) {
+  const role = STATE.me.role;
+  if (FULL_ACCESS_ROLES.includes(role)) return true;
+  const scope = TABLE_SCOPE[table];
+  if (scope === "admin_only" || !scope) return false;
+  if (role === "Specjalista") {
+    if (table !== "zadania_tickety" || action === "delete") return false;
+    // brak row (np. przycisk na zbiorczej zakladce Zadania, bez wybranego projektu) - pokaz;
+    // z konkretnym projektem w kontekscie (karta projektu) - tylko jesli to jeden z jej/jego projektow
+    if (action === "create") return row ? STATE.me.assignedProjectIds.includes(row.ID_Projektu) : true;
+    return row && row.ID_Osoby_przypisanej === STATE.me.personId;
+  }
+  if (role === "Architekt_PM") {
+    if (table === "zespol") return false;
+    if (table === "projekty" && action === "delete") return false;
+    if (table === "podwykonawcy") return action !== "delete";
+    if (table === "projekty" && action === "create") return true;
+    return row ? STATE.me.assignedProjectIds.includes(row.ID_Projektu) : true;
+  }
+  return false; // rola jeszcze nie przypisana (Oczekujące) - nigdy nie powinno tu dotrzec
+}
+
+function applyRoleGating() {
+  $all("[data-roles]").forEach(el => {
+    el.style.display = el.dataset.roles.split(",").includes(STATE.me.role) ? "" : "none";
+  });
+}
 
 const TYPE_COLORS = {
   "Projekt koncepcyjny": "cat-1",
@@ -169,15 +209,19 @@ function typeTag(type) {
 
 /* ---------------------------------------------------------------- backend API (Flask + SQLite) */
 async function apiRequest(method, path, body) {
+  const headers = { "X-Requested-With": "fetch" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   const resp = await fetch(path, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!resp.ok) {
     let message = `${method} ${path} -> ${resp.status}`;
     try { const err = await resp.json(); if (err.error) message = err.error; } catch (e) { /* brak JSON w odpowiedzi bledu */ }
-    throw new Error(message);
+    const httpError = new Error(message);
+    httpError.status = resp.status;
+    throw httpError;
   }
   if (resp.status === 204) return null;
   return resp.json();
@@ -231,6 +275,8 @@ function reindex() {
   STATE.subcontractorById = new Map(STATE.subcontractors.map(s => [s.ID_Podwykonawcy, s]));
 }
 
+const ROLE_LABELS = { Specjalista: "Specjalista", Architekt_PM: "Architekt/PM", COO: "COO", Admin: "Admin" };
+
 function showDashboard() {
   $("#emptyState").style.display = "none";
   $("#tabs").style.display = "flex";
@@ -238,10 +284,16 @@ function showDashboard() {
   $("#btnPrint").style.display = "inline-block";
   $("#btnExport").style.display = "inline-block";
   $("#btnExecReport").style.display = "inline-block";
+  $("#userMenu").style.display = "flex";
 }
 
 function updateFileInfo() {
   $("#fileInfo").innerHTML = `🔗 Połączono z serwerem · ${STATE.projects.length} projektów`;
+}
+
+function updateUserMenu() {
+  $("#userMenuName").textContent = STATE.me.name || STATE.me.email || "";
+  $("#userMenuRole").textContent = ROLE_LABELS[STATE.me.role] || STATE.me.role || "";
 }
 
 async function loadFromApi() {
@@ -252,10 +304,15 @@ async function loadFromApi() {
   STATE.statusReports = data.statusReports || [];
   STATE.subcontractors = data.subcontractors || []; STATE.subcontractorAssignments = data.subcontractorAssignments || [];
   STATE.tickets = data.tickets || [];
+  STATE.me = {
+    role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
+    assignedProjectIds: data.me.assignedProjectIds || [],
+  };
   Object.keys(DATE_FIELDS).forEach(key => reviveDates(STATE[key], DATE_FIELDS[key]));
   reindex();
   showDashboard();
   updateFileInfo();
+  updateUserMenu();
   renderAll();
 }
 
@@ -267,6 +324,44 @@ function showConnectionError(err) {
        i trzymaj go uruchomionego, a następnie odśwież tę stronę.</p>
     <p style="color:var(--text-muted);font-size:12px">${esc(err.message || String(err))}</p>`;
   $("#emptyState").style.display = "block";
+}
+
+function showLoginScreen(googleEnabled) {
+  $("#emptyState").innerHTML = `
+    <h2>Zaloguj się</h2>
+    <form id="loginForm" style="max-width:320px;margin:20px auto;text-align:left;display:flex;flex-direction:column;gap:12px">
+      <label class="f-label">E-mail<input type="email" id="loginEmail" required autocomplete="username"></label>
+      <label class="f-label">Hasło<input type="password" id="loginPassword" required autocomplete="current-password"></label>
+      <div id="loginError" style="color:var(--status-critical);font-size:12.5px;min-height:16px"></div>
+      <button type="submit">Zaloguj się</button>
+      ${googleEnabled ? `<button type="button" class="secondary" id="btnGoogleLogin">Zaloguj się przez Google</button>` : ""}
+    </form>
+  `;
+  $("#emptyState").style.display = "block";
+  $("#loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("#loginError").textContent = "";
+    try {
+      await apiPost("/api/auth/login", { email: $("#loginEmail").value, password: $("#loginPassword").value });
+      await boot();
+    } catch (err) {
+      $("#loginError").textContent = err.message || "Nie udało się zalogować.";
+    }
+  });
+  if (googleEnabled) {
+    $("#btnGoogleLogin").addEventListener("click", () => { window.location.href = "/api/auth/google/login"; });
+  }
+}
+
+function showPendingScreen(me) {
+  $("#emptyState").innerHTML = `
+    <h2>Konto oczekuje na zatwierdzenie</h2>
+    <p>Zalogowano jako <b>${esc(me.email)}</b>, ale administrator jeszcze nie nadał Ci roli w systemie.
+       Skontaktuj się z Adminem lub COO, żeby uzyskać dostęp.</p>
+    <button class="secondary" id="btnPendingLogout">Wyloguj</button>
+  `;
+  $("#emptyState").style.display = "block";
+  $("#btnPendingLogout").addEventListener("click", async () => { await apiPost("/api/auth/logout"); window.location.reload(); });
 }
 
 /* ---------------------------------------------------------------- eksport do Excela (recznie, migawka) */
@@ -763,7 +858,7 @@ function renderProjects() {
           <button type="button" class="view-toggle-btn ${view === "cards" ? "active" : ""}" data-proj-view="cards">Karty</button>
           <button type="button" class="view-toggle-btn ${view === "tabela" ? "active" : ""}" data-proj-view="tabela">Tabela wg architekta</button>
         </div>
-        <button data-add-project="1">+ Nowy projekt</button>
+        ${can("create", "projekty") ? `<button data-add-project="1">+ Nowy projekt</button>` : ""}
       </div>
     </div>
     ${renderProjectsFilters()}
@@ -805,7 +900,7 @@ function renderTeam() {
       </div>`;
   });
   $("#view-zespol").innerHTML = `
-    <div class="section-head"><h2>Zespół</h2><button data-add-team="1">+ Dodaj osobę</button></div>
+    <div class="section-head"><h2>Zespół</h2>${can("create", "zespol") ? `<button data-add-team="1">+ Dodaj osobę</button>` : ""}</div>
     <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak osób w zespole — kliknij „+ Dodaj osobę”.</div>`}</div>
   `;
 }
@@ -837,7 +932,7 @@ function renderSubcontractors() {
   });
   const branze = Array.from(new Set(STATE.subcontractors.map(s => s.Branza).filter(Boolean)));
   $("#view-podwykonawcy").innerHTML = `
-    <div class="section-head"><h2>Podwykonawcy (biblioteka branżystów)</h2><button data-add-subcontractor="1">+ Dodaj podwykonawcę</button></div>
+    <div class="section-head"><h2>Podwykonawcy (biblioteka branżystów)</h2>${can("create", "podwykonawcy") ? `<button data-add-subcontractor="1">+ Dodaj podwykonawcę</button>` : ""}</div>
     <div class="filters">
       <select id="fSubBranza"><option value="">Wszystkie branże</option>${branze.map(b => `<option ${subFilters.branza === b ? "selected" : ""}>${esc(b)}</option>`).join("")}</select>
       <select id="fSubStatus"><option value="">Wszystkie statusy</option>${STATUSY_PODWYKONAWCOW.map(s => `<option ${subFilters.status === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
@@ -856,7 +951,7 @@ function ticketCardHtml(t) {
   const overdue = isOverdueTicket(t);
   const isSub = !!t.ID_Podwykonawcy;
   return `
-    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue ? "overdue" : ""}" draggable="true" data-drag-ticket="${esc(t.ID_Tickietu)}" data-open-ticket="${esc(t.ID_Tickietu)}">
+    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue ? "overdue" : ""}" draggable="${can("update", "zadania_tickety", t)}" data-drag-ticket="${esc(t.ID_Tickietu)}" data-open-ticket="${esc(t.ID_Tickietu)}">
       <div class="kc-title">${esc(t.Tytul)}</div>
       <div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>
       <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)}</div>
@@ -899,7 +994,7 @@ function renderTickets() {
           <button type="button" class="view-toggle-btn ${view === "kanban" ? "active" : ""}" data-tk-view="kanban">Kanban</button>
           <button type="button" class="view-toggle-btn ${view === "lista" ? "active" : ""}" data-tk-view="lista">Lista</button>
         </div>
-        <button data-add-ticket="">+ Nowy ticket</button>
+        ${can("create", "zadania_tickety") ? `<button data-add-ticket="">+ Nowy ticket</button>` : ""}
       </div>
     </div>
     <div class="filters">
@@ -943,6 +1038,7 @@ function renderTickets() {
 async function moveTicketToStatus(tid, newStatus) {
   const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
   if (!t || t.Status === newStatus || !KANBAN_KOLUMNY.includes(newStatus)) return;
+  if (!can("update", "zadania_tickety", t)) return; // unika bezuzytecznego 403 z proba optymistycznej zmiany
   const prevStatus = t.Status, prevDone = t.Data_zakonczenia;
   t.Status = newStatus;
   t.Data_zakonczenia = deriveTicketCompletionDate(newStatus, t.Data_zakonczenia);
@@ -1835,8 +1931,8 @@ function openProjectDetail(pid) {
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
       <div class="type-tag" style="margin-bottom:6px">${typeTag(p.Typ_projektu)} &nbsp;·&nbsp; ${esc(p.Segment || "")}</div>
       <div class="item-actions" style="position:static">
-        <button class="icon-btn" data-edit-project="${esc(pid)}">Edytuj</button>
-        <button class="icon-btn danger" data-delete-project="${esc(pid)}">Usuń</button>
+        ${can("update", "projekty", p) ? `<button class="icon-btn" data-edit-project="${esc(pid)}">Edytuj</button>` : ""}
+        ${can("delete", "projekty", p) ? `<button class="icon-btn danger" data-delete-project="${esc(pid)}">Usuń</button>` : ""}
       </div>
     </div>
     <h2>${esc(p.Nazwa)}</h2>
@@ -1931,12 +2027,12 @@ function openProjectDetail(pid) {
 
     <div class="dp-section">
       <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Zespół projektowy (${assigns.length})</h4>
-        <button class="icon-btn" data-add-assignment="${esc(pid)}">+ Dodaj do zespołu</button></div>
+        ${can("create", "przypisania", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-assignment="${esc(pid)}">+ Dodaj do zespołu</button>` : ""}</div>
       ${assigns.map(a => `
         <div class="dp-list-item">
           <div class="item-actions">
-            <button class="icon-btn" data-edit-assignment="${esc(a.ID_Przypisania)}" data-project="${esc(pid)}">Edytuj</button>
-            <button class="icon-btn danger" data-delete-assignment="${esc(a.ID_Przypisania)}" data-project="${esc(pid)}">Usuń</button>
+            ${can("update", "przypisania", a) ? `<button class="icon-btn" data-edit-assignment="${esc(a.ID_Przypisania)}" data-project="${esc(pid)}">Edytuj</button>` : ""}
+            ${can("delete", "przypisania", a) ? `<button class="icon-btn danger" data-delete-assignment="${esc(a.ID_Przypisania)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">${esc(personName(a.ID_Osoby))} — ${esc(a.Rola_w_projekcie)}</div>
           <div class="meta">${pctOrDash(a.Procent_zaangazowania)} zaangażowania · od ${fmtDateShort(a.Data_od)} · ${esc(a.Status)}</div>
@@ -1945,12 +2041,12 @@ function openProjectDetail(pid) {
 
     <div class="dp-section">
       <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Podwykonawcy / branżyści (${subAssigns.length})</h4>
-        <button class="icon-btn" data-add-subcontractor-assignment="${esc(pid)}">+ Przypisz podwykonawcę</button></div>
+        ${can("create", "przypisania_podwykonawcow", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-subcontractor-assignment="${esc(pid)}">+ Przypisz podwykonawcę</button>` : ""}</div>
       ${subAssigns.map(a => `
         <div class="dp-list-item">
           <div class="item-actions">
-            <button class="icon-btn" data-edit-subcontractor-assignment="${esc(a.ID_Przypisania_Podw)}" data-project="${esc(pid)}">Edytuj</button>
-            <button class="icon-btn danger" data-delete-subcontractor-assignment="${esc(a.ID_Przypisania_Podw)}" data-project="${esc(pid)}">Usuń</button>
+            ${can("update", "przypisania_podwykonawcow", a) ? `<button class="icon-btn" data-edit-subcontractor-assignment="${esc(a.ID_Przypisania_Podw)}" data-project="${esc(pid)}">Edytuj</button>` : ""}
+            ${can("delete", "przypisania_podwykonawcow", a) ? `<button class="icon-btn danger" data-delete-subcontractor-assignment="${esc(a.ID_Przypisania_Podw)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">${esc(subcontractorName(a.ID_Podwykonawcy))} — ${esc(a.Branza)} ${badge(a.Status, subAssignmentStatusBadge(a.Status))}</div>
           <div class="meta">${esc(a.Zakres_prac)}</div>
@@ -1960,11 +2056,11 @@ function openProjectDetail(pid) {
 
     <div class="dp-section">
       <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Zadania / tickety (${tickets.length})</h4>
-        <button class="icon-btn" data-add-ticket="${esc(pid)}">+ Nowy ticket</button></div>
+        ${can("create", "zadania_tickety", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-ticket="${esc(pid)}">+ Nowy ticket</button>` : ""}</div>
       ${tickets.length ? tickets.slice().sort((a, b) => (a.Termin?.getTime() || 0) - (b.Termin?.getTime() || 0)).map(t => `
         <div class="dp-list-item" data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:pointer">
           <div class="item-actions">
-            <button class="icon-btn danger" data-delete-ticket="${esc(t.ID_Tickietu)}" data-project="${esc(pid)}">Usuń</button>
+            ${can("delete", "zadania_tickety", t) ? `<button class="icon-btn danger" data-delete-ticket="${esc(t.ID_Tickietu)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">${esc(t.ID_Tickietu)} — ${esc(t.Tytul)} ${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))}</div>
           <div class="meta">${ticketAssigneeLabel(t)} · termin ${fmtDate(t.Termin)} · ${esc(t.Priorytet)}${t.Szacowane_roboczogodziny ? " · " + t.Szacowane_roboczogodziny + " rbh szac." : ""}${t.Rzeczywiste_roboczogodziny ? " / " + t.Rzeczywiste_roboczogodziny + " rbh rzecz." : ""}</div>
@@ -1982,11 +2078,11 @@ function openProjectDetail(pid) {
 
     <div class="dp-section">
       <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Ryzyka i problemy (${risks.length})</h4>
-        <button class="icon-btn" data-add-risk="${esc(pid)}">+ Dodaj ryzyko/problem</button></div>
+        ${can("create", "ryzyka_i_problemy", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-risk="${esc(pid)}">+ Dodaj ryzyko/problem</button>` : ""}</div>
       ${risks.map(r => `
-        <div class="dp-list-item" data-edit-risk="${esc(r.ID)}" data-project="${esc(pid)}" style="cursor:pointer">
+        <div class="dp-list-item" ${can("update", "ryzyka_i_problemy", r) ? `data-edit-risk="${esc(r.ID)}" data-project="${esc(pid)}" style="cursor:pointer"` : ""}>
           <div class="item-actions">
-            <button class="icon-btn danger" data-delete-risk="${esc(r.ID)}" data-project="${esc(pid)}">Usuń</button>
+            ${can("delete", "ryzyka_i_problemy", r) ? `<button class="icon-btn danger" data-delete-risk="${esc(r.ID)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">${esc(r.Opis)} ${badge(r.Status, riskStatusBadge(r.Status))}</div>
           <div class="meta">${esc(r.Typ)} · ${esc(r.Kategoria)} · właściciel: ${esc(personName(r.ID_Osoby_wlasciciela))}</div>
@@ -1996,7 +2092,7 @@ function openProjectDetail(pid) {
 
     <div class="dp-section">
       <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Harmonogram projektu (${tasks.length})</h4>
-        <button class="icon-btn" data-add-task="${esc(pid)}">+ Dodaj etap</button></div>
+        ${can("create", "harmonogram", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-task="${esc(pid)}">+ Dodaj etap</button>` : ""}</div>
       ${tasks.length ? buildGantt(tasks, { hideGroupHeader: true }) : `<div class="empty-hint">Brak etapów — kliknij „+ Dodaj etap”, żeby zbudować harmonogram (Gantt).</div>`}
     </div>
 
@@ -2026,8 +2122,8 @@ function openPersonDetail(oid) {
   const myTickets = ticketsForPerson(oid).sort((a, b) => (a.Termin?.getTime() || 0) - (b.Termin?.getTime() || 0));
   $("#dpContent").innerHTML = `
     <div style="display:flex;justify-content:flex-end;gap:6px">
-      <button class="icon-btn" data-edit-team="${esc(oid)}">Edytuj</button>
-      <button class="icon-btn danger" data-delete-team="${esc(oid)}">Usuń</button>
+      ${can("update", "zespol") ? `<button class="icon-btn" data-edit-team="${esc(oid)}">Edytuj</button>` : ""}
+      ${can("delete", "zespol") ? `<button class="icon-btn danger" data-delete-team="${esc(oid)}">Usuń</button>` : ""}
     </div>
     <h2>${esc(person.Imie_i_nazwisko)}</h2>
     <div class="dp-sub">${esc(person.Stanowisko_Rola)} · ${esc(person.Dzial)}</div>
@@ -2067,8 +2163,8 @@ function openSubcontractorDetail(sid) {
   const ot = subcontractorOnTimeStats(sid);
   $("#dpContent").innerHTML = `
     <div style="display:flex;justify-content:flex-end;gap:6px">
-      <button class="icon-btn" data-edit-subcontractor="${esc(sid)}">Edytuj</button>
-      <button class="icon-btn danger" data-delete-subcontractor="${esc(sid)}">Usuń</button>
+      ${can("update", "podwykonawcy", sub) ? `<button class="icon-btn" data-edit-subcontractor="${esc(sid)}">Edytuj</button>` : ""}
+      ${can("delete", "podwykonawcy", sub) ? `<button class="icon-btn danger" data-delete-subcontractor="${esc(sid)}">Usuń</button>` : ""}
     </div>
     <h2>${esc(sub.Nazwa)}</h2>
     <div class="dp-sub">${esc(sub.Branza)} · ${esc(sub.Typ_wspolpracy)}</div>
@@ -2132,6 +2228,9 @@ function renderAll() {
   renderTickets();
   renderGanttView();
   renderRyzyka();
+  // Kazdy render*() odbudowuje swoj kawalek DOM od zera (innerHTML), wiec [data-roles] trzeba
+  // ponownie wymietc na koniec kazdego pelnego przebiegu, nie tylko raz po boot().
+  applyRoleGating();
 }
 
 /* ---------- Nowoczesny kalendarz (date picker) ---------- */
@@ -2492,12 +2591,26 @@ window.addEventListener("afterprint", () => document.body.classList.remove("repo
 $("#btnPrint").addEventListener("click", () => window.print());
 $("#btnExport").addEventListener("click", exportToExcel);
 $("#btnExecReport").addEventListener("click", generateExecutiveReport);
+$("#btnLogout").addEventListener("click", async () => {
+  await apiPost("/api/auth/logout").catch(() => {});
+  window.location.reload();
+});
 
 /* ---------------------------------------------------------------- boot */
-(async function boot() {
+async function boot() {
   try {
+    const config = await apiGet("/api/auth/config").catch(() => ({ googleEnabled: false }));
+    let me;
+    try {
+      me = await apiGet("/api/auth/me");
+    } catch (e) {
+      if (e.status === 401) { showLoginScreen(config.googleEnabled); return; }
+      throw e;
+    }
+    if (me.pending) { showPendingScreen(me); return; }
     await loadFromApi();
   } catch (e) {
     showConnectionError(e);
   }
-})();
+}
+boot();
