@@ -12,7 +12,7 @@ baza_danych/excel_to_sqlite.py (jednorazowa migracja z Baza_Projektow.xlsx)
 albo baza_danych/schema.sql (pusty schemat).
 
 Uruchomienie:  python3 server.py
-Otwiera:       http://localhost:8000/dashboard/index.html
+Otwiera:       http://localhost:8000/
 Zatrzymanie:   Ctrl+C
 """
 
@@ -716,9 +716,11 @@ def _serve(path):
 
 @app.route("/")
 def index():
-    # Osobny endpoint (nie redirect!) - inaczej Werkzeug traktuje "/" i
-    # "/dashboard/index.html" jako ten sam endpoint i przekierowuje 308 do "/",
-    # co psuje wzgledne sciezki zasobow w index.html (style.css, app.js, vendor/...).
+    # Osobny endpoint (nie redirect!) - laczenie "/" i "/<path:path>" w jeden endpoint przez
+    # Werkzeug (np. defaults={}) powoduje przekierowanie 308 miedzy nimi. Kiedys to psulo
+    # wzgledne sciezki zasobow w index.html; dzis zasoby sa odwolywane sciezkami bezwzglednymi
+    # (/dashboard/...), wiec dzialaja niezaleznie od URL-a strony - ale dwa endpointy zostaja,
+    # bo to nadal prostszy, jawny kod niz sztuczka z defaults={}.
     return _serve("dashboard/index.html")
 
 
@@ -731,7 +733,7 @@ def main():
     # ensure_database_ready() i backup_on_startup() juz sie wykonaly przy imporcie modulu
     # (patrz wyzej) - tutaj tylko lokalny wygodny dodatek (banner, otwarcie przegladarki),
     # nie wolany w ogole pod gunicornem/Render.
-    url = f"http://localhost:{PORT}/dashboard/index.html"
+    url = f"http://localhost:{PORT}/"
     print("=" * 60)
     print("Serwer działa. Dashboard:")
     print(f"  {url}")
