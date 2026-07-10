@@ -191,6 +191,42 @@ def close_db(_exc):
         db.close()
 
 
+# CSP dopasowane do tego, co appka faktycznie laduje (audyt bezpieczenstwa: zero naglowkow
+# bezpieczenstwa wczesniej) - script-src BEZ 'unsafe-inline' dziala, bo caly JS jest w
+# plikach (zero inline <script>/onclick, jedyny znaleziony przypadek onclick zostal
+# przepisany na delegowany listener przy tej samej okazji). style-src potrzebuje
+# 'unsafe-inline' - app.js generuje mnostwo inline style="" na elementach, przepisanie
+# tego na klasy CSS to osobny, znacznie wiekszy refaktor. connect-src dopuszcza jawnie
+# tylko CEIDG (jedyne zewnetrzne wywolanie fetch() w calej appce, patrz przycisk "Pobierz
+# z CEIDG"). frame-ancestors 'none' + X-Frame-Options: DENY = podwojna, nadmiarowa ochrona
+# przed clickjackingiem (nowe i stare przegladarki).
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self' https://dane.biznes.gov.pl; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
+
+@app.after_request
+def security_headers(resp):
+    resp.headers["Content-Security-Policy"] = _CSP
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "same-origin"
+    # HSTS ma sens tylko na wdrozeniu za TLS (DATABASE_PATH ustawione = Render, patrz ta
+    # sama konwencja co SESSION_COOKIE_SECURE wyzej) - lokalnie po zwyklym http:// wymuszalby
+    # HTTPS na localhost, co zepsuloby dev bez TLS.
+    if os.environ.get("DATABASE_PATH"):
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return resp
+
+
 _table_columns_cache = {}
 
 
@@ -997,6 +1033,15 @@ def admin_reset_password(item_id):
     new_password = data.get("new_password") or ""
     if len(new_password) < 8:
         return jsonify({"error": "Nowe hasło musi mieć co najmniej 8 znaków."}), 400
+    # Step-up: reset cudzego hasla wymaga potwierdzenia WLASNEGO hasla wywolujacego admina -
+    # bez tego skradzione (ale wciaz wazne) ciasteczko sesji admina pozwalaloby od razu
+    # przejac dowolne inne konto, w tym inne konta admin, bez znajomosci jakiegokolwiek
+    # hasla (audyt bezpieczenstwa, 2026-07-10). Konta zalozone wylacznie przez Google (brak
+    # Haslo_Hash) nie maja czego potwierdzic - fail-closed, nie pomijaj checku.
+    admin_password = data.get("admin_password") or ""
+    stored_hash = g.user["Haslo_Hash"] or _DUMMY_PASSWORD_HASH
+    if not g.user["Haslo_Hash"] or not check_password_hash(stored_hash, admin_password):
+        return jsonify({"error": "Potwierdź własne hasło, żeby zresetować hasło innego konta."}), 403
     conn.execute(
         "UPDATE users SET Haslo_Hash = ? WHERE ID_Uzytkownika = ?",
         (generate_password_hash(new_password, method=PASSWORD_HASH_METHOD), item_id),

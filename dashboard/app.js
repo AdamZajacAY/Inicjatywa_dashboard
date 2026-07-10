@@ -1400,20 +1400,24 @@ async function saveUserFromForm(data, uid) {
 }
 
 function resetUserPassword(uid, isInitial = false) {
+  // Drugie pole (wlasne haslo wywolujacego) - backend wymaga go jako potwierdzenia
+  // step-up przy resecie cudzego hasla (audyt bezpieczenstwa, 2026-07-10): bez tego
+  // skradzione ciasteczko sesji admina wystarczyloby do przejecia dowolnego konta.
   const body = fInput(
     isInitial ? "Hasło początkowe (min. 8 znaków)" : "Nowe hasło (min. 8 znaków)",
     "new_password", "", "password", "required minlength=8"
-  );
+  ) + fInput("Twoje hasło (potwierdzenie)", "admin_password", "", "password", "required autocomplete=current-password");
   openModal(isInitial ? "Ustaw hasło początkowe" : "Zresetuj hasło", body, {
     submitLabel: "Ustaw hasło",
-    onSubmit: (data) => submitNewPassword(uid, data.new_password),
+    onSubmit: (data) => submitNewPassword(uid, data.new_password, data.admin_password),
   });
 }
 
-async function submitNewPassword(uid, pw) {
+async function submitNewPassword(uid, pw, adminPassword) {
   if (!pw || pw.length < 8) { alert("Hasło musi mieć co najmniej 8 znaków."); return; }
+  if (!adminPassword) { alert("Potwierdź własne hasło, żeby kontynuować."); return; }
   try {
-    await apiPost(`/api/users/${uid}/reset-password`, { new_password: pw });
+    await apiPost(`/api/users/${uid}/reset-password`, { new_password: pw, admin_password: adminPassword });
     closeModal();
     alert("Hasło zostało ustawione.");
   } catch (e) {
@@ -2368,7 +2372,7 @@ function openProjectDetail(pid) {
     ${p.Komentarz ? `<div class="dp-section"><h4>Komentarz PMO</h4><div style="font-size:13px">${esc(p.Komentarz)}</div></div>` : ""}
 
     <div class="dp-section">
-      <button onclick="window.print()">Drukuj kartę projektu</button>
+      <button data-print-view="1">Drukuj kartę projektu</button>
     </div>
   `;
   $("#overlay").classList.add("open");
@@ -2618,6 +2622,8 @@ document.addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("click", (e) => {
+  const printView = e.target.closest("[data-print-view]");
+  if (printView) { window.print(); return; }
   const dateTrigger = e.target.closest(".date-input");
   if (dateTrigger) { openDatePicker(dateTrigger); return; }
   const dpPrev = e.target.closest("[data-dp-prev]");
