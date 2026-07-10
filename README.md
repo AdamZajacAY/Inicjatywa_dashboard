@@ -46,7 +46,7 @@ dashboard/
    konto **Admin**. Z tego konta nadajesz potem role kolejnym osobom (zakładka „Użytkownicy”).
 4. W terminalu, w tym katalogu: `python3 server.py` — **trzymaj ten proces uruchomiony** przez
    cały czas pracy z dashboardem (to jest teraz prawdziwy backend, nie tylko serwer plików).
-   Otworzy się przeglądarka pod `http://localhost:8000/dashboard/index.html` z ekranem logowania.
+   Otworzy się przeglądarka pod `http://localhost:8000/` z ekranem logowania.
    Zatrzymanie: `Ctrl+C` w terminalu.
 5. Zaloguj się kontem Admina z kroku 3. Gotowe — zobaczysz sidebar po lewej (Przegląd, Projekty,
    Zespół, Podwykonawców, Zadania, Gantt, Ryzyka, Użytkownicy) i wszystko działa jak wcześniej.
