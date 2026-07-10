@@ -103,8 +103,12 @@ dict_cols = {
                         "Projekt wykonawczy", "Nadzor autorski", "Konkurs", "Projekt techniczny (PT)", "Inne"],
     "Funkcje_biura": ["Projektant wiodacy", "Nadzor autorski", "Analiza/doradztwo", "Uczestnik konkursu", "Koordynacja branzowa"],
     "Statusy_projektu": ["Planowanie", "W realizacji", "Wstrzymany", "Zakonczony", "Anulowany"],
-    "Fazy": ["Koncepcja", "Analiza", "Projektowanie", "Pozwolenia/Przetarg", "Budowa", "Zakonczenie",
-             "Konkurs - etap studialny", "Konkurs - etap II"],
+    # Zsynchronizowane z ENUM_FIELDS["projekty"]["Faza"] w server.py (2026-07-10) - "Projektowanie"
+    # i "Pozwolenia/Przetarg" zastapione szczegolowymi fazami, "Konkurs - etap studialny" ->
+    # "... etap I (studialny)" dla symetrii z etapem II.
+    "Fazy": ["Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs - etap I (studialny)",
+             "Konkurs - etap II", "Koncepcja", "Projekt budowlany", "Projekt techniczny",
+             "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzor autorski", "Zakonczenie"],
     "RAG": ["Zielony", "Zolty", "Czerwony"],
     "Priorytety": ["Wysoki", "Sredni", "Niski"],
     "Role_w_projekcie": ["Sponsor", "Owner", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"],
@@ -199,6 +203,14 @@ proj_headers = [
 write_header(ws_proj, proj_headers)
 U = dt.date(2026, 7, 7)  # data kompilacji danych ("Data_ostatniej_aktualizacji")
 
+# UWAGA (2026-07-10): kilka wierszy ponizej ma Faza="Projektowanie"/"Pozwolenia/Przetarg"/
+# "Konkurs - etap studialny" - te trzy wartosci zostaly zastapione szczegolowymi fazami (patrz
+# slownik "Fazy" wyzej), ale wybor KTOREJ konkretnej nowej fazy (Projekt budowlany/techniczny/
+# wykonawczy/Nadzor autorski, Konkurs - etap I) pasuje do kazdego z tych projektow to decyzja
+# biznesowa, nie techniczna - celowo nie zgadywana tutaj. Jesli ten skrypt zostanie kiedys
+# ponownie uruchomiony do zasilenia swiezego srodowiska, te konkretne wiersze wymagaja recznego
+# przejrzenia i uzupelnienia przed importem (ten sam stan co jeden istniejacy projekt produkcyjny,
+# patrz DEPLOY_RENDER.md/historia commitow).
 proj_rows = [
     ["JB-01", "Slowackiego 108", "Projekt wykonawczy", "Projektant wiodacy", None, "Jan B", "Jan B",
      "W realizacji", "Projektowanie", None, "Zielony",

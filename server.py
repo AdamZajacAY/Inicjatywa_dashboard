@@ -253,6 +253,11 @@ def parse_payload(conn, table, exclude=()):
 
 FULL_ACCESS_ROLES = {"COO", "Admin"}
 VALID_ROLES = {None, "Specjalista", "Architekt_PM", "COO", "Admin"}
+# Role, ktorych odczyt jest zawezony do wlasnych projektow i pozbawiony pol finansowych
+# (patrz scoped_rows()/redact_row()) - jedna definicja zamiast dwoch niezaleznych porownan
+# do literalu "Specjalista" (audyt: latwo dopisac druga zawezona role w jednym miejscu
+# i przeoczyc drugie).
+PORTFOLIO_RESTRICTED_ROLES = {"Specjalista"}
 
 # "global" = ta sama tabela dla wszystkich (np. rejestr zespolu), "root_project" = sama
 # tabela projekty (jej wlasny PK ID_Projektu = "czyj to projekt"), "project_scoped" = ma
@@ -300,7 +305,7 @@ def assigned_project_ids(conn, person_id):
     return {r["ID_Projektu"] for r in rows}
 
 
-def scoped_rows(conn, user, table, rows):
+def scoped_rows(conn, user, table, rows, allowed=None):
     # Specjalista czytal dotad CALY portfel (redagowane byly tylko pola finansowe) - zaweniete
     # na wprost zadanie uzytkownika do wlasnych projektow (przez przypisania), zeby nazwa
     # klienta/opis ryzyka/tresc raportu statusowego projektu, przy ktorym nie pracuje, tez nie
@@ -308,9 +313,13 @@ def scoped_rows(conn, user, table, rows):
     # wczesniejsza, swiadoma konfiguracja - to zawezenie dotyczy wylacznie Specjalisty).
     # zespol/podwykonawcy (scope "global") i users (scope "admin_only") zostaja bez zmian -
     # to wspoldzielone rejestry, nie dane "nalezace" do jednego projektu.
-    if user["Rola"] != "Specjalista" or TABLE_SCOPE.get(table) not in ("root_project", "project_scoped"):
+    # `allowed` opcjonalnie z gory wyliczone przez wolajacego (patrz bootstrap()) - unika
+    # przeliczania tego samego SELECT-u raz na kazda z 8 project_scoped/root_project tabel
+    # (audyt: 9 identycznych zapytan na jeden bootstrap Specjalisty bez tego).
+    if user["Rola"] not in PORTFOLIO_RESTRICTED_ROLES or TABLE_SCOPE.get(table) not in ("root_project", "project_scoped"):
         return rows
-    allowed = assigned_project_ids(conn, user["ID_Osoby"])
+    if allowed is None:
+        allowed = assigned_project_ids(conn, user["ID_Osoby"])
     return [r for r in rows if r["ID_Projektu"] in allowed]
 
 
@@ -351,21 +360,30 @@ def redact_row(user, table, row):
         return None
     for field in ALWAYS_STRIP_FIELDS.get(table, ()):
         row.pop(field, None)
-    if user["Rola"] == "Specjalista":
+    if user["Rola"] in PORTFOLIO_RESTRICTED_ROLES:
         for field in FINANCIAL_FIELDS.get(table, ()):
             if field in row:
                 row[field] = None
     return row
 
 
+# Komunikaty dla konkretnych "table.kolumna" z UNIQUE constraint - dopasowywane przez
+# podciag do tekstu sqlite3.IntegrityError. Rejestr zamiast "if table == X" w
+# integrity_error_message() (audyt) - kolejny przyjazny komunikat to nowy wpis, nie nowa galaz.
+UNIQUE_CONSTRAINT_MESSAGES = {
+    "users.Email": "Ten adres e-mail jest już używany przez inne konto.",
+}
+
+
 def integrity_error_message(e, table):
     # Surowy sqlite3.IntegrityError (nazwy tabel/kolumn - szczegoly schematu) nie powinien
     # wyciekac do klienta przez API - loginujemy oryginal server-side i zwracamy czytelny,
-    # ogolny komunikat po polsku, z jednym swiadomym wyjatkiem (duplikat e-maila), bo to
-    # najczestszy realny przypadek, na ktory warto dac uzytkownikowi konkretna wskazowke.
+    # ogolny komunikat po polsku, ze swiadomymi wyjatkami z UNIQUE_CONSTRAINT_MESSAGES dla
+    # najczestszych realnych przypadkow, na ktore warto dac uzytkownikowi konkretna wskazowke.
     print(f"IntegrityError ({table}): {e}")
-    if table == "users" and "users.Email" in str(e):
-        return "Ten adres e-mail jest już używany przez inne konto."
+    for needle, message in UNIQUE_CONSTRAINT_MESSAGES.items():
+        if needle in str(e):
+            return message
     return "Nie można zapisać — rekord narusza unikalność danych albo relację z innym rekordem."
 
 
@@ -377,6 +395,20 @@ def validate_user_payload(data, existing):
     if merged_role in ("Specjalista", "Architekt_PM") and not merged_person:
         return "Ta rola wymaga powiązania z osobą z zespołu."
     return None
+
+
+# Dwa male rejestry zaczepow per-tabela dla collection()/item() - zamiast rozrzuconych
+# "if table == X: ..." w generycznej fabryce CRUD (audyt: bylo tak zrobione w 3 miejscach
+# dla "users"). Brak wpisu = brak dodatkowego zachowania, wiec collection()/item() nigdy
+# nie wymagaja zmiany przy dopisywaniu kolejnej tabeli tutaj.
+TABLE_VALIDATORS = {
+    "users": validate_user_payload,
+}
+TABLE_CREATE_DEFAULTS = {
+    # Konta zakladane przez create_admin.py i logowanie Google juz stempluja to przy INSERT -
+    # to domyka trzecia sciezke (COO/Admin tworzy konto w samej appce).
+    "users": lambda data, user: data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds")),
+}
 
 
 def _has_full_access(row):
@@ -424,7 +456,7 @@ ENUM_FIELDS = {
         # projekt produkcyjny mial ta wartosc, wymaga recznej aktualizacji w UI po wdrozeniu.
         "Faza": {"Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs - etap I (studialny)",
                  "Konkurs - etap II", "Koncepcja", "Projekt budowlany", "Projekt techniczny",
-                 "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzór autorski", "Zakonczenie"},
+                 "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzor autorski", "Zakonczenie"},
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
         "RAG_Status": {"Zielony", "Zolty", "Czerwony"},
     },
@@ -449,6 +481,11 @@ ENUM_FIELDS = {
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
         "Status": {"Backlog", "W tym tygodniu", "W trakcie", "Do przegladu", "Zrobione",
                     "Zablokowane", "Zarchiwizowane"},
+    },
+    # Audyt: brakowalo tego wpisu (i calego UI tworzenia/edycji w app.js - patrz commit) mimo
+    # ze milestoneStatusBadge() w app.js juz zaklada zamkniety zestaw wartosci.
+    "kamienie_milowe": {
+        "Status": {"Nie rozpoczete", "W trakcie", "Zakonczone", "Zagrozone"},
     },
     "podwykonawcy": {
         "Branza": {"Elektryczna", "Sanitarna/Hydrauliczna", "Gazowa", "Wentylacja i klimatyzacja",
@@ -529,8 +566,15 @@ def _rate_limit_key(email):
 
 def _is_locked_out(key):
     now = time.time()
-    _login_attempts[key] = [t for t in _login_attempts[key] if now - t < LOGIN_LOCKOUT_SECONDS]
-    return len(_login_attempts[key]) >= LOGIN_MAX_ATTEMPTS
+    attempts = [t for t in _login_attempts[key] if now - t < LOGIN_LOCKOUT_SECONDS]
+    # Bez tego kazdy klucz raz odwiedzony (nawet udanym logowaniem za pierwszym razem, bo ta
+    # funkcja jest wolana przed sprawdzeniem hasla) zostawal w defaultdict na zawsze jako pusta
+    # lista - nieograniczony wzrost przez cale zycie procesu (audyt). Pop zamiast trzymania [].
+    if attempts:
+        _login_attempts[key] = attempts
+    else:
+        _login_attempts.pop(key, None)
+    return len(attempts) >= LOGIN_MAX_ATTEMPTS
 
 
 def _record_failed_attempt(key):
@@ -796,12 +840,15 @@ def auth_google_callback():
 def bootstrap():
     conn = get_db()
     result = {}
+    # Raz na caly request - potrzebne i tak nizej dla "me", wiec liczymy raz i podajemy do
+    # kazdego wywolania scoped_rows() zamiast pozwalac mu przeliczac to samo za kazdym razem.
+    allowed_projects = assigned_project_ids(conn, g.user["ID_Osoby"])
     for table, key in BOOTSTRAP_KEYS.items():
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
-        rows = scoped_rows(conn, g.user, table, rows)
+        rows = scoped_rows(conn, g.user, table, rows, allowed=allowed_projects)
         result[key] = [redact_row(g.user, table, dict(r)) for r in rows]
     result["me"] = public_user(g.user)
-    result["me"]["assignedProjectIds"] = sorted(assigned_project_ids(conn, g.user["ID_Osoby"]))
+    result["me"]["assignedProjectIds"] = sorted(allowed_projects)
     return jsonify(result)
 
 
@@ -825,14 +872,14 @@ def collection(table):
     error = validate_field_types_and_ranges(conn, table, data)
     if error:
         return jsonify({"error": error}), 400
-    if table == "users":
-        error = validate_user_payload(data, None)
+    validator = TABLE_VALIDATORS.get(table)
+    if validator:
+        error = validator(data, None)
         if error:
             return jsonify({"error": error}), 400
-        # Konta zakladane przez create_admin.py i logowanie Google juz stempluja to przy
-        # INSERT - tutaj domykamy trzecia sciezke (COO/Admin tworzy konto w samej appce),
-        # zeby Data_utworzenia bylo zawsze ustawione, niezaleznie od tego, co wyslal klient.
-        data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds"))
+    create_default = TABLE_CREATE_DEFAULTS.get(table)
+    if create_default:
+        create_default(data, g.user)
     if prefix:
         data[pk] = next_id(conn, table, pk, prefix, width)
     cols = list(data.keys())
@@ -845,7 +892,11 @@ def collection(table):
     except sqlite3.IntegrityError as e:
         return jsonify({"error": integrity_error_message(e, table)}), 409
     pk_val = data.get(pk) or cur.lastrowid
-    return jsonify(redact_row(g.user, table, fetch_row(conn, table, pk, pk_val))), 201
+    # {**data, pk: pk_val} to dokladnie to, co przed chwila trafilo do bazy (data juz przeszlo
+    # parse_payload, wiec to tylko prawdziwe kolumny) - fetch_row() tutaj bylby zbednym SELECT-em
+    # odczytujacym z powrotem to, co juz mamy w pamieci (audyt: brak triggerow/wartosci
+    # generowanych przez SQLite poza pk_val, ktore i tak jawnie dokladamy).
+    return jsonify(redact_row(g.user, table, {**data, pk: pk_val})), 201
 
 
 @app.route("/api/<table>/<path:item_id>", methods=["PUT", "DELETE"])
@@ -860,8 +911,10 @@ def item(table, item_id):
         abort(404)
 
     if request.method == "DELETE":
-        if table == "projekty" and g.user["Rola"] not in FULL_ACCESS_ROLES:
-            abort(403)  # kaskadowe usuniecie - nawet PM nie usuwa wlasnego projektu
+        # can_write() juz odmawia PM-owi/Specjaliscie usuniecia projektu (kaskadowe usuniecie
+        # zbyt ryzykowne nawet dla wlasnego) - byl tu przedtem redundantny pre-check tej samej
+        # regoly osobnym warunkiem, ktory mogl po cichu rozjechac sie z can_write() przy
+        # kolejnej zmianie jednego bez drugiego (znalezione audytem).
         if not can_write(conn, g.user, "delete", table, existing):
             abort(403)
         if table == "users":
@@ -883,19 +936,23 @@ def item(table, item_id):
     data = parse_payload(conn, table, exclude={pk})
     if not data:
         return jsonify({"error": "Brak pól do aktualizacji"}), 400
-    # jesli payload zmienia pole zakresu (ID_Projektu), sprawdz uprawnienia TEZ na obrazie
-    # po zmianie - inaczej dawaloby sie "wypchnac"/"wciagnac" wiersz do projektu bez dostepu,
-    # sprawdzajac tylko stan sprzed edycji
-    if "ID_Projektu" in data and data["ID_Projektu"] != existing.get("ID_Projektu"):
-        if not can_write(conn, g.user, "update", table, {**existing, **data}):
-            abort(403)
+    # Sprawdz uprawnienia TEZ na obrazie PO zmianie, nie tylko przed - inaczej dawaloby sie
+    # "wypchnac"/"wciagnac" wiersz poza dostep zmieniajac dowolne pole, od ktorego zalezy
+    # can_write() (nie tylko ID_Projektu - audyt wykazal, ze Specjalista mogl tak samo
+    # "oddac" wlasny ticket zmieniajac ID_Osoby_przypisanej, bo byl sprawdzany tylko stan
+    # sprzed edycji). Tanie w koszcie (jedno zapytanie wiecej tylko gdy payload cokolwiek
+    # zmienia) i odporne na kazde przyszle pole, nie tylko te dwa, ktore juz znamy.
+    if not can_write(conn, g.user, "update", table, {**existing, **data}):
+        abort(403)
     error = validate_field_types_and_ranges(conn, table, data)
     if error:
         return jsonify({"error": error}), 400
-    if table == "users":
-        error = validate_user_payload(data, existing)
+    validator = TABLE_VALIDATORS.get(table)
+    if validator:
+        error = validator(data, existing)
         if error:
             return jsonify({"error": error}), 400
+    if table == "users":
         error = guard_last_admin(conn, existing, data=data)
         if error:
             return jsonify({"error": error}), 409
@@ -907,7 +964,10 @@ def item(table, item_id):
         return jsonify({"error": integrity_error_message(e, table)}), 409
     if cur.rowcount == 0:
         abort(404)
-    return jsonify(redact_row(g.user, table, fetch_row(conn, table, pk, item_id)))
+    # {**existing, **data} = dokladnie to, co przed chwila trafilo do bazy (stary wiersz z
+    # nadpisanymi zmienionymi polami) - ten sam merge juz raz policzony wyzej do re-checku
+    # can_write(); fetch_row() tutaj bylby zbednym SELECT-em na dane juz posiadane w pamieci.
+    return jsonify(redact_row(g.user, table, {**existing, **data}))
 
 
 @app.route("/api/backup", methods=["GET", "POST"])

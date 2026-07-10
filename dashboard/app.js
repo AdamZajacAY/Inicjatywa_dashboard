@@ -68,7 +68,7 @@ const STATUSES = ["Planowanie", "W realizacji", "Wstrzymany", "Zakonczony", "Anu
 // odbicie ENUM_FIELDS["projekty"]["Faza"] w server.py, oba miejsca trzeba aktualizowac razem.
 const FAZY = ["Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs - etap I (studialny)",
   "Konkurs - etap II", "Koncepcja", "Projekt budowlany", "Projekt techniczny",
-  "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzór autorski", "Zakonczenie"];
+  "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzor autorski", "Zakonczenie"];
 const PRIORYTETY = ["Wysoki", "Sredni", "Niski"];
 const DZIALY = ["Architekci", "Specjalisci", "Kierownictwo projektow", "PMO", "Prawny", "Finansowy", "Marketing/Sprzedaz", "Zarzad"];
 const ROLE_W_PROJEKCIE = ["Sponsor", "Owner", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"];
@@ -86,6 +86,7 @@ const STATUSY_TICKIETOW = ["Backlog", "W tym tygodniu", "W trakcie", "Do przegla
 const TYP_RYZYKA = ["Ryzyko", "Problem"];
 const KATEGORIE_RYZYK = ["Prawne", "Finansowe", "Techniczne", "Harmonogramowe", "Zasoby", "Srodowiskowe", "Proceduralne/Przetargowe"];
 const STATUS_RYZYKA = ["Otwarte", "W trakcie", "Zamkniete"];
+const STATUSY_KAMIENI_MILOWYCH = ["Nie rozpoczete", "W trakcie", "Zakonczone", "Zagrozone"];
 
 const DATE_FIELDS = {
   projects: ["Data_rozpoczecia", "Data_zakonczenia_planowana", "Data_zakonczenia_rzeczywista", "Data_ostatniej_aktualizacji"],
@@ -97,6 +98,7 @@ const DATE_FIELDS = {
   statusReports: ["Data_raportu"],
   subcontractorAssignments: ["Data_od", "Data_do"],
   tickets: ["Data_utworzenia", "Termin", "Data_zakonczenia"],
+  users: ["Data_utworzenia", "Data_ostatniego_logowania"],
 };
 
 /* ---------------------------------------------------------------- utils */
@@ -116,7 +118,10 @@ function fmtDateShort(v) {
 }
 function fmtMoney(n, currency) {
   if (n === null || n === undefined || isNaN(n)) return "—";
-  return Math.round(n).toLocaleString("pl-PL") + " " + (currency || "PLN");
+  // esc() na currency TUTAJ, nie na kazdym call site - Waluta to wolny tekst (bez enuma/
+  // walidacji), a wynik tej funkcji ladowal dotad prosto do innerHTML w ~12 miejscach bez
+  // esc() (znalezione audytem) - jeden fix u zrodla zamiast pilnowania 12 call site'ow z osobna.
+  return esc(Math.round(n).toLocaleString("pl-PL") + " " + (currency || "PLN"));
 }
 function fmtPctFraction(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
@@ -125,26 +130,32 @@ function fmtPctFraction(n) {
 function num(v, d = 0) { const n = Number(v); return isNaN(n) ? d : n; }
 function pctOrDash(v) { return (v === null || v === undefined || v === "") ? "—" : v + "%"; }
 
+function dateParts(d) {
+  if (!(d instanceof Date) || isNaN(d)) return null;
+  return { y: d.getFullYear(), m: String(d.getMonth() + 1).padStart(2, "0"), day: String(d.getDate()).padStart(2, "0") };
+}
 function dateInputVal(d) {
-  if (!(d instanceof Date) || isNaN(d)) return "";
-  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  const p = dateParts(d);
+  return p ? `${p.y}-${p.m}-${p.day}` : "";
 }
 function dateDisplayVal(d) {
-  if (!(d instanceof Date) || isNaN(d)) return "";
-  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
-  return `${day}.${m}.${y}`;
+  const p = dateParts(d);
+  return p ? `${p.day}.${p.m}.${p.y}` : "";
 }
 function parseDateInput(str) {
   if (!str) return null;
   if (str instanceof Date) return isNaN(str) ? null : str;
-  const s = String(str).trim();
+  let s = String(str).trim();
   if (s.includes(".")) {
     const [d, m, y] = s.split(".").map(Number);
     if (!y || !m || !d) return null;
     const dt = new Date(y, m - 1, d);
     return isNaN(dt) ? null : dt;
   }
+  // Pelny znacznik czasu ISO z backendu (np. users.Data_ostatniego_logowania, ktore ma
+  // timespec="seconds") -> sama data; "yyyy-mm-dd" ma dlugosc dokladnie 10, wiec dla
+  // pol bez czasu to no-op.
+  if (s.length > 10) s = s.slice(0, 10);
   const [y, m, d] = s.split("-").map(Number);
   if (!y || !m || !d) return null;
   const dt = new Date(y, m - 1, d);
@@ -163,11 +174,9 @@ function ragLabel(rag) {
 function projectStatusClass(status) {
   switch (status) {
     case "Zakonczony": return "good";
-    case "W realizacji": return "muted";
-    case "Planowanie": return "muted";
     case "Wstrzymany": return "critical";
     case "Anulowany": return "critical";
-    default: return "muted";
+    default: return "muted"; // W realizacji, Planowanie i kazda inna/brak wartosci
   }
 }
 function taskStatusClass(status) {
@@ -263,6 +272,17 @@ async function persistEntity({ isNew, endpoint, id, fields, dateFields, errorLab
   reviveDates([saved], dateFields);
   return saved;
 }
+async function deleteEntity(endpoint, errorLabel) {
+  // Wspolny "ogon" wszystkich delete*(): try/apiDelete/catch-alert byl identyczny w 9
+  // funkcjach (ten sam rozjazd, ktory persistEntity() juz rozwiazal dla save*FromForm).
+  try {
+    await apiDelete(endpoint);
+    return true;
+  } catch (e) {
+    alert(`Nie udało się usunąć (${errorLabel}): ` + e.message);
+    return false;
+  }
+}
 function requireExisting(rec, label) {
   if (rec) return true;
   // Rekord zniknal ze STATE (np. usuniety w innej karcie/przez inna osobe, skoro backend jest
@@ -318,8 +338,8 @@ async function loadFromApi() {
   // ciagnac je przy kazdym logowaniu kazdej roli) - dociagane osobno, ale tylko raz tutaj,
   // tak zeby renderUsers() nizej mogl pozostac zwyklym synchronicznym render*() jak reszta.
   if (FULL_ACCESS_ROLES.includes(STATE.me.role)) {
-    STATE.users = await apiGet("/api/users");
-    STATE.backups = await apiGet("/api/backup");
+    // Dwa niezalezne zapytania - rownolegle zamiast po kolei, oszczedza jeden pelny round-trip.
+    [STATE.users, STATE.backups] = await Promise.all([apiGet("/api/users"), apiGet("/api/backup")]);
   }
   Object.keys(DATE_FIELDS).forEach(key => reviveDates(STATE[key], DATE_FIELDS[key]));
   reindex();
@@ -456,6 +476,16 @@ function ticketAssigneeLabel(t) {
 function subcontractorTicketCostForProject(pid) {
   return ticketsForProject(pid).reduce((s, t) => s + (t.ID_Podwykonawcy ? num(t.Wycena_podwykonawcy) : 0), 0);
 }
+function subcontractorCostByProjectMap() {
+  // Jedno przejscie po STATE.tickets zamiast N (jeden na kazdy projekt) przez
+  // subcontractorTicketCostForProject() w petli - patrz uzycie w renderOverview/
+  // buildExecutiveReportHtml, jedyne miejsca liczace to dla calego portfela naraz.
+  const map = new Map();
+  for (const t of STATE.tickets) {
+    if (t.ID_Podwykonawcy) map.set(t.ID_Projektu, (map.get(t.ID_Projektu) || 0) + num(t.Wycena_podwykonawcy));
+  }
+  return map;
+}
 function subcontractorOnTimeStats(sid) {
   const tickets = ticketsForSubcontractor(sid);
   const done = tickets.filter(t => t.Status === "Zrobione" && t.Termin instanceof Date && t.Data_zakonczenia instanceof Date);
@@ -485,20 +515,15 @@ function isOverdueStage(t) {
 function ticketEffectiveStatus(t) { return isOverdueTicket(t) ? "Opoznione" : t.Status; }
 function ticketStatusBadge(status) {
   if (status === "Zrobione") return "good";
-  if (status === "Opoznione") return "critical";
-  if (status === "Zablokowane") return "critical";
+  if (status === "Opoznione" || status === "Zablokowane") return "critical";
   if (status === "Do przegladu") return "serious";
   if (status === "W trakcie" || status === "W tym tygodniu") return "warning";
-  if (status === "Zarchiwizowane") return "muted";
-  return "muted";
+  return "muted"; // Backlog, Zarchiwizowane i kazda inna/brak wartosci
 }
 const KANBAN_KOLUMNY = ["Backlog", "W tym tygodniu", "W trakcie", "Do przegladu", "Zrobione", "Zablokowane", "Zarchiwizowane"];
 
 function realCostForProject(pid) {
   return ticketsForProject(pid).reduce((s, t) => s + num(t.Rzeczywiste_roboczogodziny) * personRate(t.ID_Osoby_przypisanej), 0);
-}
-function plannedTicketCostForProject(pid) {
-  return ticketsForProject(pid).reduce((s, t) => s + num(t.Szacowane_roboczogodziny) * personRate(t.ID_Osoby_przypisanej), 0);
 }
 function realHoursForProject(pid) {
   return ticketsForProject(pid).reduce((s, t) => s + num(t.Rzeczywiste_roboczogodziny), 0);
@@ -511,9 +536,12 @@ function projectRevenue(p) {
   return num(p.Przychod_rzeczywisty) > 0 ? num(p.Przychod_rzeczywisty) : num(p.Przychod_planowany);
 }
 function projectRevenueIsActual(p) { return num(p.Przychod_rzeczywisty) > 0; }
-function projectMargin(p) {
+function projectMargin(p, subCostOverride) {
+  // subCostOverride: opcjonalna z gory policzona wartosc z subcontractorCostByProjectMap()
+  // (patrz tam) dla wolajacych, ktorzy licza to dla calego portfela naraz - bez tego kazde
+  // wywolanie w petli po projektach osobno skanowaloby cale STATE.tickets.
   const revenue = projectRevenue(p);
-  const subCost = subcontractorTicketCostForProject(p.ID_Projektu);
+  const subCost = subCostOverride ?? subcontractorTicketCostForProject(p.ID_Projektu);
   const cost = num(p.Budzet_wydany) + subCost;
   if (!revenue) return null;
   const margin = revenue - cost;
@@ -549,19 +577,22 @@ function varianceAccent(v) {
   if (v >= -0.20) return "accent-warning";
   return "accent-critical";
 }
-function projectOnTimeStats(pid) {
-  const doneStages = tasksForProject(pid).filter(t => t.Status === "Zakonczone" && t.Data_koniec_plan instanceof Date && t.Data_koniec_rzeczywista instanceof Date);
+function computeOnTimeStats(tasks, tickets) {
+  const doneStages = tasks.filter(t => t.Status === "Zakonczone" && t.Data_koniec_plan instanceof Date && t.Data_koniec_rzeczywista instanceof Date);
   const onTimeStages = doneStages.filter(t => t.Data_koniec_rzeczywista <= t.Data_koniec_plan);
-  const doneTickets = ticketsForProject(pid).filter(t => t.Status === "Zrobione" && t.Termin instanceof Date && t.Data_zakonczenia instanceof Date);
+  const doneTickets = tickets.filter(t => t.Status === "Zrobione" && t.Termin instanceof Date && t.Data_zakonczenia instanceof Date);
   const onTimeTickets = doneTickets.filter(t => t.Data_zakonczenia <= t.Termin);
   const doneTotal = doneStages.length + doneTickets.length;
   const onTimeTotal = onTimeStages.length + onTimeTickets.length;
   return {
     pct: doneTotal ? Math.round(onTimeTotal / doneTotal * 100) : null,
     doneTotal, onTimeTotal,
-    overdueStages: tasksForProject(pid).filter(isOverdueStage).length,
-    overdueTickets: ticketsForProject(pid).filter(isOverdueTicket).length,
+    overdueStages: tasks.filter(isOverdueStage).length,
+    overdueTickets: tickets.filter(isOverdueTicket).length,
   };
+}
+function projectOnTimeStats(pid) {
+  return computeOnTimeStats(tasksForProject(pid), ticketsForProject(pid));
 }
 
 /* ---------------------------------------------------------------- powiadomienia (opoznienia) */
@@ -594,18 +625,7 @@ function getNotifications() {
 
 /* ---------------------------------------------------------------- wskazniki terminowosci */
 function onTimeStats() {
-  const doneStages = STATE.tasks.filter(t => t.Status === "Zakonczone" && t.Data_koniec_plan instanceof Date && t.Data_koniec_rzeczywista instanceof Date);
-  const onTimeStages = doneStages.filter(t => t.Data_koniec_rzeczywista <= t.Data_koniec_plan);
-  const doneTickets = STATE.tickets.filter(t => t.Status === "Zrobione" && t.Termin instanceof Date && t.Data_zakonczenia instanceof Date);
-  const onTimeTickets = doneTickets.filter(t => t.Data_zakonczenia <= t.Termin);
-  const doneTotal = doneStages.length + doneTickets.length;
-  const onTimeTotal = onTimeStages.length + onTimeTickets.length;
-  return {
-    pct: doneTotal ? Math.round(onTimeTotal / doneTotal * 100) : null,
-    doneTotal, onTimeTotal,
-    overdueStages: STATE.tasks.filter(isOverdueStage).length,
-    overdueTickets: STATE.tickets.filter(isOverdueTicket).length,
-  };
+  return computeOnTimeStats(STATE.tasks, STATE.tickets);
 }
 
 /* ================================================================== VIEW: PRZEGLAD */
@@ -647,7 +667,8 @@ function renderOverview() {
   const topTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
   const maxTagCount = Math.max(1, ...topTags.map(t => t[1]));
 
-  const marginRows = P.map(p => ({ p, m: projectMargin(p) })).filter(x => x.m).sort((a, b) => b.m.marginPct - a.m.marginPct);
+  const subCostMap = subcontractorCostByProjectMap();
+  const marginRows = P.map(p => ({ p, m: projectMargin(p, subCostMap.get(p.ID_Projektu) || 0) })).filter(x => x.m).sort((a, b) => b.m.marginPct - a.m.marginPct);
   const maxAbsMarginPct = Math.max(1, ...marginRows.map(x => Math.abs(x.m.marginPct)));
   const portfolioRevenue = P.reduce((s, p) => s + projectRevenue(p), 0);
   const portfolioMargin = portfolioRevenue - budSpent;
@@ -904,11 +925,13 @@ function workloadForPerson(oid) {
 
 function renderTeam() {
   const cards = STATE.team.map(person => {
-    const load = workloadForPerson(person.ID_Osoby);
+    // Jedno przejscie po przypisaniach danej osoby zamiast dwoch (workloadForPerson() +
+    // osobne assignmentsForPerson() nizej filtrowaly to samo STATE.assignments niezaleznie).
+    const myAssignments = assignmentsForPerson(person.ID_Osoby).filter(a => a.Status === "Aktywny");
+    const load = myAssignments.reduce((s, a) => s + num(a.Procent_zaangazowania), 0);
     const fte = num(person.Dostepnosc_FTE_procent, 100);
     const ratio = fte ? load / fte : 0;
     const cls = ratio > 1 ? "over" : ratio >= 0.9 ? "warn" : "";
-    const myAssignments = assignmentsForPerson(person.ID_Osoby).filter(a => a.Status === "Aktywny");
     return `
       <div class="team-card" data-open-person="${esc(person.ID_Osoby)}">
         <div class="tc-name">${esc(person.Imie_i_nazwisko)}</div>
@@ -1059,6 +1082,8 @@ function renderTickets() {
   $("#fTkOverdue").addEventListener("change", e => { ticketFilters.onlyOverdue = e.target.checked; renderTickets(); });
 }
 
+const ticketMoveSeq = new Map(); // ID_Tickietu -> numer najnowszego w locie zadania PUT
+
 async function moveTicketToStatus(tid, newStatus) {
   const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
   if (!t || t.Status === newStatus || !KANBAN_KOLUMNY.includes(newStatus)) return;
@@ -1067,12 +1092,20 @@ async function moveTicketToStatus(tid, newStatus) {
   t.Status = newStatus;
   t.Data_zakonczenia = deriveTicketCompletionDate(newStatus, t.Data_zakonczenia);
   renderTickets();
+  // Szybkie podwojne przeciagniecie tego samego ticketu (zanim pierwszy PUT sie zakonczy)
+  // odpala dwa rownolegle zadania - stosujemy tylko odpowiedz z NAJNOWSZEGO z nich, zeby
+  // wolniejsza odpowiedz starszego przeciagniecia (siegajaca po sieci w dowolnej kolejnosci)
+  // nie nadpisala juz poprawnego, nowszego stanu bez zadnego komunikatu o bledzie.
+  const seq = (ticketMoveSeq.get(tid) || 0) + 1;
+  ticketMoveSeq.set(tid, seq);
   try {
     const payload = serializeForApi({ Status: t.Status, Data_zakonczenia: t.Data_zakonczenia }, ["Data_zakonczenia"]);
     const saved = await apiPut(`/api/zadania_tickety/${tid}`, payload);
+    if (ticketMoveSeq.get(tid) !== seq) return; // nowsze przeciagniecie juz w toku
     reviveDates([saved], DATE_FIELDS.tickets);
     Object.assign(t, saved);
   } catch (e) {
+    if (ticketMoveSeq.get(tid) !== seq) return;
     t.Status = prevStatus; t.Data_zakonczenia = prevDone;
     alert("Nie udało się zmienić statusu zadania: " + e.message);
   }
@@ -1297,7 +1330,7 @@ function renderUsers() {
               <td>${badge(u.Rola == null ? "Oczekujące" : (ROLE_LABELS[u.Rola] || u.Rola), roleBadgeClass(u.Rola))}</td>
               <td>${esc(personName(u.ID_Osoby) || "—")}</td>
               <td>${badge(u.Aktywny ? "Tak" : "Nie", u.Aktywny ? "good" : "critical")}</td>
-              <td>${u.Data_ostatniego_logowania ? fmtDate(parseDateInput(u.Data_ostatniego_logowania.slice(0, 10))) : "—"}</td>
+              <td>${fmtDate(u.Data_ostatniego_logowania)}</td>
               <td class="item-actions">
                 <button class="icon-btn" data-edit-user="${esc(u.ID_Uzytkownika)}">Edytuj</button>
                 <button class="icon-btn" data-reset-password-user="${esc(u.ID_Uzytkownika)}">Hasło</button>
@@ -1354,7 +1387,7 @@ async function saveUserFromForm(data, uid) {
     Rola: data.Rola || null, ID_Osoby: data.ID_Osoby || null,
     Aktywny: data.Aktywny === "Nie" ? 0 : 1,
   };
-  const saved = await persistEntity({ isNew, endpoint: "/api/users", id: uid, fields, errorLabel: "użytkownik" });
+  const saved = await persistEntity({ isNew, endpoint: "/api/users", id: uid, fields, dateFields: DATE_FIELDS.users, errorLabel: "użytkownik" });
   if (!saved) return;
   if (isNew) STATE.users.push(saved); else Object.assign(existing, saved);
   closeModal();
@@ -1389,13 +1422,9 @@ async function toggleUserActive(uid) {
   if (!requireExisting(u, "użytkownik")) return;
   const nextActive = u.Aktywny ? 0 : 1;
   if (!nextActive && !confirm(`Dezaktywować konto ${u.Email}? Straci dostęp natychmiast, nawet jeśli jest aktualnie zalogowane.`)) return;
-  try {
-    const saved = await apiPut(`/api/users/${uid}`, { Aktywny: nextActive });
-    Object.assign(u, saved);
-  } catch (e) {
-    alert("Nie udało się zmienić statusu konta: " + e.message);
-    return;
-  }
+  const saved = await persistEntity({ isNew: false, endpoint: "/api/users", id: uid, fields: { Aktywny: nextActive }, dateFields: DATE_FIELDS.users, errorLabel: "użytkownik" });
+  if (!saved) return;
+  Object.assign(u, saved);
   renderAll();
 }
 
@@ -1417,6 +1446,7 @@ function openModal(title, bodyHtml, { onSubmit, submitLabel = "Zapisz", wide = f
   $("#modalTitle").textContent = title;
   $("#modalBody").innerHTML = bodyHtml;
   $("#modalSubmit").textContent = submitLabel;
+  $("#modalSubmit").disabled = false;
   $("#modalBox").classList.toggle("wide", wide);
   $("#modalOverlay").classList.add("open");
   $("#modalBox").classList.add("open");
@@ -1429,10 +1459,20 @@ function closeModal() {
   $("#modalBox").classList.remove("open");
   modalSubmitHandler = null;
 }
-$("#modalForm").addEventListener("submit", (e) => {
+$("#modalForm").addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (!modalSubmitHandler) return;
+  // Bez blokady przycisku szybki podwojny klik/Enter odpalal dwa POST-y zanim pierwszy
+  // zdazyl odpowiedziec (submit nie byl w ogole await'owany) - oba widzialy isNew=true
+  // (STATE jeszcze nieodswiezone) i tworzyly dwa duplikaty rekordu z jednej akcji uzytkownika.
   const data = Object.fromEntries(new FormData(e.target).entries());
-  if (modalSubmitHandler) modalSubmitHandler(data);
+  const btn = $("#modalSubmit");
+  btn.disabled = true;
+  try {
+    await modalSubmitHandler(data);
+  } finally {
+    btn.disabled = false;
+  }
 });
 $("#modalCancel").addEventListener("click", closeModal);
 $("#modalClose").addEventListener("click", closeModal);
@@ -1560,7 +1600,7 @@ async function saveProjectFromForm(data, pid) {
 
 async function deleteProject(pid) {
   if (!confirm("Usunąć projekt wraz z powiązanymi przypisaniami, harmonogramem, kamieniami milowymi i ryzykami? Tej operacji nie można cofnąć.")) return;
-  try { await apiDelete(`/api/projekty/${pid}`); } catch (e) { alert("Nie udało się usunąć projektu: " + e.message); return; }
+  if (!await deleteEntity(`/api/projekty/${pid}`, "projekt")) return;
   STATE.projects = STATE.projects.filter(p => p.ID_Projektu !== pid);
   STATE.assignments = STATE.assignments.filter(a => a.ID_Projektu !== pid);
   STATE.tasks = STATE.tasks.filter(t => t.ID_Projektu !== pid);
@@ -1618,7 +1658,7 @@ async function saveTeamFromForm(data, oid) {
 
 async function deleteTeamMember(oid) {
   if (!confirm("Usunąć osobę? Powiązane przypisania do projektów zostaną również usunięte.")) return;
-  try { await apiDelete(`/api/zespol/${oid}`); } catch (e) { alert("Nie udało się usunąć osoby: " + e.message); return; }
+  if (!await deleteEntity(`/api/zespol/${oid}`, "osoba")) return;
   STATE.team = STATE.team.filter(t => t.ID_Osoby !== oid);
   STATE.assignments = STATE.assignments.filter(a => a.ID_Osoby !== oid);
   STATE.tasks.forEach(t => { if (t.ID_Osoby_odpowiedzialnej === oid) t.ID_Osoby_odpowiedzialnej = null; });
@@ -1669,7 +1709,7 @@ async function saveAssignmentFromForm(data, pid, aid) {
 
 async function deleteAssignment(aid, pid) {
   if (!confirm("Usunąć to przypisanie z zespołu projektu?")) return;
-  try { await apiDelete(`/api/przypisania/${aid}`); } catch (e) { alert("Nie udało się usunąć przypisania: " + e.message); return; }
+  if (!await deleteEntity(`/api/przypisania/${aid}`, "przypisanie")) return;
   STATE.assignments = STATE.assignments.filter(a => a.ID_Przypisania !== aid);
   renderAll();
   openProjectDetail(pid);
@@ -1726,7 +1766,7 @@ async function saveTaskFromForm(data, pid, tid) {
 
 async function deleteTask(tid, pid) {
   if (!confirm("Usunąć ten etap harmonogramu?")) return;
-  try { await apiDelete(`/api/harmonogram/${tid}`); } catch (e) { alert("Nie udało się usunąć etapu: " + e.message); return; }
+  if (!await deleteEntity(`/api/harmonogram/${tid}`, "etap")) return;
   STATE.tasks = STATE.tasks.filter(t => t.ID_Zadania !== tid);
   STATE.tickets.forEach(t => { if (t.ID_Etapu === tid) t.ID_Etapu = null; });
   renderAll();
@@ -1743,7 +1783,9 @@ function openTicketForm(pid, tid = null) {
   if (!requireExisting(t, "ticket")) return;
   const currentPid = pid || t.ID_Projektu || "";
   const body = `
-    ${!pid ? fSelect("Projekt *", "ID_Projektu", [["", "— wybierz —"], ...STATE.projects.map(p => [p.ID_Projektu, p.Nazwa])], currentPid) : ""}
+    ${!pid ? fSelect("Projekt *", "ID_Projektu", [["", "— wybierz —"],
+        ...STATE.projects.filter(p => can("create", "zadania_tickety", { ID_Projektu: p.ID_Projektu })).map(p => [p.ID_Projektu, p.Nazwa])],
+        currentPid) : ""}
     ${fInput("Tytuł *", "Tytul", t.Tytul, "text", "required")}
     ${fSelect("Przypisana osoba (zespół wewnętrzny)", "ID_Osoby_przypisanej", assignedTeamOptionsPairs(currentPid), t.ID_Osoby_przypisanej)}
     ${fSelect("Podwykonawca (jeśli zlecone branżyście)", "ID_Podwykonawcy", subcontractorOptionsPairs(), t.ID_Podwykonawcy)}
@@ -1807,7 +1849,7 @@ async function saveTicketFromForm(data, pid, tid) {
 
 async function deleteTicket(tid, pid) {
   if (!confirm("Usunąć to zadanie (ticket)?")) return;
-  try { await apiDelete(`/api/zadania_tickety/${tid}`); } catch (e) { alert("Nie udało się usunąć zadania: " + e.message); return; }
+  if (!await deleteEntity(`/api/zadania_tickety/${tid}`, "zadanie")) return;
   STATE.tickets = STATE.tickets.filter(t => t.ID_Tickietu !== tid);
   renderAll();
   openProjectDetail(pid);
@@ -1862,8 +1904,57 @@ async function saveRiskFromForm(data, pid, rid) {
 
 async function deleteRisk(rid, pid) {
   if (!confirm("Usunąć to ryzyko/problem?")) return;
-  try { await apiDelete(`/api/ryzyka_i_problemy/${rid}`); } catch (e) { alert("Nie udało się usunąć ryzyka/problemu: " + e.message); return; }
+  if (!await deleteEntity(`/api/ryzyka_i_problemy/${rid}`, "ryzyko/problem")) return;
   STATE.risks = STATE.risks.filter(x => x.ID !== rid);
+  renderAll();
+  openProjectDetail(pid);
+}
+
+/* ---------- Formularz: Kamień milowy ---------- */
+function openMilestoneForm(pid, mid = null) {
+  const m = mid ? STATE.milestones.find(x => x.ID_Kamienia === mid) : {};
+  if (!requireExisting(m, "kamień milowy")) return;
+  const body = `
+    ${fInput("Nazwa kamienia milowego *", "Nazwa_kamienia", m.Nazwa_kamienia, "text", "required")}
+    ${fInput("Data planowana *", "Data_planowana", m.Data_planowana, "date", "required")}
+    ${fInput("Data rzeczywista", "Data_rzeczywista", m.Data_rzeczywista, "date")}
+    ${fSelect("Odpowiedzialny", "ID_Osoby_odpowiedzialnej", teamOptionsPairs(), m.ID_Osoby_odpowiedzialnej)}
+    ${fSelect("Status", "Status", pairs(STATUSY_KAMIENI_MILOWYCH), m.Status || "Nie rozpoczete")}
+  `;
+  openModal(mid ? "Edytuj kamień milowy" : "Nowy kamień milowy", body, {
+    submitLabel: "Zapisz",
+    onSubmit: (data) => saveMilestoneFromForm(data, pid, mid),
+  });
+}
+
+async function saveMilestoneFromForm(data, pid, mid) {
+  if (!data.Nazwa_kamienia || !data.Data_planowana) {
+    alert("Uzupełnij nazwę i datę planowaną kamienia milowego.");
+    return;
+  }
+  const isNew = !mid;
+  const existing = isNew ? {} : STATE.milestones.find(x => x.ID_Kamienia === mid);
+  if (!requireExisting(existing, "kamień milowy")) return;
+  const fields = {
+    ID_Projektu: pid, Nazwa_kamienia: data.Nazwa_kamienia,
+    Data_planowana: parseDateInput(data.Data_planowana),
+    Data_rzeczywista: parseDateInput(data.Data_rzeczywista),
+    ID_Osoby_odpowiedzialnej: data.ID_Osoby_odpowiedzialnej || null,
+    Status: data.Status,
+  };
+  const saved = await persistEntity({ isNew, endpoint: "/api/kamienie_milowe", id: mid, fields, dateFields: DATE_FIELDS.milestones, errorLabel: "kamień milowy" });
+  if (!saved) return;
+  if (isNew) STATE.milestones.push(saved);
+  else Object.assign(existing, saved);
+  closeModal();
+  renderAll();
+  openProjectDetail(pid);
+}
+
+async function deleteMilestone(mid, pid) {
+  if (!confirm("Usunąć ten kamień milowy?")) return;
+  if (!await deleteEntity(`/api/kamienie_milowe/${mid}`, "kamień milowy")) return;
+  STATE.milestones = STATE.milestones.filter(x => x.ID_Kamienia !== mid);
   renderAll();
   openProjectDetail(pid);
 }
@@ -1920,7 +2011,7 @@ async function saveSubcontractorFromForm(data, sid) {
 
 async function deleteSubcontractor(sid) {
   if (!confirm("Usunąć podwykonawcę z biblioteki? Powiązane przypisania do projektów zostaną również usunięte.")) return;
-  try { await apiDelete(`/api/podwykonawcy/${sid}`); } catch (e) { alert("Nie udało się usunąć podwykonawcy: " + e.message); return; }
+  if (!await deleteEntity(`/api/podwykonawcy/${sid}`, "podwykonawca")) return;
   STATE.subcontractors = STATE.subcontractors.filter(s => s.ID_Podwykonawcy !== sid);
   STATE.subcontractorAssignments = STATE.subcontractorAssignments.filter(a => a.ID_Podwykonawcy !== sid);
   STATE.tickets.forEach(t => { if (t.ID_Podwykonawcy === sid) t.ID_Podwykonawcy = null; });
@@ -2058,7 +2149,7 @@ async function saveSubcontractorAssignmentFromForm(data, pid, said) {
 
 async function deleteSubcontractorAssignment(said, pid) {
   if (!confirm("Usunąć to przypisanie podwykonawcy z projektu?")) return;
-  try { await apiDelete(`/api/przypisania_podwykonawcow/${said}`); } catch (e) { alert("Nie udało się usunąć przypisania: " + e.message); return; }
+  if (!await deleteEntity(`/api/przypisania_podwykonawcow/${said}`, "przypisanie")) return;
   STATE.subcontractorAssignments = STATE.subcontractorAssignments.filter(a => a.ID_Przypisania_Podw !== said);
   renderAll();
   openProjectDetail(pid);
@@ -2147,7 +2238,7 @@ function openProjectDetail(pid) {
         <div><div class="k">Zakończenie (plan)</div><div class="v">${fmtDate(p.Data_zakonczenia_planowana)}</div></div>
         <div><div class="k">Zakończenie (rzeczywiste)</div><div class="v">${fmtDate(p.Data_zakonczenia_rzeczywista)}</div></div>
         <div><div class="k">Inwestor / Klient</div><div class="v">${esc(p.Inwestor_Klient)}</div></div>
-        <div><div class="k">Powierzchnia</div><div class="v">${p.Powierzchnia_m2 ? p.Powierzchnia_m2.toLocaleString("pl-PL") + " m²" : "—"}</div></div>
+        <div><div class="k">Powierzchnia</div><div class="v">${p.Powierzchnia_m2 != null ? p.Powierzchnia_m2.toLocaleString("pl-PL") + " m²" : "—"}</div></div>
         <div><div class="k">Liczba jednostek</div><div class="v">${p.Liczba_jednostek ?? "—"}</div></div>
       </div>
     </div>
@@ -2163,8 +2254,8 @@ function openProjectDetail(pid) {
       ${p.Szacowane_roboczogodziny ? `
       <div class="dp-grid" style="margin-top:12px">
         <div><div class="k">Szacowane roboczogodziny (wycena)</div><div class="v">${num(p.Szacowane_roboczogodziny).toLocaleString("pl-PL")} rbh</div></div>
-        <div><div class="k">Śr. stawka godzinowa (wycena)</div><div class="v">${p.Stawka_godzinowa_srednia ? num(p.Stawka_godzinowa_srednia).toLocaleString("pl-PL") + " " + p.Waluta + "/h" : "—"}</div></div>
-        <div><div class="k">Szacowany koszt pracy (wycena top-down)</div><div class="v">${p.Stawka_godzinowa_srednia ? fmtMoney(num(p.Szacowane_roboczogodziny) * num(p.Stawka_godzinowa_srednia), p.Waluta) : "—"}</div></div>
+        <div><div class="k">Śr. stawka godzinowa (wycena)</div><div class="v">${p.Stawka_godzinowa_srednia != null ? esc(num(p.Stawka_godzinowa_srednia).toLocaleString("pl-PL") + " " + p.Waluta + "/h") : "—"}</div></div>
+        <div><div class="k">Szacowany koszt pracy (wycena top-down)</div><div class="v">${p.Stawka_godzinowa_srednia != null ? fmtMoney(num(p.Szacowane_roboczogodziny) * num(p.Stawka_godzinowa_srednia), p.Waluta) : "—"}</div></div>
       </div>` : ""}
       ${tickets.length ? `
       <div class="dp-grid" style="margin-top:12px">
@@ -2220,14 +2311,18 @@ function openProjectDetail(pid) {
             ${can("delete", "zadania_tickety", t) ? `<button class="icon-btn danger" data-delete-ticket="${esc(t.ID_Tickietu)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">${esc(t.ID_Tickietu)} — ${esc(t.Tytul)} ${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))}</div>
-          <div class="meta">${ticketAssigneeLabel(t)} · termin ${fmtDate(t.Termin)} · ${esc(t.Priorytet)}${t.Szacowane_roboczogodziny ? " · " + t.Szacowane_roboczogodziny + " rbh szac." : ""}${t.Rzeczywiste_roboczogodziny ? " / " + t.Rzeczywiste_roboczogodziny + " rbh rzecz." : ""}</div>
+          <div class="meta">${esc(ticketAssigneeLabel(t))} · termin ${fmtDate(t.Termin)} · ${esc(t.Priorytet)}${t.Szacowane_roboczogodziny ? " · " + t.Szacowane_roboczogodziny + " rbh szac." : ""}${t.Rzeczywiste_roboczogodziny ? " / " + t.Rzeczywiste_roboczogodziny + " rbh rzecz." : ""}</div>
         </div>`).join("") : `<div class="empty-hint">Brak zadań — kliknij „+ Nowy ticket”, żeby przypisać pracę do konkretnej osoby.</div>`}
     </div>
 
     <div class="dp-section">
-      <h4>Kamienie milowe (${mstones.length})</h4>
+      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Kamienie milowe (${mstones.length})</h4>
+        ${can("create", "kamienie_milowe", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-milestone="${esc(pid)}">+ Dodaj kamień milowy</button>` : ""}</div>
       ${mstones.map(m => `
-        <div class="dp-list-item">
+        <div class="dp-list-item" ${can("update", "kamienie_milowe", m) ? `data-edit-milestone="${esc(m.ID_Kamienia)}" data-project="${esc(pid)}" style="cursor:pointer"` : ""}>
+          <div class="item-actions">
+            ${can("delete", "kamienie_milowe", m) ? `<button class="icon-btn danger" data-delete-milestone="${esc(m.ID_Kamienia)}" data-project="${esc(pid)}">Usuń</button>` : ""}
+          </div>
           <div class="title">${esc(m.Nazwa_kamienia)} ${badge(m.Status, milestoneStatusBadge(m.Status))}</div>
           <div class="meta">Plan: ${fmtDate(m.Data_planowana)} ${m.Data_rzeczywista ? "· Rzeczywiste: " + fmtDate(m.Data_rzeczywista) : ""} · ${esc(personName(m.ID_Osoby_odpowiedzialnej))}</div>
         </div>`).join("") || `<div class="kpi-sub">Brak kamieni milowych.</div>`}
@@ -2572,6 +2667,13 @@ document.addEventListener("click", (e) => {
   const editRisk = e.target.closest("[data-edit-risk]");
   if (editRisk) { openRiskForm(editRisk.getAttribute("data-project"), editRisk.getAttribute("data-edit-risk")); return; }
 
+  const addMilestone = e.target.closest("[data-add-milestone]");
+  if (addMilestone) { openMilestoneForm(addMilestone.getAttribute("data-add-milestone")); return; }
+  const deleteMilestoneBtn = e.target.closest("[data-delete-milestone]");
+  if (deleteMilestoneBtn) { deleteMilestone(deleteMilestoneBtn.getAttribute("data-delete-milestone"), deleteMilestoneBtn.getAttribute("data-project")); return; }
+  const editMilestone = e.target.closest("[data-edit-milestone]");
+  if (editMilestone) { openMilestoneForm(editMilestone.getAttribute("data-project"), editMilestone.getAttribute("data-edit-milestone")); return; }
+
   const addSub = e.target.closest("[data-add-subcontractor]");
   if (addSub) { openSubcontractorForm(); return; }
   const editSub = e.target.closest("[data-edit-subcontractor]");
@@ -2647,6 +2749,7 @@ function buildExecutiveReportHtml() {
   STATE.tickets.forEach(t => { ticketCounts[t.Status] = (ticketCounts[t.Status] || 0) + 1; });
 
   const sortedProjects = P.slice().sort((a, b) => (PRIORITY_RANK[a.Priorytet] ?? 3) - (PRIORITY_RANK[b.Priorytet] ?? 3));
+  const subCostMap = subcontractorCostByProjectMap();
 
   return `
     <div class="exec-header">
@@ -2683,7 +2786,7 @@ function buildExecutiveReportHtml() {
         <thead><tr><th>Projekt</th><th>Status</th><th>RAG</th><th>Priorytet</th><th>Postęp</th><th>Budżet wyd. / całk.</th><th>Marża</th></tr></thead>
         <tbody>
           ${sortedProjects.map(p => {
-            const m = projectMargin(p);
+            const m = projectMargin(p, subCostMap.get(p.ID_Projektu) || 0);
             return `<tr>
               <td>${esc(p.Nazwa)}</td>
               <td>${esc(p.Status || "—")}</td>
@@ -2768,12 +2871,16 @@ $("#btnLogout").addEventListener("click", async () => {
 /* ---------------------------------------------------------------- boot */
 async function boot() {
   try {
-    const config = await apiGet("/api/auth/config").catch(() => ({ googleEnabled: false }));
+    // Dwa niezalezne zapytania odpalone rownolegle (nie czekaj na config, zeby zaczac me) -
+    // config potrzebny tylko w galezi 401 nizej, wiec w normalnej sciezce logowania jego
+    // wynik i tak nigdy nie jest odczytywany.
+    const configPromise = apiGet("/api/auth/config").catch(() => ({ googleEnabled: false }));
+    const mePromise = apiGet("/api/auth/me");
     let me;
     try {
-      me = await apiGet("/api/auth/me");
+      me = await mePromise;
     } catch (e) {
-      if (e.status === 401) { showLoginScreen(config.googleEnabled); return; }
+      if (e.status === 401) { showLoginScreen((await configPromise).googleEnabled); return; }
       throw e;
     }
     if (me.pending) { showPendingScreen(me); return; }
