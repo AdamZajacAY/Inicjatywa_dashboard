@@ -290,7 +290,8 @@ function showDashboard() {
 }
 
 function updateFileInfo() {
-  $("#fileInfo").innerHTML = `🔗 Połączono z serwerem · ${STATE.projects.length} projektów`;
+  const label = STATE.me.role === "Specjalista" ? "Twoich projektów" : "projektów";
+  $("#fileInfo").innerHTML = `🔗 Połączono z serwerem · ${STATE.projects.length} ${label}`;
 }
 
 function updateUserMenu() {
@@ -649,8 +650,11 @@ function renderOverview() {
   const portfolioMargin = portfolioRevenue - budSpent;
 
   const html = `
+    ${STATE.me.role === "Specjalista" ? `<div class="panel" style="margin-bottom:16px;padding:10px 16px"><div class="kpi-sub">${total === 0
+        ? "Nie masz jeszcze przypisanych projektów — poniższy widok będzie pusty, dopóki COO/Admin/Architekt Prowadzący nie przypisze Cię do projektu (przez „Zespół projektu” na karcie projektu)."
+        : "Widoczne wyłącznie projekty, do których jesteś przypisany/a — poniższe liczby (i cały ten widok) dotyczą tylko ich, nie całej firmy."}</div></div>` : ""}
     <div class="kpi-grid">
-      <div class="kpi-tile"><div class="kpi-label">Projekty ogółem</div><div class="kpi-value">${total}</div></div>
+      <div class="kpi-tile"><div class="kpi-label">${STATE.me.role === "Specjalista" ? "Twoje projekty" : "Projekty ogółem"}</div><div class="kpi-value">${total}</div></div>
       <div class="kpi-tile"><div class="kpi-label">W realizacji</div><div class="kpi-value">${byStatus("W realizacji")}</div></div>
       <div class="kpi-tile accent-critical"><div class="kpi-label">Wstrzymane</div><div class="kpi-value">${byStatus("Wstrzymany")}</div></div>
       <div class="kpi-tile accent-good"><div class="kpi-label">Zakończone</div><div class="kpi-value">${byStatus("Zakonczony")}</div></div>
@@ -677,7 +681,7 @@ function renderOverview() {
           <div class="hbar-track"><div class="hbar-fill" style="width:${Math.min(100, budTotal ? budSpent / budTotal * 100 : 0)}%;background:var(--accent)"></div></div>
           <div class="hbar-value">${budTotal ? Math.round(budSpent / budTotal * 100) : 0}%</div>
         </div>
-        <div class="kpi-sub" style="margin-top:6px">${fmtMoney(budSpent)} z ${fmtMoney(budTotal)} (suma wszystkich projektów, PLN)</div>
+        <div class="kpi-sub" style="margin-top:6px">${fmtMoney(budSpent)} z ${fmtMoney(budTotal)} (${STATE.me.role === "Specjalista" ? "dane finansowe ukryte dla tej roli" : "suma widocznych projektów, PLN"})</div>
 
         <h3 style="margin-top:20px">RAG portfela</h3>
         <div class="segmented-bar">
@@ -871,9 +875,14 @@ function renderProjects() {
       </div>
     </div>
     ${renderProjectsFilters()}
-    ${view === "tabela"
-      ? (list.length ? renderProjectsTable(list) : `<div class="empty-hint">Brak projektów spełniających kryteria — dostosuj filtry albo dodaj nowy projekt.</div>`)
-      : `<div class="card-grid">${list.map(projectCardHtml).join("") || `<div class="empty-hint">Brak projektów spełniających kryteria — dostosuj filtry albo dodaj nowy projekt.</div>`}</div>`}
+    ${(() => {
+      const hint = can("create", "projekty")
+        ? "Brak projektów spełniających kryteria — dostosuj filtry albo dodaj nowy projekt."
+        : "Brak projektów spełniających kryteria — dostosuj filtry (widzisz tylko projekty, do których jesteś przypisany/a).";
+      return view === "tabela"
+        ? (list.length ? renderProjectsTable(list) : `<div class="empty-hint">${hint}</div>`)
+        : `<div class="card-grid">${list.map(projectCardHtml).join("") || `<div class="empty-hint">${hint}</div>`}</div>`;
+    })()}
   `;
   $("#fProjCount").textContent = `${list.length} / ${STATE.projects.length} projektów`;
   $("#fProjQ").addEventListener("input", e => { projectFilters.q = e.target.value; renderProjects(); });
@@ -910,6 +919,7 @@ function renderTeam() {
   });
   $("#view-zespol").innerHTML = `
     <div class="section-head"><h2>Zespół</h2>${can("create", "zespol") ? `<button data-add-team="1">+ Dodaj osobę</button>` : ""}</div>
+    ${STATE.me.role === "Specjalista" ? `<div class="empty-hint" style="margin-bottom:12px">Obciążenie i lista projektów uwzględniają tylko projekty, do których i Ty jesteś przypisany/a — mogą nie odzwierciedlać pełnego obciążenia danej osoby.</div>` : ""}
     <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak osób w zespole — kliknij „+ Dodaj osobę”.</div>`}</div>
   `;
 }
@@ -947,6 +957,7 @@ function renderSubcontractors() {
       <select id="fSubStatus"><option value="">Wszystkie statusy</option>${STATUSY_PODWYKONAWCOW.map(s => `<option ${subFilters.status === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
       <span class="count">${list.length} / ${STATE.subcontractors.length} podwykonawców</span>
     </div>
+    ${STATE.me.role === "Specjalista" ? `<div class="empty-hint" style="margin-bottom:12px">Liczba aktywnych/planowanych projektów uwzględnia tylko projekty, do których i Ty jesteś przypisany/a.</div>` : ""}
     <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak podwykonawców w bibliotece — kliknij „+ Dodaj podwykonawcę”.</div>`}</div>
   `;
   $("#fSubBranza").addEventListener("change", e => { subFilters.branza = e.target.value; renderSubcontractors(); });
@@ -1255,7 +1266,7 @@ function renderRyzyka() {
               <td>${esc(personName(r.ID_Osoby_wlasciciela))}</td>
               <td>${badge(r.Status, riskStatusBadge(r.Status))}</td>
               <td>${fmtDate(r.Data_identyfikacji)}</td>
-            </tr>`).join("")}
+            </tr>`).join("") || `<tr><td colspan="8" class="empty-hint">Brak ryzyk i problemów spełniających kryteria.</td></tr>`}
         </tbody>
       </table>
     </div>`;

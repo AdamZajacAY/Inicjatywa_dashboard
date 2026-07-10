@@ -300,6 +300,20 @@ def assigned_project_ids(conn, person_id):
     return {r["ID_Projektu"] for r in rows}
 
 
+def scoped_rows(conn, user, table, rows):
+    # Specjalista czytal dotad CALY portfel (redagowane byly tylko pola finansowe) - zaweniete
+    # na wprost zadanie uzytkownika do wlasnych projektow (przez przypisania), zeby nazwa
+    # klienta/opis ryzyka/tresc raportu statusowego projektu, przy ktorym nie pracuje, tez nie
+    # wyciekaly. Architekt_PM i COO/Admin maja portfolio-wide odczyt bez zmian (byla to ich
+    # wczesniejsza, swiadoma konfiguracja - to zawezenie dotyczy wylacznie Specjalisty).
+    # zespol/podwykonawcy (scope "global") i users (scope "admin_only") zostaja bez zmian -
+    # to wspoldzielone rejestry, nie dane "nalezace" do jednego projektu.
+    if user["Rola"] != "Specjalista" or TABLE_SCOPE.get(table) not in ("root_project", "project_scoped"):
+        return rows
+    allowed = assigned_project_ids(conn, user["ID_Osoby"])
+    return [r for r in rows if r["ID_Projektu"] in allowed]
+
+
 def can_write(conn, user, action, table, row):
     """action: "create" | "update" | "delete". row: sparsowany payload (create) albo
     istniejacy wiersz z bazy (update/delete) - zawsze dict, nigdy None."""
@@ -779,6 +793,7 @@ def bootstrap():
     result = {}
     for table, key in BOOTSTRAP_KEYS.items():
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+        rows = scoped_rows(conn, g.user, table, rows)
         result[key] = [redact_row(g.user, table, dict(r)) for r in rows]
     result["me"] = public_user(g.user)
     result["me"]["assignedProjectIds"] = sorted(assigned_project_ids(conn, g.user["ID_Osoby"]))
@@ -796,6 +811,7 @@ def collection(table):
         if TABLE_SCOPE.get(table) == "admin_only" and g.user["Rola"] not in FULL_ACCESS_ROLES:
             abort(403)
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+        rows = scoped_rows(conn, g.user, table, rows)
         return jsonify([redact_row(g.user, table, dict(r)) for r in rows])
 
     data = parse_payload(conn, table)
