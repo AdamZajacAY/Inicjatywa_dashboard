@@ -418,8 +418,13 @@ ENUM_FIELDS = {
                            "Uczestnik konkursu", "Koordynacja branzowa"},
         "Segment": {"Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"},
         "Status": {"Planowanie", "W realizacji", "Wstrzymany", "Zakonczony", "Anulowany"},
-        "Faza": {"Koncepcja", "Analiza", "Projektowanie", "Pozwolenia/Przetarg", "Budowa", "Zakonczenie",
-                 "Konkurs - etap studialny", "Konkurs - etap II"},
+        # "Projektowanie" i "Pozwolenia/Przetarg" swiadomie usuniete (nie dopisane obok) - rozbite
+        # na szczegolowe fazy ponizej, na wprost zyczenie uzytkownika (2026-07-10). "Konkurs - etap
+        # studialny" zmienione na "... etap I (studialny)" dla symetrii z etapem II - jeden istniejacy
+        # projekt produkcyjny mial ta wartosc, wymaga recznej aktualizacji w UI po wdrozeniu.
+        "Faza": {"Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs - etap I (studialny)",
+                 "Konkurs - etap II", "Koncepcja", "Projekt budowlany", "Projekt techniczny",
+                 "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzór autorski", "Zakonczenie"},
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
         "RAG_Status": {"Zielony", "Zolty", "Czerwony"},
     },

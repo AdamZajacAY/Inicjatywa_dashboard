@@ -64,8 +64,11 @@ const FUNKCJE_BIURA = ["Projektant wiodacy", "Nadzor autorski", "Analiza/doradzt
 
 const SEGMENTS = ["Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"];
 const STATUSES = ["Planowanie", "W realizacji", "Wstrzymany", "Zakonczony", "Anulowany"];
-const FAZY = ["Koncepcja", "Analiza", "Projektowanie", "Pozwolenia/Przetarg", "Budowa", "Zakonczenie",
-  "Konkurs - etap studialny", "Konkurs - etap II"];
+// Kolejnosc = chronologia typowego projektu (uzyta 1:1 w <select>, patrz pairs()) - lustrzane
+// odbicie ENUM_FIELDS["projekty"]["Faza"] w server.py, oba miejsca trzeba aktualizowac razem.
+const FAZY = ["Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs - etap I (studialny)",
+  "Konkurs - etap II", "Koncepcja", "Projekt budowlany", "Projekt techniczny",
+  "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzór autorski", "Zakonczenie"];
 const PRIORYTETY = ["Wysoki", "Sredni", "Niski"];
 const DZIALY = ["Architekci", "Specjalisci", "Kierownictwo projektow", "PMO", "Prawny", "Finansowy", "Marketing/Sprzedaz", "Zarzad"];
 const ROLE_W_PROJEKCIE = ["Sponsor", "Owner", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"];
