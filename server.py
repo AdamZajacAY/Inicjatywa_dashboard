@@ -110,9 +110,11 @@ app.secret_key = _load_or_create_secret_key()
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    # Brak HTTPS na LAN dzis - musi zostac False, inaczej przegladarka nigdy nie wysle
-    # ciasteczka. Udokumentowane ograniczenie w README (patrz sekcja logowania).
-    SESSION_COOKIE_SECURE=False,
+    # DATABASE_PATH ustawione = wdrozenie (np. Render, patrz render.yaml), ktore terminuje
+    # TLS przed aplikacja - wtedy ciasteczko powinno isc wylacznie po HTTPS. Lokalnie (brak
+    # zmiennej, LAN po zwyklym http://) zostaje False - Secure=True zablokowaloby zapisanie
+    # ciasteczka bez TLS wcale, czyli login nigdy by sie nie utrzymal.
+    SESSION_COOKIE_SECURE=bool(os.environ.get("DATABASE_PATH")),
 )
 
 # tabela -> (kolumna klucza glownego, prefiks generowanych ID, szerokosc zer wiodacych)
@@ -262,7 +264,12 @@ def can_write(conn, user, action, table, row):
             return False
         if action == "create":
             return row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"])
-        return row.get("ID_Osoby_przypisanej") == user["ID_Osoby"]  # edycja tylko wlasnego ticketu
+        # edycja tylko wlasnego ticketu W PROJEKCIE, do ktorego jest przypisany - bez drugiego
+        # warunku Specjalista mogl "reparent'owac" wlasny ticket (zmienic ID_Projektu) do
+        # DOWOLNEGO projektu w systemie, bo re-check w item() po zmianie zakresu i tak sprawdza
+        # tylko ID_Osoby_przypisanej, ktore sie nie zmienia w takim ataku
+        return (row.get("ID_Osoby_przypisanej") == user["ID_Osoby"]
+                and row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"]))
     if user["Rola"] == "Architekt_PM":
         if table == "zespol":
             return False
@@ -708,24 +715,32 @@ def not_found(_e):
     return jsonify({"error": "not found"}), 404
 
 
+DASHBOARD_DIR = os.path.join(ROOT, "dashboard")
+
+
 def _serve(path):
-    resp = send_from_directory(ROOT, path)
+    resp = send_from_directory(DASHBOARD_DIR, path)
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     return resp
 
 
 @app.route("/")
 def index():
-    # Osobny endpoint (nie redirect!) - laczenie "/" i "/<path:path>" w jeden endpoint przez
-    # Werkzeug (np. defaults={}) powoduje przekierowanie 308 miedzy nimi. Kiedys to psulo
+    # Osobny endpoint (nie redirect!) - laczenie "/" i "/dashboard/<path:path>" w jeden endpoint
+    # przez Werkzeug (np. defaults={}) powoduje przekierowanie 308 miedzy nimi. Kiedys to psulo
     # wzgledne sciezki zasobow w index.html; dzis zasoby sa odwolywane sciezkami bezwzglednymi
     # (/dashboard/...), wiec dzialaja niezaleznie od URL-a strony - ale dwa endpointy zostaja,
     # bo to nadal prostszy, jawny kod niz sztuczka z defaults={}.
-    return _serve("dashboard/index.html")
+    return _serve("index.html")
 
 
-@app.route("/<path:path>")
+@app.route("/dashboard/<path:path>")
 def static_files(path):
+    # Trasa dopasowuje WYLACZNIE URL-e zaczynajace sie od /dashboard/ (nie /<path:path> na
+    # wszystko) - wczesniej ten catch-all serwowal caly katalog projektu bez autoryzacji
+    # (README.md, server.py, render.yaml, baza_danych/schema.sql byly publicznie pobieralne).
+    # _serve() dodatkowo resolvuje sciezki wzgledem DASHBOARD_DIR, nie ROOT, wiec nawet
+    # potencjalny path traversal nie wyjdzie poza katalog dashboard/.
     return _serve(path)
 
 

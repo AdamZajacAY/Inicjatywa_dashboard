@@ -31,7 +31,7 @@ function can(action, table, row) {
     // brak row (np. przycisk na zbiorczej zakladce Zadania, bez wybranego projektu) - pokaz;
     // z konkretnym projektem w kontekscie (karta projektu) - tylko jesli to jeden z jej/jego projektow
     if (action === "create") return row ? STATE.me.assignedProjectIds.includes(row.ID_Projektu) : true;
-    return row && row.ID_Osoby_przypisanej === STATE.me.personId;
+    return row && row.ID_Osoby_przypisanej === STATE.me.personId && STATE.me.assignedProjectIds.includes(row.ID_Projektu);
   }
   if (role === "Architekt_PM") {
     if (table === "zespol") return false;
@@ -731,7 +731,7 @@ function renderOverview() {
         ${upcomingMilestones.length ? upcomingMilestones.map(m => `
           <div class="dp-list-item clickable" data-open-project="${esc(m.ID_Projektu)}" style="cursor:pointer">
             <div class="title">${esc(m.Nazwa_kamienia)}</div>
-            <div class="meta">${projectName(m.ID_Projektu)} · ${fmtDate(m.Data_planowana)} · ${esc(m.Status)}</div>
+            <div class="meta">${esc(projectName(m.ID_Projektu))} · ${fmtDate(m.Data_planowana)} · ${esc(m.Status)}</div>
           </div>`).join("") : `<div class="kpi-sub">Brak kamieni milowych w najbliższych 90 dniach.</div>`}
       </div>
     </div>
@@ -2284,7 +2284,7 @@ function openPersonDetail(oid) {
       ${myTickets.map(t => `
         <div class="dp-list-item clickable" data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:pointer">
           <div class="title">${esc(t.Tytul)} ${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))}</div>
-          <div class="meta">${projectName(t.ID_Projektu)} · termin ${fmtDate(t.Termin)} · ${esc(t.Priorytet)}</div>
+          <div class="meta">${esc(projectName(t.ID_Projektu))} · termin ${fmtDate(t.Termin)} · ${esc(t.Priorytet)}</div>
         </div>`).join("") || `<div class="kpi-sub">Brak przypisanych zadań.</div>`}
     </div>
   `;
