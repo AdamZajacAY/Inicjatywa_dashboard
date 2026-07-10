@@ -1149,6 +1149,10 @@ let ganttFilters = { projekt: "", typ: "", osoba: "", groupBy: "projekt" };
 
 function renderGanttFilters() {
   return `
+    <div class="section-head">
+      <h2>Harmonogram</h2>
+      ${can("create", "harmonogram") ? `<button data-add-task="">+ Dodaj etap</button>` : ""}
+    </div>
     <div class="filters">
       <select id="fGanttGroupBy">
         <option value="projekt" ${ganttFilters.groupBy === "projekt" ? "selected" : ""}>Grupuj wg: projektu</option>
@@ -1719,7 +1723,11 @@ async function deleteAssignment(aid, pid) {
 function openTaskForm(pid, tid = null) {
   const t = tid ? STATE.tasks.find(x => x.ID_Zadania === tid) : {};
   if (!requireExisting(t, "etap")) return;
+  const currentPid = pid || t.ID_Projektu || "";
   const body = `
+    ${!pid ? fSelect("Projekt *", "ID_Projektu", [["", "— wybierz —"],
+        ...STATE.projects.filter(p => can("create", "harmonogram", { ID_Projektu: p.ID_Projektu })).map(p => [p.ID_Projektu, p.Nazwa])],
+        currentPid) : ""}
     ${fInput("Nazwa etapu *", "Nazwa_zadania", t.Nazwa_zadania, "text", "required")}
     ${fSelect("Kategoria", "Kategoria", [["", "— wybierz —"], ...pairs(KATEGORIE_ZADAN)], t.Kategoria)}
     ${fSelect("Odpowiedzialny", "ID_Osoby_odpowiedzialnej", teamOptionsPairs(), t.ID_Osoby_odpowiedzialnej)}
@@ -1739,15 +1747,16 @@ function openTaskForm(pid, tid = null) {
 }
 
 async function saveTaskFromForm(data, pid, tid) {
-  if (!data.Nazwa_zadania || !data.Data_start_plan || !data.Data_koniec_plan) {
-    alert("Uzupełnij nazwę etapu oraz daty start/koniec (plan).");
+  const finalPid = pid || data.ID_Projektu;
+  if (!finalPid || !data.Nazwa_zadania || !data.Data_start_plan || !data.Data_koniec_plan) {
+    alert("Uzupełnij projekt, nazwę etapu oraz daty start/koniec (plan).");
     return;
   }
   const isNew = !tid;
   const existing = isNew ? {} : STATE.tasks.find(x => x.ID_Zadania === tid);
   if (!requireExisting(existing, "etap")) return;
   const fields = {
-    ID_Projektu: pid, Nazwa_zadania: data.Nazwa_zadania, Kategoria: data.Kategoria,
+    ID_Projektu: finalPid, Nazwa_zadania: data.Nazwa_zadania, Kategoria: data.Kategoria,
     ID_Osoby_odpowiedzialnej: data.ID_Osoby_odpowiedzialnej || null,
     Data_start_plan: parseDateInput(data.Data_start_plan), Data_koniec_plan: parseDateInput(data.Data_koniec_plan),
     Data_start_rzeczywista: existing.Data_start_rzeczywista || null, Data_koniec_rzeczywista: existing.Data_koniec_rzeczywista || null,
@@ -1761,7 +1770,7 @@ async function saveTaskFromForm(data, pid, tid) {
   else Object.assign(existing, saved);
   closeModal();
   renderAll();
-  openProjectDetail(pid);
+  if (pid) openProjectDetail(pid); else renderGanttView();
 }
 
 async function deleteTask(tid, pid) {
