@@ -59,6 +59,14 @@ PK_COLUMNS = {
 }
 
 
+class NetworkError(Exception):
+    """Blad polaczenia (DNS, timeout, connection refused, zerwane polaczenie w trakcie) -
+    odrozniony od normalnej odpowiedzi HTTP z bledem (ktora request() nadal zwraca jako
+    (status, body), bez zmian). Blad sieciowy w trakcie petli po wierszach oznacza, ze kazdy
+    kolejny request tez by sie nie udal - main() przerywa cala migracje od razu z jasnym
+    komunikatem, zamiast zasypywac ekran identycznym bledem dla kazdego pozostalego wiersza."""
+
+
 class RemoteClient:
     def __init__(self, base_url):
         self.base_url = base_url.rstrip("/")
@@ -80,6 +88,10 @@ class RemoteClient:
                 return e.code, json.loads(payload)
             except json.JSONDecodeError:
                 return e.code, {"error": payload.decode(errors="replace")}
+        except OSError as e:
+            # URLError/TimeoutError/ConnectionError sa wszystkie podklasami OSError -
+            # jeden catch wystarcza (HTTPError, tez podklasa OSError, jest juz zlapany wyzej).
+            raise NetworkError(f"{method} {path_}: {e}") from e
 
     def login(self, email, password):
         status, body = self.request("POST", "/api/auth/login", {"email": email, "password": password})
@@ -103,6 +115,9 @@ def main():
     parser.add_argument("--email", required=True, help="e-mail konta COO/Admin na zdalnej instancji")
     parser.add_argument("--password", help="haslo (jesli pominiete, zapyta interaktywnie)")
     parser.add_argument("--dry-run", action="store_true", help="pokaz co zostaloby wyslane, bez wysylania")
+    parser.add_argument("--force", action="store_true",
+                         help="pomin sprawdzenie, czy zdalna baza jest juz pusta - uzyj tylko jesli "
+                              "swiadomie dopisujesz dane do juz-zmigrowanej instancji (inaczej zduplikujesz wiersze)")
     args = parser.parse_args()
 
     if not path.exists(DB_PATH):
@@ -112,67 +127,91 @@ def main():
     client = None
     if not args.dry_run:
         client = RemoteClient(args.url)
-        client.login(args.email, password)
-        print(f"Zalogowano na {args.url} jako {args.email}.")
+        try:
+            client.login(args.email, password)
+            print(f"Zalogowano na {args.url} jako {args.email}.")
+            # POST zawsze tworzy NOWY wiersz - bez tego sprawdzenia ponowne uruchomienie (np.
+            # po tym jak ktos nie byl pewien, czy poprzednie sie udalo, albo po przerwaniu w
+            # polowie) po cichu zdublowaloby kazdy juz przeniesiony wiersz.
+            if not args.force:
+                status, existing = client.request("GET", "/api/projekty")
+                if status == 200 and existing:
+                    sys.exit(
+                        f"Zdalna instancja ma juz {len(existing)} projekt(ow) - wyglada na to, ze "
+                        f"migracja byla juz uruchamiana (czesciowo albo w calosci). Ponowne "
+                        f"uruchomienie zdublowaloby kazdy juz przeniesiony wiersz, bo POST zawsze "
+                        f"tworzy nowy. Sprawdz recznie stan zdalnej instancji; jesli na pewno chcesz "
+                        f"kontynuowac, uruchom ponownie z --force."
+                    )
+        except NetworkError as e:
+            sys.exit(f"Blad polaczenia z {args.url}: {e}")
 
     id_maps = {}  # {tabela: {stare_id: nowe_id}}
     totals = {}
 
-    for table, fk_map in MIGRATION_PLAN:
-        pk = PK_COLUMNS[table]
-        rows = read_local_rows(table)
-        id_maps[table] = {}
-        totals[table] = len(rows)
+    try:
+        for table, fk_map in MIGRATION_PLAN:
+            pk = PK_COLUMNS[table]
+            rows = read_local_rows(table)
+            id_maps[table] = {}
+            totals[table] = len(rows)
+            if args.dry_run:
+                print(f"[dry-run] {table}: {len(rows)} wierszy do wyslania")
+                continue
+
+            for row in rows:
+                old_pk = row.get(pk)
+                payload = {k: v for k, v in row.items() if k != pk}
+                skip_row = False
+                for fk_col, target_table in fk_map.items():
+                    if payload.get(fk_col) is not None:
+                        mapped = id_maps.get(target_table, {}).get(payload[fk_col])
+                        if mapped is None:
+                            print(f"  UWAGA: {table}/{old_pk}: {fk_col}={payload[fk_col]!r} nie znaleziono "
+                                  f"w zmigrowanych {target_table} - pomijam ten wiersz.")
+                            skip_row = True
+                            break
+                        payload[fk_col] = mapped
+                if skip_row:
+                    continue
+                # harmonogram: samo-referencja ID_Zadania_poprzedzajacego rozwiazywana w drugiej turze
+                payload.pop("ID_Zadania_poprzedzajacego", None)
+
+                status, body = client.request("POST", f"/api/{table}", payload)
+                if status != 201:
+                    print(f"  BLAD przy {table}/{old_pk} ({status}): {body}")
+                    continue
+                id_maps[table][old_pk] = body[pk]
+
+            print(f"{table}: {len(id_maps[table])}/{len(rows)} wierszy przeniesionych.")
+
         if args.dry_run:
-            print(f"[dry-run] {table}: {len(rows)} wierszy do wyslania")
-            continue
+            print("\n[dry-run] Nic nie zostalo wyslane. Uruchom bez --dry-run, zeby faktycznie zmigrowac.")
+            return
 
-        for row in rows:
-            old_pk = row.get(pk)
-            payload = {k: v for k, v in row.items() if k != pk}
-            skip_row = False
-            for fk_col, target_table in fk_map.items():
-                if payload.get(fk_col) is not None:
-                    mapped = id_maps.get(target_table, {}).get(payload[fk_col])
-                    if mapped is None:
-                        print(f"  UWAGA: {table}/{old_pk}: {fk_col}={payload[fk_col]!r} nie znaleziono "
-                              f"w zmigrowanych {target_table} - pomijam ten wiersz.")
-                        skip_row = True
-                        break
-                    payload[fk_col] = mapped
-            if skip_row:
+        # druga tura: ID_Zadania_poprzedzajacego w harmonogram (samo-referencja, wymaga zeby
+        # WSZYSTKIE etapy juz istnialy zdalnie, zanim ktorykolwiek z nich moze wskazac na inny)
+        local_harmonogram = read_local_rows("harmonogram")
+        updated = 0
+        for row in local_harmonogram:
+            prev = row.get("ID_Zadania_poprzedzajacego")
+            if not prev:
                 continue
-            # harmonogram: samo-referencja ID_Zadania_poprzedzajacego rozwiazywana w drugiej turze
-            payload.pop("ID_Zadania_poprzedzajacego", None)
-
-            status, body = client.request("POST", f"/api/{table}", payload)
-            if status != 201:
-                print(f"  BLAD przy {table}/{old_pk} ({status}): {body}")
-                continue
-            id_maps[table][old_pk] = body[pk]
-
-        print(f"{table}: {len(id_maps[table])}/{len(rows)} wierszy przeniesionych.")
-
-    if args.dry_run:
-        print("\n[dry-run] Nic nie zostalo wyslane. Uruchom bez --dry-run, zeby faktycznie zmigrowac.")
-        return
-
-    # druga tura: ID_Zadania_poprzedzajacego w harmonogram (samo-referencja, wymaga zeby
-    # WSZYSTKIE etapy juz istnialy zdalnie, zanim ktorykolwiek z nich moze wskazac na inny)
-    local_harmonogram = read_local_rows("harmonogram")
-    updated = 0
-    for row in local_harmonogram:
-        prev = row.get("ID_Zadania_poprzedzajacego")
-        if not prev:
-            continue
-        new_id = id_maps["harmonogram"].get(row["ID_Zadania"])
-        new_prev = id_maps["harmonogram"].get(prev)
-        if new_id and new_prev:
-            status, body = client.request("PUT", f"/api/harmonogram/{new_id}", {"ID_Zadania_poprzedzajacego": new_prev})
-            if status == 200:
-                updated += 1
-    if updated:
-        print(f"harmonogram: {updated} powiazan \"zadanie poprzedzajace\" ustawionych w drugiej turze.")
+            new_id = id_maps["harmonogram"].get(row["ID_Zadania"])
+            new_prev = id_maps["harmonogram"].get(prev)
+            if new_id and new_prev:
+                status, body = client.request("PUT", f"/api/harmonogram/{new_id}", {"ID_Zadania_poprzedzajacego": new_prev})
+                if status == 200:
+                    updated += 1
+        if updated:
+            print(f"harmonogram: {updated} powiazan \"zadanie poprzedzajace\" ustawionych w drugiej turze.")
+    except NetworkError as e:
+        sys.exit(
+            f"\nBlad polaczenia z {args.url}: {e}\n"
+            f"Migracja przerwana w trakcie - czesc danych mogla juz zostac zapisana zdalnie. "
+            f"Sprawdz recznie stan zdalnej instancji przed ponownym uruchomieniem; skrypt "
+            f"odmowi ponownego uruchomienia na niepustej zdalnej bazie bez --force (patrz wyzej)."
+        )
 
     print("\nGotowe. Zaloguj sie do zdalnej instancji i porownaj liczby projektow/zespolu/przypisan.")
 
