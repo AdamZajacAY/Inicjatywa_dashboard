@@ -98,6 +98,18 @@ def _load_or_create_secret_key():
     env_key = os.environ.get("SECRET_KEY")
     if env_key:
         return env_key
+    if os.environ.get("DATABASE_PATH"):
+        # Wdrozenie (np. Render) - checkout kodu jest ulotny (przebudowywany przy kazdym
+        # deployu), wiec cichy fallback do pliku ponizej generowalby NOWY klucz przy kazdym
+        # restarcie = wszyscy zalogowani wylogowani bez ostrzezenia, w kolko. render.yaml ma
+        # SECRET_KEY z generateValue: true, wiec to dziala "z pudelka" po Blueprint deployu -
+        # ten blad chroni przed cichym zepsuciem, gdyby ktos pozniej recznie wyczyscil zmienna.
+        raise RuntimeError(
+            "SECRET_KEY nie jest ustawione, a DATABASE_PATH wskazuje na wdrozenie produkcyjne - "
+            "odmawiam startu z tymczasowym kluczem. Ustaw SECRET_KEY w zmiennych srodowiskowych."
+        )
+    # Lokalnie: wygodny fallback do pliku obok bazy, zeby nie trzeba bylo recznie ustawiac
+    # zmiennej srodowiskowej na laptopie.
     key_path = os.path.join(ROOT, "baza_danych", "secret_key.txt")
     if os.path.exists(key_path):
         with open(key_path, "r", encoding="utf-8") as f:
@@ -117,6 +129,12 @@ app.config.update(
     # zmiennej, LAN po zwyklym http://) zostaje False - Secure=True zablokowaloby zapisanie
     # ciasteczka bez TLS wcale, czyli login nigdy by sie nie utrzymal.
     SESSION_COOKIE_SECURE=bool(os.environ.get("DATABASE_PATH")),
+    # Bez tego Flask i tak odrzuca podpisana ciasteczko po swoim wlasnym domyslnym max_age
+    # (31 dni) - jawne 7 dni to swiadomy, krotszy wybor dla appki firmowej, plus
+    # session.permanent=True przy logowaniu (patrz auth_login/auth_google_callback), zeby
+    # samo ciasteczko tez nioslo realne Max-Age zamiast wygasac dopiero przy zamknieciu
+    # przegladarki (ktora wiele osob trzyma otwarta tygodniami).
+    PERMANENT_SESSION_LIFETIME=datetime.timedelta(days=7),
 )
 
 # tabela -> (kolumna klucza glownego, prefiks generowanych ID, szerokosc zer wiodacych)
@@ -318,6 +336,29 @@ def validate_user_payload(data, existing):
     merged_person = data["ID_Osoby"] if "ID_Osoby" in data else (existing.get("ID_Osoby") if existing else None)
     if merged_role in ("Specjalista", "Architekt_PM") and not merged_person:
         return "Ta rola wymaga powiązania z osobą z zespołu."
+    return None
+
+
+def _has_full_access(row):
+    return row.get("Rola") in FULL_ACCESS_ROLES and int(row.get("Aktywny", 1) or 0) != 0
+
+
+def guard_last_admin(conn, existing, data=None, deleting=False):
+    """Zwraca komunikat bledu (string) albo None. Bez tego dawaloby sie usunac/zdegradowac/
+    dezaktywowac OSTATNIE konto COO/Admin (nawet przez inne konto COO/Admin, nie tylko przez
+    samego siebie) - appka zostawalaby bez nikogo, kto moze zarzadzac kontami albo odzyskac
+    sobie dostep."""
+    if not _has_full_access(existing):
+        return None
+    stays_full_access = False if deleting else _has_full_access({**existing, **(data or {})})
+    if stays_full_access:
+        return None
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM users WHERE Rola IN ('COO', 'Admin') AND Aktywny = 1 AND ID_Uzytkownika != ?",
+        (existing["ID_Uzytkownika"],),
+    ).fetchone()[0]
+    if remaining == 0:
+        return "Nie można usunąć/dezaktywować/zdegradować ostatniego konta z pełnym dostępem (COO/Admin)."
     return None
 
 
@@ -557,6 +598,7 @@ def auth_login():
 
     _login_attempts.pop(key, None)
     session.clear()
+    session.permanent = True
     session["uid"] = row["ID_Uzytkownika"]
     conn.execute(
         "UPDATE users SET Data_ostatniego_logowania = ? WHERE ID_Uzytkownika = ?",
@@ -659,7 +701,10 @@ def auth_google_callback():
     except (urllib.error.URLError, urllib.error.HTTPError, KeyError, json.JSONDecodeError):
         abort(502)
 
-    if "email_verified" in userinfo and not _truthy(userinfo["email_verified"]):
+    # Fail-closed: brakujacy klucz (np. Google kiedys zmieni odpowiedz, albo zwroci ja
+    # niepelna) ma znaczyc "niezweryfikowany", nie "pomin sprawdzenie" - stad .get(...) z
+    # domyslnym None zamiast warunku "if klucz w ogole jest obecny".
+    if not _truthy(userinfo.get("email_verified")):
         abort(403)
     google_sub = userinfo.get("sub")
     email = (userinfo.get("email") or "").strip().lower()
@@ -689,6 +734,7 @@ def auth_google_callback():
     if not row["Aktywny"]:
         abort(403)
     session.clear()
+    session.permanent = True
     session["uid"] = row["ID_Uzytkownika"]
     conn.execute(
         "UPDATE users SET Data_ostatniego_logowania = ? WHERE ID_Uzytkownika = ?",
@@ -766,6 +812,10 @@ def item(table, item_id):
             abort(403)  # kaskadowe usuniecie - nawet PM nie usuwa wlasnego projektu
         if not can_write(conn, g.user, "delete", table, existing):
             abort(403)
+        if table == "users":
+            error = guard_last_admin(conn, existing, deleting=True)
+            if error:
+                return jsonify({"error": error}), 409
         try:
             cur = conn.execute(f"DELETE FROM {table} WHERE {pk} = ?", (item_id,))
             conn.commit()
@@ -793,6 +843,9 @@ def item(table, item_id):
         error = validate_user_payload(data, existing)
         if error:
             return jsonify({"error": error}), 400
+        error = guard_last_admin(conn, existing, data=data)
+        if error:
+            return jsonify({"error": error}), 409
     set_clause = ", ".join(f"{c} = ?" for c in data.keys())
     try:
         cur = conn.execute(f"UPDATE {table} SET {set_clause} WHERE {pk} = ?", [*data.values(), item_id])
