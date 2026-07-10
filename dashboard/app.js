@@ -275,7 +275,9 @@ function reindex() {
   STATE.subcontractorById = new Map(STATE.subcontractors.map(s => [s.ID_Podwykonawcy, s]));
 }
 
-const ROLE_LABELS = { Specjalista: "Specjalista", Architekt_PM: "Architekt/PM", COO: "COO", Admin: "Admin" };
+// Etykiety wyswietlane uzytkownikowi - celowo inne niz wewnetrzne wartosci Rola w bazie
+// (Specjalista/Architekt_PM), zeby nie ruszac danych/logiki uprawnien przy zmianie nazewnictwa.
+const ROLE_LABELS = { Specjalista: "Architekt", Architekt_PM: "Architekt Prowadzący", COO: "COO", Admin: "Admin" };
 
 function showDashboard() {
   $("#emptyState").style.display = "none";
@@ -1316,10 +1318,10 @@ function openUserForm(uid = null) {
   const body = `
     ${fInput("E-mail *", "Email", u.Email, "email", "required")}
     ${fInput("Imię i nazwisko", "Imie_i_nazwisko", u.Imie_i_nazwisko)}
-    ${fSelect("Rola", "Rola", [["", "Oczekujące (brak dostępu)"], ["Specjalista", "Specjalista"], ["Architekt_PM", "Architekt/PM"], ["COO", "COO"], ["Admin", "Admin"]], u.Rola || "")}
+    ${fSelect("Rola", "Rola", [["", "Oczekujące (brak dostępu)"], ["Specjalista", "Architekt"], ["Architekt_PM", "Architekt Prowadzący"], ["COO", "COO"], ["Admin", "Admin"]], u.Rola || "")}
     ${fSelect("Powiązana osoba z zespołu", "ID_Osoby", unlinkedTeamOptionsPairs(uid), u.ID_Osoby)}
     ${fSelect("Aktywny", "Aktywny", [["Tak", "Tak"], ["Nie", "Nie"]], u.Aktywny === 0 ? "Nie" : "Tak")}
-    <div class="empty-hint full" style="grid-column:1/-1">Role Specjalista i Architekt/PM wymagają powiązanej osoby z zespołu (do niej odnoszą się przydzielone projekty i tickety).</div>
+    <div class="empty-hint full" style="grid-column:1/-1">Role Architekt i Architekt Prowadzący wymagają powiązanej osoby z zespołu (do niej odnoszą się przydzielone projekty i tickety).</div>
   `;
   openModal(uid ? "Edytuj użytkownika" : "Nowy użytkownik", body, {
     submitLabel: "Zapisz",
