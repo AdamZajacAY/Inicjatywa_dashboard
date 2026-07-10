@@ -66,7 +66,22 @@ def ensure_database_ready():
     print(f"Zainicjowano pustą bazę danych pod {DB_PATH} (schema.sql) - DATABASE_PATH było ustawione, a plik nie istniał.")
 
 
+def backup_on_startup():
+    # Tak samo jak ensure_database_ready() - zyje na poziomie modulu (nie tylko w main()),
+    # zeby zadzialac tez pod gunicornem/Render, ktory main() nigdy nie woła. Dzieki temu kazdy
+    # start procesu (w tym automatyczny redeploy po git push) zabezpiecza stan bazy sprzed
+    # nowego kodu, zanim ten zdazy cokolwiek zmienic.
+    try:
+        dest_path = create_backup()
+        enforce_retention()
+        return f"Backup przy starcie: {os.path.basename(dest_path)}"
+    except Exception as e:
+        # nieudany backup nie moze zablokowac startu procesu - tylko ostrzezenie
+        return f"Backup przy starcie nie powiódł się (proces i tak startuje): {e}"
+
+
 ensure_database_ready()
+STARTUP_BACKUP_NOTE = backup_on_startup()
 
 app = Flask(__name__, static_folder=None)
 
@@ -713,23 +728,15 @@ def static_files(path):
 
 
 def main():
-    # ensure_database_ready() już się wykonało przy imporcie modułu (patrz wyżej) - tutaj
-    # tylko lokalny wygodny dodatek (backup startowy, otwarcie przeglądarki), nie wołany
-    # w ogóle pod gunicornem/Render.
-    try:
-        backup_path = create_backup()
-        enforce_retention()
-        backup_note = f"Backup przy starcie: {os.path.basename(backup_path)}"
-    except Exception as e:
-        # nieudany backup nie moze zablokowac startu serwera - tylko ostrzezenie
-        backup_note = f"Backup przy starcie nie powiódł się (serwer i tak startuje): {e}"
-
+    # ensure_database_ready() i backup_on_startup() juz sie wykonaly przy imporcie modulu
+    # (patrz wyzej) - tutaj tylko lokalny wygodny dodatek (banner, otwarcie przegladarki),
+    # nie wolany w ogole pod gunicornem/Render.
     url = f"http://localhost:{PORT}/dashboard/index.html"
     print("=" * 60)
     print("Serwer działa. Dashboard:")
     print(f"  {url}")
     print(f"Baza danych: {DB_PATH}")
-    print(backup_note)
+    print(STARTUP_BACKUP_NOTE)
     print("Zatrzymanie: Ctrl+C")
     print("=" * 60)
     webbrowser.open(url)
