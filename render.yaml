@@ -14,7 +14,13 @@ services:
     env: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT
+    # --access-logfile/--error-logfile "-" = na stdout/stderr, gdzie Render je zbiera do
+    # zakladki Logs - domyslnie gunicorn ma access log WYLACZONY, wiec bez tego zaden ruch
+    # HTTP nigdy nie trafialby do logow produkcyjnych.
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --access-logfile - --error-logfile -
+    # DB-aware health check (patrz /api/health w server.py) - samo "/" to tylko statyczny
+    # index.html, wiec nie wykrywa np. uszkodzonego/nieosiagalnego pliku bazy.
+    healthCheckPath: /api/health
     envVars:
       - key: SECRET_KEY
         generateValue: true

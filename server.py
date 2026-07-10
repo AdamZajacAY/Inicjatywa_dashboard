@@ -84,6 +84,11 @@ def backup_on_startup():
 ensure_database_ready()
 SCHEMA_MIGRATION_NOTE = migrate_schema(DB_PATH)  # idempotentny - no-op po pierwszym udanym uruchomieniu
 STARTUP_BACKUP_NOTE = backup_on_startup()
+# Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
+# (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
+# starcie (patrz komentarz w backup_on_startup) przechodzilby produkcyjnie bez sladu w logach.
+print(SCHEMA_MIGRATION_NOTE)
+print(STARTUP_BACKUP_NOTE)
 
 app = Flask(__name__, static_folder=None)
 
@@ -172,6 +177,10 @@ def get_db():
         g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys = ON")
+        # Bez tego wspolbiezny zapis (np. dwie osoby zapisuja rozne rekordy w tej samej
+        # sekundzie) od razu rzuca nieobslugiwany "database is locked" zamiast poczekac -
+        # 5s daje sqlite3 szanse zeby transakcja w toku po prostu sie zakonczyla.
+        g.db.execute("PRAGMA busy_timeout = 5000")
     return g.db
 
 
@@ -542,7 +551,8 @@ def _google_oauth_config():
     }
 
 
-PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/google/login", "/api/auth/google/callback", "/api/auth/config"}
+PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/google/login", "/api/auth/google/callback",
+                     "/api/auth/config", "/api/health"}
 PENDING_OK_PATHS = {"/api/auth/me", "/api/auth/logout", "/api/auth/change-password"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -891,6 +901,19 @@ def admin_reset_password(item_id):
     return "", 204
 
 
+@app.route("/api/health")
+def health():
+    # "/" samo w sobie nie mowi nic o bazie - to tylko statyczny index.html, wiec Render
+    # moglby raportowac "healthy" nawet gdyby plik .db byl uszkodzony/nieosiagalny. Ten
+    # endpoint faktycznie dotyka bazy (SELECT na tabeli, ktora zawsze istnieje po migracji),
+    # publiczny (bez logowania - health check nie powinien wymagac sesji).
+    try:
+        get_db().execute("SELECT COUNT(*) FROM users").fetchone()
+    except sqlite3.Error as e:
+        return jsonify({"status": "error", "detail": str(e)}), 503
+    return jsonify({"status": "ok"})
+
+
 @app.errorhandler(404)
 def not_found(_e):
     return jsonify({"error": "not found"}), 404
@@ -926,16 +949,14 @@ def static_files(path):
 
 
 def main():
-    # ensure_database_ready() i backup_on_startup() juz sie wykonaly przy imporcie modulu
-    # (patrz wyzej) - tutaj tylko lokalny wygodny dodatek (banner, otwarcie przegladarki),
-    # nie wolany w ogole pod gunicornem/Render.
+    # ensure_database_ready(), migrate_schema() i backup_on_startup() juz sie wykonaly (i
+    # wypisaly swoje komunikaty) przy imporcie modulu (patrz wyzej) - tutaj tylko lokalny
+    # wygodny dodatek (banner, otwarcie przegladarki), nie wolany w ogole pod gunicornem/Render.
     url = f"http://localhost:{PORT}/"
     print("=" * 60)
     print("Serwer działa. Dashboard:")
     print(f"  {url}")
     print(f"Baza danych: {DB_PATH}")
-    print(SCHEMA_MIGRATION_NOTE)
-    print(STARTUP_BACKUP_NOTE)
     print("Zatrzymanie: Ctrl+C")
     print("=" * 60)
     webbrowser.open(url)
