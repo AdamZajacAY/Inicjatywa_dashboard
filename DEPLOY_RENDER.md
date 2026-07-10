@@ -95,18 +95,38 @@ Po migracji zaloguj się na produkcji i porównaj liczby (Przegląd portfela) z 
 
 ## Krok 5 — Backupy na Render
 
-Działają identycznie jak lokalnie (`baza_danych/backup_db.py`), tyle że `BACKUPS_DIR` (ustawione
-w `render.yaml`) też wskazuje na dysk trwały (`/var/data/backups`), więc kopie przetrwają
-redeploy tak samo jak sama baza:
+Dwie niezależne warstwy — obie działają automatycznie, bez żadnej konfiguracji z Twojej strony:
+
+**1. Backupy aplikacji (`baza_danych/backup_db.py`)** — działają identycznie jak lokalnie, tyle
+że `BACKUPS_DIR` (ustawione w `render.yaml`) też wskazuje na dysk trwały (`/var/data/backups`),
+więc kopie przetrwają redeploy tak samo jak sama baza. Retencja wiekowa: kopie młodsze niż 30 dni
+są zachowywane, plus zawsze co najmniej 10 najnowszych niezależnie od wieku. Trzy wyzwalacze:
 - automatycznie przy starcie usługi (każdy deploy/restart),
 - ręcznie przyciskiem „Backup teraz” w zakładce Użytkownicy,
 - albo przez Shell: `python3 baza_danych/backup_db.py`.
 
-**Backupy z dysku trwałego nie trafiają nigdzie poza ten dysk automatycznie** — jeśli chcesz
-kopię poza Render (rekomendowane dla realnych danych firmowych), okresowo pobieraj je: przez
-Shell możesz je obejrzeć (`ls /var/data/backups`), ale do faktycznego ściągnięcia na dysk lokalny
-potrzebujesz mechanizmu transferu plików z Render — sprawdź aktualną dokumentację Render pod
-kątem najwygodniejszej metody (to się zmienia; nie zgaduję tu na pewniaka).
+Te kopie są **zaufane jako podstawowe źródło przywracania** — powstają przez
+`sqlite3.Connection.backup()` (oficjalne SQLite Online Backup API), bezpieczne nawet gdy baza jest
+akurat używana.
+
+**2. Automatyczne snapshoty dysku trwałego (funkcja Render, nie tej aplikacji)** — Render sam
+robi snapshot całego dysku (`/var/data`, czyli baza + katalog backupów powyżej) raz na 24h,
+przechowywany co najmniej 7 dni. Przywracanie: zakładka **Disks** usługi w panelu Render, wybór
+snapshotu z listy — **uwaga, przywrócenie cofa też wszystkie zmiany na dysku od momentu
+snapshotu**, więc traktuj to jako "ostatnia deska ratunku" (np. cała usługa/dysk zniknęły), nie
+pierwszy wybór przy zwykłym "cofnij do wczoraj". Render sam zastrzega w swojej dokumentacji, że
+snapshoty dysku nie są rekomendowane jako jedyny mechanizm odzyskiwania dla silników baz danych
+(ryzyko złapania niespójnego stanu w trakcie zapisu) — jeśli kiedykolwiek przywrócisz snapshot,
+sprawdź odzyskany plik (`sqlite3 baza_projektow.db "PRAGMA integrity_check;"`) zanim zaczniesz go
+używać; jeśli masz z tego samego okresu kopię z warstwy 1 powyżej, ta jest pewniejsza.
+
+**Kopia poza Render** — obie warstwy wyżej żyją na tym samym dysku `/var/data`, więc żadna z nich
+nie chroni przed utratą samej usługi/konta Render. Dla realnych danych firmowych warto okresowo
+ściągać kopię na zewnątrz: `python3 baza_danych/migrate_to_remote.py` w drugą stronę nie działa
+(to narzędzie idzie tylko lokalne→zdalne), ale plik z `/var/data/backups` możesz pobrać przez
+Shell w panelu Render dowolnym narzędziem do transferu plików (np. `scp`/`rsync`, jeśli Render
+udostępnia dostęp SSH do instancji na Twoim planie — sprawdź aktualną dokumentację Render, to się
+zmienia szybciej niż reszta tego dokumentu).
 
 ## Krok 6 — Weryfikacja
 
