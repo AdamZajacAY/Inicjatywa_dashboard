@@ -959,8 +959,9 @@ let ticketFilters = { projekt: "", osoba: "", status: "", onlyOverdue: false, vi
 function ticketCardHtml(t) {
   const overdue = isOverdueTicket(t);
   const isSub = !!t.ID_Podwykonawcy;
+  const editable = can("update", "zadania_tickety", t);
   return `
-    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue ? "overdue" : ""}" draggable="${can("update", "zadania_tickety", t)}" data-drag-ticket="${esc(t.ID_Tickietu)}" data-open-ticket="${esc(t.ID_Tickietu)}">
+    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue ? "overdue" : ""}" draggable="${editable}" data-drag-ticket="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
       <div class="kc-title">${esc(t.Tytul)}</div>
       <div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>
       <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)}</div>
@@ -1024,7 +1025,7 @@ function renderTickets() {
         </tr></thead>
         <tbody>
           ${list.map(t => `
-            <tr class="clickable" data-open-ticket="${esc(t.ID_Tickietu)}">
+            <tr ${can("update", "zadania_tickety", t) ? `class="clickable" data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
               <td>${esc(t.ID_Tickietu)}</td>
               <td>${esc(t.Tytul)}</td>
               <td>${esc(projectName(t.ID_Projektu))}</td>
@@ -1339,27 +1340,30 @@ async function saveUserFromForm(data, uid) {
     Rola: data.Rola || null, ID_Osoby: data.ID_Osoby || null,
     Aktywny: data.Aktywny === "Nie" ? 0 : 1,
   };
-  let saved;
-  try {
-    saved = isNew ? await apiPost("/api/users", fields) : await apiPut(`/api/users/${uid}`, fields);
-  } catch (e) {
-    alert("Nie udało się zapisać użytkownika: " + e.message);
-    return;
-  }
+  const saved = await persistEntity({ isNew, endpoint: "/api/users", id: uid, fields, errorLabel: "użytkownik" });
+  if (!saved) return;
   if (isNew) STATE.users.push(saved); else Object.assign(existing, saved);
   closeModal();
   renderAll();
   if (isNew) resetUserPassword(saved.ID_Uzytkownika, true);
 }
 
-async function resetUserPassword(uid, isInitial = false) {
-  const pw = prompt(isInitial
-    ? "Ustaw hasło początkowe dla nowego konta (min. 8 znaków):"
-    : "Nowe hasło dla tego użytkownika (min. 8 znaków):");
-  if (pw == null) return;
-  if (pw.length < 8) { alert("Hasło musi mieć co najmniej 8 znaków."); return; }
+function resetUserPassword(uid, isInitial = false) {
+  const body = fInput(
+    isInitial ? "Hasło początkowe (min. 8 znaków)" : "Nowe hasło (min. 8 znaków)",
+    "new_password", "", "password", "required minlength=8"
+  );
+  openModal(isInitial ? "Ustaw hasło początkowe" : "Zresetuj hasło", body, {
+    submitLabel: "Ustaw hasło",
+    onSubmit: (data) => submitNewPassword(uid, data.new_password),
+  });
+}
+
+async function submitNewPassword(uid, pw) {
+  if (!pw || pw.length < 8) { alert("Hasło musi mieć co najmniej 8 znaków."); return; }
   try {
     await apiPost(`/api/users/${uid}/reset-password`, { new_password: pw });
+    closeModal();
     alert("Hasło zostało ustawione.");
   } catch (e) {
     alert("Nie udało się ustawić hasła: " + e.message);
@@ -2197,7 +2201,7 @@ function openProjectDetail(pid) {
       <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Zadania / tickety (${tickets.length})</h4>
         ${can("create", "zadania_tickety", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-ticket="${esc(pid)}">+ Nowy ticket</button>` : ""}</div>
       ${tickets.length ? tickets.slice().sort((a, b) => (a.Termin?.getTime() || 0) - (b.Termin?.getTime() || 0)).map(t => `
-        <div class="dp-list-item" data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:pointer">
+        <div class="dp-list-item" ${can("update", "zadania_tickety", t) ? `data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:pointer"` : ""}>
           <div class="item-actions">
             ${can("delete", "zadania_tickety", t) ? `<button class="icon-btn danger" data-delete-ticket="${esc(t.ID_Tickietu)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
@@ -2283,11 +2287,11 @@ function openPersonDetail(oid) {
     </div>
     <div class="dp-section">
       <h4>Przypisane zadania / tickety (${myTickets.length})</h4>
-      ${myTickets.map(t => `
-        <div class="dp-list-item clickable" data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:pointer">
+      ${myTickets.map(t => { const editable = can("update", "zadania_tickety", t); return `
+        <div class="dp-list-item ${editable ? "clickable" : ""}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:pointer"` : ""}>
           <div class="title">${esc(t.Tytul)} ${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))}</div>
           <div class="meta">${esc(projectName(t.ID_Projektu))} · termin ${fmtDate(t.Termin)} · ${esc(t.Priorytet)}</div>
-        </div>`).join("") || `<div class="kpi-sub">Brak przypisanych zadań.</div>`}
+        </div>`; }).join("") || `<div class="kpi-sub">Brak przypisanych zadań.</div>`}
     </div>
   `;
   $("#overlay").classList.add("open");
@@ -2342,11 +2346,11 @@ function openSubcontractorDetail(sid) {
           <div class="kpi-sub">z ${ot.total} zadań łącznie</div>
         </div>
       </div>
-      ${tickets.map(t => `
-        <div class="dp-list-item clickable" data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:pointer;margin-top:10px">
+      ${tickets.map(t => { const editable = can("update", "zadania_tickety", t); return `
+        <div class="dp-list-item ${editable ? "clickable" : ""}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""} style="cursor:${editable ? "pointer" : "default"};margin-top:10px">
           <div class="title">${esc(t.ID_Tickietu)} — ${esc(t.Tytul)} ${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))}</div>
           <div class="meta">${esc(projectName(t.ID_Projektu))} · termin ${fmtDate(t.Termin)}${t.Wycena_podwykonawcy ? " · wycena " + fmtMoney(t.Wycena_podwykonawcy) : ""}</div>
-        </div>`).join("") || `<div class="empty-hint" style="margin-top:10px">Brak zadań przypisanych do tego podwykonawcy.</div>`}
+        </div>`; }).join("") || `<div class="empty-hint" style="margin-top:10px">Brak zadań przypisanych do tego podwykonawcy.</div>`}
     </div>
   `;
   $("#overlay").classList.add("open");

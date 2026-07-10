@@ -232,7 +232,13 @@ def next_id(conn, table, pk, prefix, width):
 
 
 def parse_payload(conn, table, exclude=()):
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        data = {}
+    elif not isinstance(data, dict):
+        # np. cialo JSON to tablica/liczba/string zamiast obiektu - bez tego "".items()
+        # nizej rzuca AttributeError, ktory ucieka jako surowy 500 zamiast czytelnego 400.
+        abort(400)
     valid_cols = table_columns(conn, table)
     exclude = set(exclude) | set(ALWAYS_STRIP_FIELDS.get(table, ()))
     return {k: v for k, v in data.items() if k in valid_cols and k not in exclude}
@@ -336,6 +342,17 @@ def redact_row(user, table, row):
             if field in row:
                 row[field] = None
     return row
+
+
+def integrity_error_message(e, table):
+    # Surowy sqlite3.IntegrityError (nazwy tabel/kolumn - szczegoly schematu) nie powinien
+    # wyciekac do klienta przez API - loginujemy oryginal server-side i zwracamy czytelny,
+    # ogolny komunikat po polsku, z jednym swiadomym wyjatkiem (duplikat e-maila), bo to
+    # najczestszy realny przypadek, na ktory warto dac uzytkownikowi konkretna wskazowke.
+    print(f"IntegrityError ({table}): {e}")
+    if table == "users" and "users.Email" in str(e):
+        return "Ten adres e-mail jest już używany przez inne konto."
+    return "Nie można zapisać — rekord narusza unikalność danych albo relację z innym rekordem."
 
 
 def validate_user_payload(data, existing):
@@ -791,6 +808,10 @@ def collection(table):
         error = validate_user_payload(data, None)
         if error:
             return jsonify({"error": error}), 400
+        # Konta zakladane przez create_admin.py i logowanie Google juz stempluja to przy
+        # INSERT - tutaj domykamy trzecia sciezke (COO/Admin tworzy konto w samej appce),
+        # zeby Data_utworzenia bylo zawsze ustawione, niezaleznie od tego, co wyslal klient.
+        data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds"))
     if prefix:
         data[pk] = next_id(conn, table, pk, prefix, width)
     cols = list(data.keys())
@@ -801,7 +822,7 @@ def collection(table):
         )
         conn.commit()
     except sqlite3.IntegrityError as e:
-        return jsonify({"error": str(e)}), 409
+        return jsonify({"error": integrity_error_message(e, table)}), 409
     pk_val = data.get(pk) or cur.lastrowid
     return jsonify(redact_row(g.user, table, fetch_row(conn, table, pk, pk_val))), 201
 
@@ -830,7 +851,8 @@ def item(table, item_id):
             cur = conn.execute(f"DELETE FROM {table} WHERE {pk} = ?", (item_id,))
             conn.commit()
         except sqlite3.IntegrityError as e:
-            return jsonify({"error": f"Nie można usunąć — rekord jest nadal używany gdzie indziej ({e})"}), 409
+            print(f"IntegrityError (DELETE {table}): {e}")
+            return jsonify({"error": "Nie można usunąć — rekord jest nadal używany gdzie indziej."}), 409
         if cur.rowcount == 0:
             abort(404)
         return "", 204
@@ -861,7 +883,7 @@ def item(table, item_id):
         cur = conn.execute(f"UPDATE {table} SET {set_clause} WHERE {pk} = ?", [*data.values(), item_id])
         conn.commit()
     except sqlite3.IntegrityError as e:
-        return jsonify({"error": str(e)}), 409
+        return jsonify({"error": integrity_error_message(e, table)}), 409
     if cur.rowcount == 0:
         abort(404)
     return jsonify(redact_row(g.user, table, fetch_row(conn, table, pk, item_id)))
@@ -877,7 +899,8 @@ def backup():
         dest_path = create_backup()
         removed = enforce_retention()
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Blad przy tworzeniu backupu: {e}")
+        return jsonify({"error": "Nie udało się utworzyć kopii zapasowej. Sprawdź logi serwera."}), 500
     return jsonify({"name": os.path.basename(dest_path), "removed": removed}), 201
 
 
@@ -910,7 +933,10 @@ def health():
     try:
         get_db().execute("SELECT COUNT(*) FROM users").fetchone()
     except sqlite3.Error as e:
-        return jsonify({"status": "error", "detail": str(e)}), 503
+        # Endpoint publiczny (bez logowania) - szczegoly bledu tylko w logach serwera, nie w
+        # odpowiedzi, ten sam powod co integrity_error_message() powyzej.
+        print(f"Health check: blad bazy danych: {e}")
+        return jsonify({"status": "error"}), 503
     return jsonify({"status": "ok"})
 
 
