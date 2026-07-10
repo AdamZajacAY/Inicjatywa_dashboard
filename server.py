@@ -175,6 +175,20 @@ def table_columns(conn, table):
     return _table_columns_cache[table]
 
 
+_column_types_cache = {}
+
+
+def column_types(conn, table):
+    # {nazwa_kolumny: zadeklarowany_typ} wprost z schema.sql (przez PRAGMA table_info) -
+    # pozwala walidowac liczby generycznie (kazda kolumna REAL/INTEGER), bez trzymania
+    # osobnej, latwej do rozjechania sie listy "ktore pola sa liczbowe" w drugim miejscu.
+    if table not in _column_types_cache:
+        _column_types_cache[table] = {
+            row["name"]: row["type"].upper() for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+    return _column_types_cache[table]
+
+
 def fetch_row(conn, table, pk, pk_val):
     row = conn.execute(f"SELECT * FROM {table} WHERE {pk} = ?", (pk_val,)).fetchone()
     return dict(row) if row else None
@@ -304,6 +318,112 @@ def validate_user_payload(data, existing):
     merged_person = data["ID_Osoby"] if "ID_Osoby" in data else (existing.get("ID_Osoby") if existing else None)
     if merged_role in ("Specjalista", "Architekt_PM") and not merged_person:
         return "Ta rola wymaga powiązania z osobą z zespołu."
+    return None
+
+
+# ---------------------------------------------------------------- walidacja pol (enum + zakresy)
+#
+# Audyt potwierdzil empirycznie, ze bez tego np. POST /api/projekty {"Status":"asdf"} przechodzi
+# bez bledu i wiersz po prostu znika ze wszystkich filtrow/kafelkow w app.js (kazdy byStatus/byRag
+# porownuje przez ===) - bez zadnego komunikatu, ze cos poszlo nie tak. Listy ponizej sa 1:1
+# skopiowane z odpowiadajacych im stalych w dashboard/app.js (TYPE_ORDER, STATUSES, FAZY, ...) -
+# to dwa niezalezne zrodla tej samej prawdy (JS dla <select>, Python dla walidacji zapisu), wiec
+# przy dopisywaniu nowej wartosci do dropdowna w UI dopisz ja tez tutaj.
+ENUM_FIELDS = {
+    "projekty": {
+        "Typ_projektu": {"Projekt koncepcyjny", "Analiza urbanistyczna", "Projekt budowlany",
+                          "Projekt wykonawczy", "Nadzor autorski", "Konkurs", "Projekt techniczny (PT)", "Inne"},
+        "Funkcja_biura": {"Projektant wiodacy", "Nadzor autorski", "Analiza/doradztwo",
+                           "Uczestnik konkursu", "Koordynacja branzowa"},
+        "Segment": {"Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"},
+        "Status": {"Planowanie", "W realizacji", "Wstrzymany", "Zakonczony", "Anulowany"},
+        "Faza": {"Koncepcja", "Analiza", "Projektowanie", "Pozwolenia/Przetarg", "Budowa", "Zakonczenie",
+                 "Konkurs - etap studialny", "Konkurs - etap II"},
+        "Priorytet": {"Wysoki", "Sredni", "Niski"},
+        "RAG_Status": {"Zielony", "Zolty", "Czerwony"},
+    },
+    "zespol": {
+        "Dzial": {"Architekci", "Specjalisci", "Kierownictwo projektow", "PMO", "Prawny",
+                   "Finansowy", "Marketing/Sprzedaz", "Zarzad"},
+        "Aktywny": {"Tak", "Nie"},
+    },
+    "przypisania": {
+        "Rola_w_projekcie": {"Sponsor", "Owner", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"},
+        "Status": {"Aktywny", "Zakonczony"},
+    },
+    "harmonogram": {
+        "Kategoria": {"Koncepcja", "Konsultacje", "Projektowanie", "Rysunki wykonawcze",
+                       "Dokumentacja przetargowa", "Pozwolenia/Uzgodnienia", "Nadzor autorski",
+                       "Koordynacja branzowa", "Wizja lokalna/Spotkanie", "Prezentacja", "Administracja/Inne"},
+        "Status": {"Nie rozpoczete", "W trakcie", "Zakonczone", "Opoznione"},
+        "Priorytet": {"Wysoki", "Sredni", "Niski"},
+        "Kamien_milowy": {"Tak", "Nie"},
+    },
+    "zadania_tickety": {
+        "Priorytet": {"Wysoki", "Sredni", "Niski"},
+        "Status": {"Backlog", "W tym tygodniu", "W trakcie", "Do przegladu", "Zrobione",
+                    "Zablokowane", "Zarchiwizowane"},
+    },
+    "podwykonawcy": {
+        "Branza": {"Elektryczna", "Sanitarna/Hydrauliczna", "Gazowa", "Wentylacja i klimatyzacja",
+                    "Konstrukcyjna", "Drogowa/Infrastruktura", "Teletechniczna/IT", "Przeciwpozarowa", "Inna"},
+        "Typ_wspolpracy": {"Projektant branzowy", "Wykonawca robot", "Dostawca", "Konsultant"},
+        "Ocena": {"Wysoka", "Srednia", "Niska", "Brak oceny"},
+        "Status": {"Aktywny", "Nieaktywny", "Zweryfikowany", "Czarna lista"},
+    },
+    "ryzyka_i_problemy": {
+        "Typ": {"Ryzyko", "Problem"},
+        "Kategoria": {"Prawne", "Finansowe", "Techniczne", "Harmonogramowe", "Zasoby",
+                       "Srodowiskowe", "Proceduralne/Przetargowe"},
+        "Priorytet": {"Wysoki", "Sredni", "Niski"},
+        "Status": {"Otwarte", "W trakcie", "Zamkniete"},
+    },
+    "przypisania_podwykonawcow": {
+        "Status": {"Planowany", "Aktywny", "Zakonczony", "Wstrzymany"},
+    },
+    "raporty_statusowe": {
+        "RAG_Status": {"Zielony", "Zolty", "Czerwony"},
+    },
+}
+
+# (min, max) dla pol procentowych, ktore formularz w app.js przycina po stronie klienta
+# (input type=number min=/max=), ale API dotad przyjmowalo cokolwiek. Procent_postepu i
+# Procent_ukonczenia sa w bazie ulamkiem 0..1 (formularz dzieli przez 100 przed wyslaniem),
+# reszta to wprost 0..100 (Procent_zaangazowania celowo do 200 - formularz pozwala na
+# przeciazenie >100%, patrz jego wlasny min=0 max=200).
+NUMERIC_RANGES = {
+    "projekty": {"Procent_postepu": (0.0, 1.0)},
+    "harmonogram": {"Procent_ukonczenia": (0.0, 1.0)},
+    "raporty_statusowe": {"Procent_postepu": (0.0, 1.0)},
+    "zespol": {"Dostepnosc_FTE_procent": (0, 100)},
+    "przypisania": {"Procent_zaangazowania": (0, 200)},
+}
+
+
+def validate_field_types_and_ranges(conn, table, data):
+    """Zwraca komunikat bledu (string) albo None. Liczby walidowane generycznie na podstawie
+    zadeklarowanego typu kolumny (REAL/INTEGER) w schema.sql - nie osobna, rowna sie latwa do
+    rozjechania sie lista "ktore pola sa liczbowe"."""
+    col_types = column_types(conn, table)
+    for field, value in data.items():
+        if value is None or value == "":
+            continue
+        if col_types.get(field) in ("REAL", "INTEGER"):
+            try:
+                float(value)
+            except (TypeError, ValueError):
+                return f"Pole {field} musi być liczbą (otrzymano: {value!r})."
+    for field, valid_values in ENUM_FIELDS.get(table, {}).items():
+        if field in data and data[field] is not None and data[field] not in valid_values:
+            return f"Nieprawidłowa wartość pola {field}: {data[field]!r}."
+    for field, (lo, hi) in NUMERIC_RANGES.get(table, {}).items():
+        if field in data and data[field] is not None:
+            try:
+                v = float(data[field])
+            except (TypeError, ValueError):
+                continue  # juz zgloszone przez petle typow wyzej
+            if not (lo <= v <= hi):
+                return f"Pole {field} musi być w zakresie {lo}-{hi} (otrzymano: {v})."
     return None
 
 
@@ -608,6 +728,9 @@ def collection(table):
     data = parse_payload(conn, table)
     if not can_write(conn, g.user, "create", table, data):
         abort(403)
+    error = validate_field_types_and_ranges(conn, table, data)
+    if error:
+        return jsonify({"error": error}), 400
     if table == "users":
         error = validate_user_payload(data, None)
         if error:
@@ -663,6 +786,9 @@ def item(table, item_id):
     if "ID_Projektu" in data and data["ID_Projektu"] != existing.get("ID_Projektu"):
         if not can_write(conn, g.user, "update", table, {**existing, **data}):
             abort(403)
+    error = validate_field_types_and_ranges(conn, table, data)
+    if error:
+        return jsonify({"error": error}), 400
     if table == "users":
         error = validate_user_payload(data, existing)
         if error:
