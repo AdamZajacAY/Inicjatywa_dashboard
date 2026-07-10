@@ -34,6 +34,7 @@ from flask import Flask, abort, g, jsonify, redirect, request, send_from_directo
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
+from baza_danych.schema_migrate import migrate_schema
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # Lokalnie zawsze domyslna sciezka w repo (baza juz tam jest). DATABASE_PATH ustawiane w
@@ -81,6 +82,7 @@ def backup_on_startup():
 
 
 ensure_database_ready()
+SCHEMA_MIGRATION_NOTE = migrate_schema(DB_PATH)  # idempotentny - no-op po pierwszym udanym uruchomieniu
 STARTUP_BACKUP_NOTE = backup_on_startup()
 
 app = Flask(__name__, static_folder=None)
@@ -753,6 +755,7 @@ def main():
     print("Serwer działa. Dashboard:")
     print(f"  {url}")
     print(f"Baza danych: {DB_PATH}")
+    print(SCHEMA_MIGRATION_NOTE)
     print(STARTUP_BACKUP_NOTE)
     print("Zatrzymanie: Ctrl+C")
     print("=" * 60)

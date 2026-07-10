@@ -2,11 +2,17 @@
 -- Kolumny 1:1 z EXPORT_HEADERS w dashboard/app.js i nagłówkami w generuj_baze.py -
 -- patrz README.md / plan migracji dla uzasadnienia. Enumy (Status, Priorytet, ...)
 -- to zwykły TEXT, walidowany po stronie server.py, nie CHECK constraints.
+--
+-- NOT NULL na kluczach glownych i na kolumnach FK z ON DELETE CASCADE ("nalezy do") -
+-- kolumny FK z ON DELETE SET NULL ("przypisany do / odpowiedzialny za") zostaja
+-- nullable, bo o to w SET NULL wlasnie chodzi (dziecko przezywa usuniecie rodzica).
+-- Jesli zmieniasz to pod istniejaca baza z danymi, patrz baza_danych/schema_migrate.py -
+-- SQLite nie pozwala dopisac NOT NULL do istniejacej kolumny przez zwykly ALTER TABLE.
 
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS projekty (
-  ID_Projektu TEXT PRIMARY KEY,
+  ID_Projektu TEXT PRIMARY KEY NOT NULL,
   Nazwa TEXT,
   Typ_projektu TEXT,
   Funkcja_biura TEXT,
@@ -41,7 +47,7 @@ CREATE TABLE IF NOT EXISTS projekty (
 );
 
 CREATE TABLE IF NOT EXISTS zespol (
-  ID_Osoby TEXT PRIMARY KEY,
+  ID_Osoby TEXT PRIMARY KEY NOT NULL,
   Imie_i_nazwisko TEXT,
   Stanowisko_Rola TEXT,
   Dzial TEXT,
@@ -54,9 +60,9 @@ CREATE TABLE IF NOT EXISTS zespol (
 );
 
 CREATE TABLE IF NOT EXISTS przypisania (
-  ID_Przypisania TEXT PRIMARY KEY,
-  ID_Projektu TEXT REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
-  ID_Osoby TEXT REFERENCES zespol(ID_Osoby) ON DELETE CASCADE,
+  ID_Przypisania TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  ID_Osoby TEXT NOT NULL REFERENCES zespol(ID_Osoby) ON DELETE CASCADE,
   Rola_w_projekcie TEXT,
   Procent_zaangazowania REAL,
   Data_od TEXT,
@@ -65,8 +71,8 @@ CREATE TABLE IF NOT EXISTS przypisania (
 );
 
 CREATE TABLE IF NOT EXISTS harmonogram (
-  ID_Zadania TEXT PRIMARY KEY,
-  ID_Projektu TEXT REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  ID_Zadania TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
   Nazwa_zadania TEXT,
   Kategoria TEXT,
   ID_Osoby_odpowiedzialnej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
@@ -83,7 +89,7 @@ CREATE TABLE IF NOT EXISTS harmonogram (
 );
 
 CREATE TABLE IF NOT EXISTS podwykonawcy (
-  ID_Podwykonawcy TEXT PRIMARY KEY,
+  ID_Podwykonawcy TEXT PRIMARY KEY NOT NULL,
   Nazwa TEXT,
   Branza TEXT,
   Typ_wspolpracy TEXT,
@@ -98,8 +104,8 @@ CREATE TABLE IF NOT EXISTS podwykonawcy (
 );
 
 CREATE TABLE IF NOT EXISTS zadania_tickety (
-  ID_Tickietu TEXT PRIMARY KEY,
-  ID_Projektu TEXT REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  ID_Tickietu TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
   ID_Etapu TEXT REFERENCES harmonogram(ID_Zadania) ON DELETE SET NULL,
   Tytul TEXT,
   Opis TEXT,
@@ -116,8 +122,8 @@ CREATE TABLE IF NOT EXISTS zadania_tickety (
 );
 
 CREATE TABLE IF NOT EXISTS kamienie_milowe (
-  ID_Kamienia TEXT PRIMARY KEY,
-  ID_Projektu TEXT REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  ID_Kamienia TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
   Nazwa_kamienia TEXT,
   Data_planowana TEXT,
   Data_rzeczywista TEXT,
@@ -126,8 +132,8 @@ CREATE TABLE IF NOT EXISTS kamienie_milowe (
 );
 
 CREATE TABLE IF NOT EXISTS ryzyka_i_problemy (
-  ID TEXT PRIMARY KEY,
-  ID_Projektu TEXT REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  ID TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
   Typ TEXT,
   Opis TEXT,
   Kategoria TEXT,
@@ -144,7 +150,7 @@ CREATE TABLE IF NOT EXISTS ryzyka_i_problemy (
 CREATE TABLE IF NOT EXISTS raporty_statusowe (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   Data_raportu TEXT,
-  ID_Projektu TEXT REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
   RAG_Status TEXT,
   Procent_postepu REAL,
   Budzet_wydany_skumulowany REAL,
@@ -155,9 +161,9 @@ CREATE TABLE IF NOT EXISTS raporty_statusowe (
 );
 
 CREATE TABLE IF NOT EXISTS przypisania_podwykonawcow (
-  ID_Przypisania_Podw TEXT PRIMARY KEY,
-  ID_Projektu TEXT REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
-  ID_Podwykonawcy TEXT REFERENCES podwykonawcy(ID_Podwykonawcy) ON DELETE CASCADE,
+  ID_Przypisania_Podw TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  ID_Podwykonawcy TEXT NOT NULL REFERENCES podwykonawcy(ID_Podwykonawcy) ON DELETE CASCADE,
   Branza TEXT,
   Zakres_prac TEXT,
   Data_od TEXT,
@@ -174,7 +180,7 @@ CREATE TABLE IF NOT EXISTS przypisania_podwykonawcow (
 -- byc powiazany z konkretna osoba z zespolu (ID_Osoby), np. konta COO/Admin czysto
 -- systemowe moga zostac niepowiazane.
 CREATE TABLE IF NOT EXISTS users (
-  ID_Uzytkownika TEXT PRIMARY KEY,
+  ID_Uzytkownika TEXT PRIMARY KEY NOT NULL,
   Email TEXT NOT NULL UNIQUE,
   Imie_i_nazwisko TEXT,
   Haslo_Hash TEXT,                 -- NULL = konto zalozone wylacznie przez Google
@@ -187,6 +193,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE INDEX IF NOT EXISTS idx_przypisania_projekt ON przypisania(ID_Projektu);
+CREATE INDEX IF NOT EXISTS idx_przypisania_osoba ON przypisania(ID_Osoby);
 CREATE INDEX IF NOT EXISTS idx_harmonogram_projekt ON harmonogram(ID_Projektu);
 CREATE INDEX IF NOT EXISTS idx_tickety_projekt ON zadania_tickety(ID_Projektu);
 CREATE INDEX IF NOT EXISTS idx_kamienie_projekt ON kamienie_milowe(ID_Projektu);
