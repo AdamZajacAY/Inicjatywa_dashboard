@@ -56,9 +56,26 @@ def create_backup(db_path=DB_PATH, backups_dir=BACKUPS_DIR):
     dest = sqlite3.connect(dest_path)
     try:
         src.backup(dest)
-    finally:
+        # Backup byl dotad tworzony i od razu "zaufany" bez zadnej weryfikacji - gdyby
+        # wyszedl uszkodzony (np. pechowy moment na dysku), nikt by sie o tym nie
+        # dowiedzial az do dnia, w ktorym trzeba by go faktycznie odtworzyc (audyt
+        # bezpieczenstwa/ciaglosci dzialania, 2026-07-10: "mamy backupy, ktorych nigdy
+        # nie probowalismy odtworzyc"). PRAGMA integrity_check biegnie na SWIEZO
+        # utworzonej kopii, nigdy na zywej bazie.
+        result = dest.execute("PRAGMA integrity_check").fetchone()[0]
+        if result != "ok":
+            raise RuntimeError(f"integrity_check zglosil problem: {result}")
+    except Exception:
+        # Cokolwiek poszlo nie tak - sam src.backup() (np. zrodlo bylo uszkodzone) albo
+        # integrity_check powyzej - nie zostawiaj polowicznego/uszkodzonego pliku w
+        # katalogu backupow, gdzie moglby po cichu wygladac jak zaufana kopia.
         dest.close()
         src.close()
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        raise
+    dest.close()
+    src.close()
     return dest_path
 
 
