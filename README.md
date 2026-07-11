@@ -125,6 +125,32 @@ logowanie hasłem działa normalnie, przycisk Google po prostu się nie pokazuje
 Pierwsze logowanie przez Google (podobnie jak każde nowe konto) ląduje jako Oczekujące — Admin
 musi je zatwierdzić i nadać rolę w zakładce Użytkownicy.
 
+## Przepływ danych do stron trzecich
+
+Trzy zewnętrzne podmioty dotykają danych z tego systemu (spisane po audycie
+bezpieczeństwa/RODO, 2026-07-10 — nie porada prawna, tylko fakty do dalszej oceny):
+
+- **Google (logowanie OAuth)** — przy logowaniu Google appka odbiera od Google e-mail, imię i
+  nazwisko oraz `sub` (stały identyfikator konta Google) i zapisuje je w tabeli `users`. Zakres
+  żądany to `openid email profile` — appka zapisuje tylko e-mail/imię/`sub`, resztę ewentualnie
+  zwróconych danych profilu odrzuca, nie zapisuje.
+- **CEIDG (dane.biznes.gov.pl)** — przycisk „Pobierz z CEIDG” w formularzu podwykonawcy wysyła
+  NIP bezpośrednio z przeglądarki (z pominięciem backendu) do publicznego API rządowego, w
+  zamian dostając nazwę/miasto/status firmy. Token API jest wpisywany ręcznie i trzymany
+  wyłącznie w `localStorage` tej przeglądarki — nigdy nie trafia na serwer tej aplikacji.
+- **Render.com (hosting)** — przechowuje całą bazę danych i wszystkie kopie zapasowe (patrz
+  niżej). Region hostingu nie jest jawnie ustawiony w `render.yaml` — sprawdź go wprost w
+  panelu Render, jeśli potrzebujesz tego do oceny transferu danych poza UE.
+
+To, co dziś **nie** istnieje: udokumentowana podstawa prawna/cel przetwarzania danych
+pracowników i podwykonawców, automatyczna retencja/usuwanie danych po zakończeniu projektu czy
+odejściu osoby z zespołu, oraz mechanizm realizacji wniosku „pokaż/usuń wszystko o mnie”. Usunięcie
+osoby z `Zespół` czyści jej przypisania, ale **nie** czyści wzmianek o niej w polach tekstowych
+(opisy, uwagi, komentarze) ani w polach `Owner`/`Kierownik_projektu`/`Autor_raportu` (to zwykły
+tekst, nie referencje) — te zostają w bazie bezterminowo. Jeśli te tematy są istotne dla firmy,
+warto je przegadać z osobą odpowiedzialną za ochronę danych, zanim system urośnie do większej
+skali.
+
 ## Backup bazy danych
 
 `baza_danych/backup_db.py` robi kopię `baza_projektow.db` do `baza_danych/backups/` (nazwa z

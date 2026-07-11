@@ -123,10 +123,37 @@ używać; jeśli masz z tego samego okresu kopię z warstwy 1 powyżej, ta jest 
 **Kopia poza Render** — obie warstwy wyżej żyją na tym samym dysku `/var/data`, więc żadna z nich
 nie chroni przed utratą samej usługi/konta Render. Dla realnych danych firmowych warto okresowo
 ściągać kopię na zewnątrz: `python3 baza_danych/migrate_to_remote.py` w drugą stronę nie działa
-(to narzędzie idzie tylko lokalne→zdalne), ale plik z `/var/data/backups` możesz pobrać przez
-Shell w panelu Render dowolnym narzędziem do transferu plików (np. `scp`/`rsync`, jeśli Render
-udostępnia dostęp SSH do instancji na Twoim planie — sprawdź aktualną dokumentację Render, to się
-zmienia szybciej niż reszta tego dokumentu).
+(to narzędzie idzie tylko lokalne→zdalne). Render udostępnia natywną bramkę SSH (`scp`/`rsync`
+z Twojego komputera) oraz `magic-wormhole` (zainstalowany domyślnie w zakładce Shell) — obie
+metody potwierdzone jako dostępne dziś dla tego typu usługi (2026-07-10), choć w praktyce
+nigdy nie zostały tu przetestowane — zanim uznasz to za działającą procedurę, wypróbuj ją raz
+na spokojnie, nie dopiero w trakcie awarii.
+
+### Odtwarzanie z backupu (disaster recovery) — kolejność ma znaczenie
+
+**Świeży dysk na nowej instancji Render po cichu inicjuje pustą, w pełni działającą bazę
+(Krok 2) — bez błędu, bez ostrzeżenia.** Jeśli w scenariuszu "usługa/dysk zniknęły, stawiam
+od nowa" zalogujesz się i zaczniesz pracować przed wgraniem backupu, nic Cię nie ostrzeże, że
+pracujesz na pustych danych zamiast przywróconych. Kolejność poniżej jest zaprojektowana tak,
+żeby to wykluczyć:
+
+1. Postaw nową usługę (Krok 1), poczekaj aż wstanie (Krok 2) — **ale jeszcze się nie loguj i
+   nie zakładaj nowego konta admina**.
+2. Zdobądź najnowszy zaufany backup: albo z kopii ściągniętej wcześniej poza Render (patrz
+   wyżej), albo — jeśli tylko dysk jest uszkodzony, a sama usługa działa — bezpośrednio z
+   `/var/data/backups` przez Shell tej samej (starej) instancji, zanim ją wyłączysz.
+3. Przez Shell nowej instancji, wgraj plik backupu na miejsce `DATABASE_PATH`
+   (`/var/data/baza_projektow.db`), **nadpisując** pustą bazę, którą utworzył Krok 2.
+4. Zanim zrestartujesz usługę, zweryfikuj wgrany plik: `sqlite3 /var/data/baza_projektow.db
+   "PRAGMA integrity_check;"` — wynik musi być dokładnie `ok`. Jeśli nie jest, **nie
+   restartuj** — spróbuj innego backupu z listy w `/var/data/backups` (są posortowane
+   chronologicznie w nazwie pliku).
+5. Dopiero teraz zrestartuj usługę (Manual Deploy albo restart z panelu) i zaloguj się
+   istniejącym już kontem (backup ma swoje własne konta w tabeli `users` — nowe konto z
+   Kroku 3 zakładasz tylko wtedy, gdy backup faktycznie nie miał żadnego, np. przy zupełnie
+   pierwszym wdrożeniu).
+6. Zweryfikuj liczby (Krok 6 poniżej) — zobaczysz od razu prawdziwy stan portfela, nie pusty
+   dashboard, jeśli przywracanie się powiodło.
 
 ## Krok 6 — Weryfikacja
 
