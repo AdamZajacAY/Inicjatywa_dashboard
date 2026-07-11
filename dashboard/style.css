@@ -28,6 +28,11 @@
   --status-warning: #fab219;
   --status-serious: #ec835a;
   --status-critical: #d03b3b;
+  /* Dedykowane tla paskow Gantta pod biały tekst etykiety - stale w obu motywach
+     (w odroznieniu od --accent/--text-muted, ktore celowo odwracaja jasnosc
+     miedzy motywami i przy bialym tekscie w trybie ciemnym dawaly kontrast ~1:1) */
+  --status-neutral: #6e6c66;
+  --status-active: #1d5fb4;
 
   --seq-100: #cde2fb;
   --seq-450: #2a78d6;
@@ -65,6 +70,8 @@
     --status-warning: #fab219;
     --status-serious: #ec835a;
     --status-critical: #d03b3b;
+    --status-neutral: #6e6c66;
+    --status-active: #1d5fb4;
 
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.35);
   }
@@ -353,9 +360,9 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   background: var(--cat-5); cursor: pointer; box-shadow: 0 0 0 2px var(--surface-1);
 }
 .status-done { background: var(--status-good); }
-.status-progress { background: var(--accent); }
+.status-progress { background: var(--status-active); }
 .status-delayed { background: var(--status-critical); }
-.status-notstarted { background: var(--text-muted); }
+.status-notstarted { background: var(--status-neutral); }
 .gantt-legend { display: flex; gap: 16px; padding: 10px 14px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
 .gantt-legend .item { display: flex; align-items: center; gap: 6px; }
 .gantt-legend .swatch { width: 10px; height: 10px; border-radius: 3px; }
