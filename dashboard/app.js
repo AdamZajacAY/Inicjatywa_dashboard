@@ -532,6 +532,9 @@ function realHoursForProject(pid) {
 function projectTags(p) {
   return (p.Tagi || "").split(",").map(s => s.trim()).filter(Boolean);
 }
+function allProjectTags() {
+  return Array.from(new Set(STATE.projects.flatMap(projectTags))).sort();
+}
 function projectRevenue(p) {
   return num(p.Przychod_rzeczywisty) > 0 ? num(p.Przychod_rzeczywisty) : num(p.Przychod_planowany);
 }
@@ -776,7 +779,7 @@ const PRIORITY_RANK = { "Wysoki": 0, "Sredni": 1, "Niski": 2 };
 function renderProjectsFilters() {
   const owners = Array.from(new Set(STATE.projects.map(p => p.Owner).filter(Boolean))).sort();
   const statuses = Array.from(new Set(STATE.projects.map(p => p.Status).filter(Boolean)));
-  const allTags = Array.from(new Set(STATE.projects.flatMap(projectTags))).sort();
+  const allTags = allProjectTags();
   return `
     <div class="filters">
       <input type="text" id="fProjQ" placeholder="Szukaj po nazwie…" value="${esc(projectFilters.q)}">
@@ -1470,6 +1473,10 @@ function closeModal() {
 $("#modalForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!modalSubmitHandler) return;
+  // Tekst wpisany w pole tagow, ale nie zatwierdzony Enterem/przecinkiem, nie ma atrybutu
+  // "name" (celowo, zeby nie trafial do FormData jako smiec) - bez tego commitu ginalby po
+  // cichu przy submicie zamiast zostac zapisany jako tag.
+  $all(".tag-chip-input", e.target).forEach(addTagFromInput);
   // Bez blokady przycisku szybki podwojny klik/Enter odpalal dwa POST-y zanim pierwszy
   // zdazyl odpowiedziec (submit nie byl w ogole await'owany) - oba widzialy isNew=true
   // (STATE jeszcze nieodswiezone) i tworzyly dwa duplikaty rekordu z jednej akcji uzytkownika.
@@ -1504,6 +1511,22 @@ function fSelect(label, name, options, selected, extra = "") {
 function fTextarea(label, name, value, extra = "") {
   return `<label class="f-label full">${esc(label)}<textarea name="${name}" rows="3" ${extra}>${esc(value ?? "")}</textarea></label>`;
 }
+function tagChipHtml(tag) {
+  return `<span class="tag-chip removable" data-tag="${esc(tag)}">${esc(tag)}<button type="button" class="tag-chip-remove" aria-label="Usuń tag ${esc(tag)}">&times;</button></span>`;
+}
+// Chipy + input tekstowy zamiast zwyklego pola CSV - hidden input trzyma te sama wartosc CSV co
+// wczesniej (name="Tagi"), wiec FormData/saveProjectFromForm czytaja go bez zadnych zmian.
+function fTagsInput(label, name, valueCsv, suggestions = []) {
+  const tags = (valueCsv || "").split(",").map(s => s.trim()).filter(Boolean);
+  return `<label class="f-label full">${esc(label)}
+    <div class="tag-chips-editable" data-tags-field>
+      ${tags.map(tagChipHtml).join("")}
+      <input type="text" class="tag-chip-input" list="tagi-suggestions" placeholder="Dodaj tag i Enter" autocomplete="off">
+    </div>
+    <datalist id="tagi-suggestions">${suggestions.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
+    <input type="hidden" name="${name}" value="${esc(tags.join(","))}">
+  </label>`;
+}
 function pairs(arr) { return arr.map(x => [x, x]); }
 function teamOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.map(t => [t.ID_Osoby, t.Imie_i_nazwisko])]; }
 function assignedTeamOptionsPairs(pid) {
@@ -1531,7 +1554,7 @@ function openProjectForm(pid = null) {
     ${fSelect("Faza", "Faza", pairs(FAZY), p.Faza || "Koncepcja")}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), p.Priorytet || "Sredni")}
     ${fSelect("RAG status", "RAG_Status", [["Zielony", "Zielony"], ["Zolty", "Żółty"], ["Czerwony", "Czerwony"]], p.RAG_Status || "Zielony")}
-    ${fInput("Tagi (oddzielone przecinkami)", "Tagi", p.Tagi, "text", 'placeholder="np. kluczowy klient, ryzyko regulacyjne"')}
+    ${fTagsInput("Tagi", "Tagi", p.Tagi, allProjectTags())}
 
     <div class="form-section-title">Terminy i postęp</div>
     ${fInput("Data rozpoczęcia", "Data_rozpoczecia", p.Data_rozpoczecia, "date")}
@@ -2615,10 +2638,26 @@ function dpClearValue() {
   closeDatePicker();
 }
 
+function syncTagsHiddenInput(field) {
+  const tags = $all(".tag-chip", field).map(el => el.getAttribute("data-tag"));
+  field.parentElement.querySelector('input[type="hidden"]').value = tags.join(",");
+}
+function addTagFromInput(input) {
+  const value = input.value.trim().replace(/,+$/, "").trim();
+  input.value = "";
+  if (!value) return;
+  const field = input.closest(".tag-chips-editable");
+  if ($all(".tag-chip", field).some(el => el.getAttribute("data-tag") === value)) return;
+  input.insertAdjacentHTML("beforebegin", tagChipHtml(value));
+  syncTagsHiddenInput(field);
+}
+
 document.addEventListener("keydown", (e) => {
   const dateTrigger = e.target.closest && e.target.closest(".date-input");
   if (dateTrigger && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openDatePicker(dateTrigger); return; }
   if (e.key === "Escape") closeDatePicker();
+  const tagInput = e.target.closest && e.target.closest(".tag-chip-input");
+  if (tagInput && (e.key === "Enter" || e.key === ",")) { e.preventDefault(); addTagFromInput(tagInput); return; }
 });
 
 document.addEventListener("click", (e) => {
@@ -2626,6 +2665,14 @@ document.addEventListener("click", (e) => {
   if (printView) { window.print(); return; }
   const dateTrigger = e.target.closest(".date-input");
   if (dateTrigger) { openDatePicker(dateTrigger); return; }
+  const tagRemoveBtn = e.target.closest(".tag-chip-remove");
+  if (tagRemoveBtn) {
+    const chip = tagRemoveBtn.closest(".tag-chip");
+    const field = chip.closest(".tag-chips-editable");
+    chip.remove();
+    syncTagsHiddenInput(field);
+    return;
+  }
   const dpPrev = e.target.closest("[data-dp-prev]");
   if (dpPrev) { dpNav(-1); return; }
   const dpNext = e.target.closest("[data-dp-next]");

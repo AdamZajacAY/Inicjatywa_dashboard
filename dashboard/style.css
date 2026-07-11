@@ -207,6 +207,19 @@ main { flex: 1; min-width: 0; max-width: 1400px; padding: 20px 24px 80px; }
 
 .tag-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
 .tag-chip { background: var(--grid); color: var(--text-secondary); font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.tag-chip.removable { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; }
+.tag-chip-remove {
+  border: none; background: none; cursor: pointer; color: inherit; font-size: 13px; line-height: 1;
+  padding: 0; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; opacity: .65;
+}
+.tag-chip-remove:hover { opacity: 1; background: var(--border); }
+.tag-chips-editable {
+  display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 6px 8px; min-height: 34px;
+  border-radius: 8px; border: 1px solid var(--border); background: var(--page);
+}
+.f-label .tag-chip-input { flex: 1; min-width: 110px; border: none; background: none; padding: 3px 2px; font: inherit; color: var(--text-primary); }
+.tag-chip-input:focus { outline: none; }
 
 /* ---------- Filters ---------- */
 .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
