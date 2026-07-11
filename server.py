@@ -92,6 +92,17 @@ print(STARTUP_BACKUP_NOTE)
 
 app = Flask(__name__, static_folder=None)
 
+# Produkcja (Render) jest za Cloudflare (potwierdzone naglowkami odpowiedzi na zywo, audyt
+# 2026-07-10) - bez tego request.remote_addr widzialby adres proxy, nie prawdziwy IP klienta,
+# co zanizaloby skutecznosc limitu logowan (kazdy klient wygladalby jak ten sam adres) i
+# zafalszowywalo dochodzenie po fakcie z logow. x_for=1 zaklada DOKLADNIE jedna warstwe
+# proxy przed aplikacja - jesli Render dokłada wlasna, wewnetrzna warstwe posrednia (nie
+# potwierdzone stad), ta liczba wymaga korekty; zbyt wysoka wartosc otwiera mozliwosc
+# podszycia sie pod inny IP przez naglowek X-Forwarded-For.
+if os.environ.get("DATABASE_PATH"):
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
 # python3 na macOS (system Python, linkowany z LibreSSL) nie ma hashlib.scrypt, czyli
 # domyslna metoda generate_password_hash() (scrypt) rzuca AttributeError - zweryfikowane
 # bezposrednio. pbkdf2:sha256 dziala wszedzie, wiec jest jedyna dopuszczalna metoda w tym pliku.
@@ -747,6 +758,14 @@ def auth_me():
 
 @app.route("/api/auth/change-password", methods=["POST"])
 def auth_change_password():
+    # Wczesniej bez zadnego limitu prob (audyt bezpieczenstwa, 2026-07-10) - skradzione, ale
+    # wciaz wazne ciasteczko sesji pozwalaloby brute-forcowac prawdziwe haslo bez twardego
+    # limitu, ograniczone tylko kosztem liczenia PBKDF2 per proba. Ten sam mechanizm co przy
+    # logowaniu (_is_locked_out/_record_failed_attempt), osobny namespace klucza (prefiks
+    # "changepw:"), zeby nie mieszac z licznikiem nieudanych logowan.
+    key = _rate_limit_key(f"changepw:{g.user['Email']}")
+    if _is_locked_out(key):
+        return jsonify({"error": "Zbyt wiele nieudanych prób. Spróbuj ponownie za 15 minut."}), 429
     data = request.get_json(force=True, silent=True) or {}
     current_password = data.get("current_password") or ""
     new_password = data.get("new_password") or ""
@@ -754,7 +773,9 @@ def auth_change_password():
         return jsonify({"error": "Nowe hasło musi mieć co najmniej 8 znaków."}), 400
     stored_hash = g.user["Haslo_Hash"] or _DUMMY_PASSWORD_HASH
     if not g.user["Haslo_Hash"] or not check_password_hash(stored_hash, current_password):
+        _record_failed_attempt(key)
         return jsonify({"error": "Obecne hasło jest nieprawidłowe."}), 401
+    _login_attempts.pop(key, None)
     conn = get_db()
     conn.execute(
         "UPDATE users SET Haslo_Hash = ? WHERE ID_Uzytkownika = ?",
