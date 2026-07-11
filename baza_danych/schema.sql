@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS zadania_tickety (
   Tytul TEXT,
   Opis TEXT,
   ID_Osoby_przypisanej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
+  ID_Osoby_zglaszajacej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
+  ID_Osoby_wspomagajacej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
   ID_Podwykonawcy TEXT REFERENCES podwykonawcy(ID_Podwykonawcy) ON DELETE SET NULL,
   Wycena_podwykonawcy REAL,
   Data_utworzenia TEXT,

@@ -1050,6 +1050,7 @@ function ticketCardHtml(t) {
       <div class="kc-title">${esc(t.Tytul)}</div>
       <div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>
       <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)}</div>
+      ${t.ID_Osoby_zglaszajacej ? `<div class="kc-meta">zgłosił: ${esc(personName(t.ID_Osoby_zglaszajacej))}</div>` : ""}
       <div class="kc-foot">
         ${isSub ? badge("Podwykonawca", "sub") : ""}
         ${badge(t.Priorytet || "—", t.Priorytet === "Wysoki" ? "critical" : t.Priorytet === "Niski" ? "muted" : "warning")}
@@ -1919,12 +1920,19 @@ function openTicketForm(pid, tid = null) {
   const t = tid ? STATE.tickets.find(x => x.ID_Tickietu === tid) : {};
   if (!requireExisting(t, "ticket")) return;
   const currentPid = pid || t.ID_Projektu || "";
+  // Nowy ticket: domyslnie zglasza go zalogowana osoba (decyzja z pytania: auto-wypelnij,
+  // edytowalne recznie). Istniejacy ticket bez zapisanego zglaszajacego (sprzed tej funkcji)
+  // zostaje pusty - edycja starego ticketu nie powinna po cichu "przypisywac" go do osoby,
+  // ktora akurat teraz go otwiera.
+  const zglaszajacyDefault = tid ? t.ID_Osoby_zglaszajacej : STATE.me.personId;
   const body = `
     ${!pid ? fSelect("Projekt *", "ID_Projektu", [["", "— wybierz —"],
         ...STATE.projects.filter(p => can("create", "zadania_tickety", { ID_Projektu: p.ID_Projektu })).map(p => [p.ID_Projektu, p.Nazwa])],
         currentPid) : ""}
     ${fInput("Tytuł *", "Tytul", t.Tytul, "text", "required")}
+    ${fSelect("Zgłaszający", "ID_Osoby_zglaszajacej", teamOptionsPairs(), zglaszajacyDefault)}
     ${fSelect("Przypisana osoba (zespół wewnętrzny)", "ID_Osoby_przypisanej", assignedTeamOptionsPairs(currentPid), t.ID_Osoby_przypisanej)}
+    ${fSelect("Wspomagający (opcjonalnie)", "ID_Osoby_wspomagajacej", assignedTeamOptionsPairs(currentPid), t.ID_Osoby_wspomagajacej)}
     ${fSelect("Podwykonawca (jeśli zlecone branżyście)", "ID_Podwykonawcy", subcontractorOptionsPairs(), t.ID_Podwykonawcy)}
     ${fInput("Wycena podwykonawcy", "Wycena_podwykonawcy", t.Wycena_podwykonawcy, "number", "min=0 step=0.01")}
     ${fInput("Termin *", "Termin", t.Termin, "date", "required")}
@@ -1943,14 +1951,19 @@ function openTicketForm(pid, tid = null) {
   });
   if (tid) loadTicketComments(tid);
   // bez ustalonego projektu (formularz otwarty z zakladki Zadania) - po wybraniu projektu
-  // zawez liste "Przypisana osoba" do zespolu przypisanego do tego projektu, i odswiez etapy
+  // zawez liste "Przypisana osoba"/"Wspomagający" do zespolu przypisanego do tego projektu
+  // (obie uzywaja tego samego assignedTeamOptionsPairs co "Przypisana osoba"), i odswiez etapy.
+  // "Zgłaszający" nie wymaga odswiezenia - teamOptionsPairs() to pelna lista, niezalezna od
+  // wybranego projektu (zglaszac moze kazdy, nie tylko zespol projektu).
   if (!pid) {
     const projSelect = $('#modalForm [name="ID_Projektu"]');
     projSelect?.addEventListener("change", (e) => {
       const chosenPid = e.target.value;
       const osobaSelect = $('#modalForm [name="ID_Osoby_przypisanej"]');
+      const wspomagajacySelect = $('#modalForm [name="ID_Osoby_wspomagajacej"]');
       const etapSelect = $('#modalForm [name="ID_Etapu"]');
       osobaSelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid), osobaSelect.value);
+      wspomagajacySelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid), wspomagajacySelect.value);
       etapSelect.innerHTML = optionsHtml(stageOptionsPairs(chosenPid), etapSelect.value);
     });
   }
@@ -1968,6 +1981,8 @@ async function saveTicketFromForm(data, pid, tid) {
   const fields = {
     ID_Projektu: finalPid, ID_Etapu: data.ID_Etapu || null,
     Tytul: data.Tytul, Opis: data.Opis, ID_Osoby_przypisanej: data.ID_Osoby_przypisanej || null,
+    ID_Osoby_zglaszajacej: data.ID_Osoby_zglaszajacej || null,
+    ID_Osoby_wspomagajacej: data.ID_Osoby_wspomagajacej || null,
     ID_Podwykonawcy: data.ID_Podwykonawcy || null,
     Wycena_podwykonawcy: data.ID_Podwykonawcy ? num(data.Wycena_podwykonawcy) : null,
     Data_utworzenia: existing.Data_utworzenia || new Date(),

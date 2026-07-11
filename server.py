@@ -34,7 +34,7 @@ from flask import Flask, abort, g, jsonify, redirect, request, send_from_directo
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
-from baza_danych.schema_migrate import migrate_schema, ensure_komentarze_table
+from baza_danych.schema_migrate import migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # Lokalnie zawsze domyslna sciezka w repo (baza juz tam jest). DATABASE_PATH ustawiane w
@@ -84,6 +84,7 @@ def backup_on_startup():
 ensure_database_ready()
 SCHEMA_MIGRATION_NOTE = migrate_schema(DB_PATH)  # idempotentny - no-op po pierwszym udanym uruchomieniu
 ensure_komentarze_table(DB_PATH)  # jw. - nowa tabela, CREATE TABLE IF NOT EXISTS wiec bezpieczne za kazdym startem
+ensure_ticket_role_columns(DB_PATH)  # jw. - nowe nullable kolumny, ALTER TABLE ADD COLUMN bezpieczne za kazdym startem
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -449,6 +450,17 @@ def validate_user_payload(data, existing):
 # "if table == X: ..." w generycznej fabryce CRUD (audyt: bylo tak zrobione w 3 miejscach
 # dla "users"). Brak wpisu = brak dodatkowego zachowania, wiec collection()/item() nigdy
 # nie wymagaja zmiany przy dopisywaniu kolejnej tabeli tutaj.
+def _default_zglaszajacy(data, user):
+    # Auto-wypelnienie zglaszajacego zalogowana osoba - fallback dla wywolan API z pominietym
+    # polem (frontend i tak domyslnie ustawia je na aktualnie zalogowana osobe w dropdownie,
+    # patrz openTicketForm w app.js). setdefault() by tu NIE wystarczylo - zadziala tylko gdy
+    # klucz jest calkowicie nieobecny, nie gdy jest jawnie null (a serializeForApi() w app.js
+    # zamienia "" z niewybranego <select> na null przed wyslaniem), wiec sprawdzamy falszywosc
+    # wprost zamiast samej obecnosci klucza.
+    if not data.get("ID_Osoby_zglaszajacej") and user.get("ID_Osoby"):
+        data["ID_Osoby_zglaszajacej"] = user["ID_Osoby"]
+
+
 TABLE_VALIDATORS = {
     "users": validate_user_payload,
 }
@@ -456,6 +468,7 @@ TABLE_CREATE_DEFAULTS = {
     # Konta zakladane przez create_admin.py i logowanie Google juz stempluja to przy INSERT -
     # to domyka trzecia sciezke (COO/Admin tworzy konto w samej appce).
     "users": lambda data, user: data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds")),
+    "zadania_tickety": _default_zglaszajacy,
 }
 
 

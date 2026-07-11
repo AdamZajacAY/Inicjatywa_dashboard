@@ -138,8 +138,30 @@ def ensure_komentarze_table(db_path):
         conn.close()
 
 
+def ensure_ticket_role_columns(db_path):
+    """Dodaje ID_Osoby_zglaszajacej/ID_Osoby_wspomagajacej do zadania_tickety w bazach
+    powstalych przed ich wprowadzeniem. Zwykly ALTER TABLE ... ADD COLUMN wystarcza (kolumny
+    sa nullable, wiec to nie jest retrofit ograniczenia jak w migrate_schema() powyzej) -
+    SQLite wspiera ADD COLUMN z klauzula REFERENCES bez przebudowy tabeli. Bezpieczne do
+    wielokrotnego wywolania (PRAGMA table_info sprawdza czy kolumna juz istnieje)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(zadania_tickety)").fetchall()}
+        new_cols = {
+            "ID_Osoby_zglaszajacej": "TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL",
+            "ID_Osoby_wspomagajacej": "TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL",
+        }
+        for col, decl in new_cols.items():
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE zadania_tickety ADD COLUMN {col} {decl}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")
     print(migrate_schema(path))
     print(ensure_komentarze_table(path) or "komentarze_tickety: OK")
+    print(ensure_ticket_role_columns(path) or "zadania_tickety role columns: OK")
