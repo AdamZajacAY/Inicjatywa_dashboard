@@ -926,6 +926,36 @@ function workloadForPerson(oid) {
   return assignmentsForPerson(oid).filter(a => a.Status === "Aktywny").reduce((s, a) => s + num(a.Procent_zaangazowania), 0);
 }
 
+const HOURS_PER_DAY = 8; // zalozenie: pelny etat (100% FTE) = 8h dziennie - brak innej normy w danych zrodlowych
+
+function workingDaysInMonth(year, month) {
+  // Liczy dni pon-pt w danym miesiacu (month: 0-11). Bez kalendarza swiat - swieta ruchome
+  // rok do roku, a utrzymanie takiej listy to osobny koszt nadal niewspolmierny do tego, co
+  // dzisiejszy model (suma % zaangazowania) i tak juz upraszcza. Swiadome uproszczenie -
+  // dlatego liczba dni robionych jest pokazana wprost w UI, nie ukryta w jednej liczbie godzin.
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  let count = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const day = new Date(year, month, d).getDay();
+    if (day !== 0 && day !== 6) count++;
+  }
+  return count;
+}
+
+// load = suma Procent_zaangazowania z aktywnych przypisan (0-100, ta sama skala co
+// Dostepnosc_FTE_procent) - przeliczenie na godziny wzgledem biezacego miesiaca, nie sumowanie
+// realnych godzin z ticketow/etapow (te maja zakresy dat, wymagaloby proracji miedzy miesiacami).
+function workloadHoursInfo(person, load, refDate = new Date()) {
+  const fte = num(person.Dostepnosc_FTE_procent, 100) / 100;
+  const workDays = workingDaysInMonth(refDate.getFullYear(), refDate.getMonth());
+  return {
+    workDays,
+    capacityHours: workDays * HOURS_PER_DAY * fte,
+    assignedHours: workDays * HOURS_PER_DAY * (load / 100),
+    dailyCapacityHours: HOURS_PER_DAY * fte,
+  };
+}
+
 function renderTeam() {
   const cards = STATE.team.map(person => {
     // Jedno przejscie po przypisaniach danej osoby zamiast dwoch (workloadForPerson() +
@@ -935,12 +965,14 @@ function renderTeam() {
     const fte = num(person.Dostepnosc_FTE_procent, 100);
     const ratio = fte ? load / fte : 0;
     const cls = ratio > 1 ? "over" : ratio >= 0.9 ? "warn" : "";
+    const hrs = workloadHoursInfo(person, load);
     return `
       <div class="team-card" data-open-person="${esc(person.ID_Osoby)}">
         <div class="tc-name">${esc(person.Imie_i_nazwisko)}</div>
         <div class="tc-role">${esc(person.Stanowisko_Rola)} · ${esc(person.Dzial)}</div>
         <div class="pc-row"><span>Obciążenie</span><b>${load}% / ${fte}%</b></div>
         <div class="workload-track"><div class="workload-fill ${cls}" style="width:${Math.min(150, load) / 1.5}%"></div></div>
+        <div class="tc-hours">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h w tym miesiącu · ${hrs.workDays} dni rob. × ${hrs.dailyCapacityHours.toFixed(1)}h/dzień</div>
         <div class="tc-projects">
           ${myAssignments.map(a => `<div>• ${esc(projectName(a.ID_Projektu))} — ${esc(a.Rola_w_projekcie)} (${pctOrDash(a.Procent_zaangazowania)})</div>`).join("") || "<div>Brak aktywnych przypisań.</div>"}
         </div>
@@ -2407,6 +2439,7 @@ function openPersonDetail(oid) {
   if (!person) return;
   const assigns = assignmentsForPerson(oid);
   const load = workloadForPerson(oid);
+  const hrs = workloadHoursInfo(person, load);
   const myTickets = ticketsForPerson(oid).sort((a, b) => (a.Termin?.getTime() || 0) - (b.Termin?.getTime() || 0));
   $("#dpContent").innerHTML = `
     <div style="display:flex;justify-content:flex-end;gap:6px">
@@ -2421,6 +2454,8 @@ function openPersonDetail(oid) {
       <div><div class="k">Dostępność (FTE)</div><div class="v">${person.Dostepnosc_FTE_procent}%</div></div>
       <div><div class="k">Stawka godzinowa</div><div class="v">${person.Stawka_godzinowa ? num(person.Stawka_godzinowa).toLocaleString("pl-PL") + " PLN/h" : "—"}</div></div>
       <div><div class="k">Obecne obciążenie</div><div class="v">${load}%</div></div>
+      <div><div class="k">Godziny w tym miesiącu</div><div class="v">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h</div></div>
+      <div><div class="k">Dni robocze / dzienna pojemność</div><div class="v">${hrs.workDays} dni × ${hrs.dailyCapacityHours.toFixed(1)}h</div></div>
     </div>
     <div class="dp-section">
       <h4>Przypisania do projektów (${assigns.length})</h4>
