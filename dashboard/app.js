@@ -136,7 +136,12 @@ function fmtPctFraction(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   return Math.round(n * 100) + "%";
 }
-function num(v, d = 0) { const n = Number(v); return isNaN(n) ? d : n; }
+// v === null (kolumna NULL w bazie) i v === "" (wyczyszczone pole formularza - FormData
+// oddaje pusty string, nigdy null) obie licza sie jako "brak wartosci" - Number(null) i
+// Number("") obie daja 0, nie NaN, wiec bez tego warunku domyslne `d` nigdy by sie nie
+// zastosowalo w zadnym z tych dwoch przypadkow (np. wyczyszczone FTE cicho zapisywaloby
+// sie jako 0% zamiast domyslnych 100%).
+function num(v, d = 0) { const n = Number(v); return (v === null || v === "" || isNaN(n)) ? d : n; }
 function pctOrDash(v) { return (v === null || v === undefined || v === "") ? "—" : v + "%"; }
 
 function dateParts(d) {
@@ -162,8 +167,7 @@ function parseDateInput(str) {
     // zachowanie konstruktora Date. Rok 2-cyfrowy wpisany recznie ("1.3.26") ma dla
     // uzytkownika oczywiscie znaczyc 2026, nie 1926.
     const y = yRaw < 100 ? 2000 + yRaw : yRaw;
-    const dt = new Date(y, m - 1, d);
-    return isNaN(dt) ? null : dt;
+    return dateFromParts(y, m, d);
   }
   // Pelny znacznik czasu ISO z backendu (np. users.Data_ostatniego_logowania, ktore ma
   // timespec="seconds") -> sama data; "yyyy-mm-dd" ma dlugosc dokladnie 10, wiec dla
@@ -171,8 +175,15 @@ function parseDateInput(str) {
   if (s.length > 10) s = s.slice(0, 10);
   const [y, m, d] = s.split("-").map(Number);
   if (!y || !m || !d) return null;
+  return dateFromParts(y, m, d);
+}
+function dateFromParts(y, m, d) {
+  // new Date(y, m-1, d) nigdy nie zwraca NaN dla nieprawidlowych skladowych - przepelnia je
+  // zamiast odrzucic (np. new Date(2026, 3, 31) -> 1 maja, bo kwiecien ma 30 dni). Sprawdzenie
+  // round-trip wylapuje to jako blad zamiast po cichu zapisac inna date, niz wpisal uzytkownik.
   const dt = new Date(y, m - 1, d);
-  return isNaN(dt) ? null : dt;
+  if (isNaN(dt) || dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+  return dt;
 }
 function ragClass(rag) {
   if (rag === "Zielony") return "good";
@@ -941,17 +952,23 @@ function workloadForPerson(oid) {
 
 const HOURS_PER_DAY = 8; // zalozenie: pelny etat (100% FTE) = 8h dziennie - brak innej normy w danych zrodlowych
 
+const _workingDaysCache = new Map();
 function workingDaysInMonth(year, month) {
   // Liczy dni pon-pt w danym miesiacu (month: 0-11). Bez kalendarza swiat - swieta ruchome
   // rok do roku, a utrzymanie takiej listy to osobny koszt nadal niewspolmierny do tego, co
   // dzisiejszy model (suma % zaangazowania) i tak juz upraszcza. Swiadome uproszczenie -
   // dlatego liczba dni robionych jest pokazana wprost w UI, nie ukryta w jednej liczbie godzin.
+  // Memoizowane po (rok, miesiac) - renderTeam() woła to raz na osobe, zawsze z tym samym
+  // "dzis", wiec bez cache to ten sam 28-31-krotny liczacy loop powtarzany na kazdy wiersz.
+  const key = year * 12 + month;
+  if (_workingDaysCache.has(key)) return _workingDaysCache.get(key);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   let count = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     const day = new Date(year, month, d).getDay();
     if (day !== 0 && day !== 6) count++;
   }
+  _workingDaysCache.set(key, count);
   return count;
 }
 
@@ -1523,6 +1540,19 @@ $("#modalForm").addEventListener("submit", async (e) => {
   // "name" (celowo, zeby nie trafial do FormData jako smiec) - bez tego commitu ginalby po
   // cichu przy submicie zamiast zostac zapisany jako tag.
   $all(".tag-chip-input", e.target).forEach(addTagFromInput);
+  // Pole daty jest zwyklym <input type="text">, wiec natywny "required" pilnuje tylko
+  // niepustosci, nie poprawnosci formatu - odkad parseDateInput() odrzuca nieprawidlowe
+  // daty zamiast je po cichu "zaokraglac", wpisanie np. "31.04.2026" w wymagane pole bez
+  // tej blokady zapisywaloby sie jako calkowity brak terminu, bez jakiegokolwiek komunikatu.
+  // Jedno miejsce w generycznym handlerze submitu pokrywa wszystkie wymagane pola daty we
+  // wszystkich formularzach (Termin, Data_start_plan, Data_koniec_plan, Data_planowana,
+  // Data_zakonczenia_planowana), zamiast dopisywac ten sam warunek do kazdego save*FromForm.
+  const badDate = $all(".date-input[required]", e.target).find(el => el.value.trim() && !parseDateInput(el.value));
+  if (badDate) {
+    alert(`Nieprawidłowa data: "${badDate.value}". Popraw pole przed zapisem.`);
+    badDate.focus();
+    return;
+  }
   // Bez blokady przycisku szybki podwojny klik/Enter odpalal dwa POST-y zanim pierwszy
   // zdazyl odpowiedziec (submit nie byl w ogole await'owany) - oba widzialy isNew=true
   // (STATE jeszcze nieodswiezone) i tworzyly dwa duplikaty rekordu z jednej akcji uzytkownika.
@@ -1575,11 +1605,18 @@ function fTagsInput(label, name, valueCsv, suggestions = []) {
 }
 function pairs(arr) { return arr.map(x => [x, x]); }
 function teamOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.map(t => [t.ID_Osoby, t.Imie_i_nazwisko])]; }
-function assignedTeamOptionsPairs(pid) {
+function assignedTeamOptionsPairs(pid, mustIncludeId) {
   const assignedIds = new Set(assignmentsForProject(pid).map(a => a.ID_Osoby));
   const assigned = STATE.team.filter(t => assignedIds.has(t.ID_Osoby));
   // brak pid lub brak przypisan do projektu -> pelna lista, zeby nie blokowac wyboru pustym dropdownem
-  const list = assigned.length ? assigned : STATE.team;
+  let list = assigned.length ? assigned : STATE.team;
+  // istniejaca wartosc pola (np. osoba zdjeta z przypisan projektu po tym, jak ja wybrano)
+  // musi zostac opcja - inaczej znika z listy, <select> spada na puste "--wybierz--" i zapis
+  // formularza po cichu wyzerowuje pole mimo ze uzytkownik go nie ruszal.
+  if (mustIncludeId && !list.some(t => t.ID_Osoby === mustIncludeId)) {
+    const extra = STATE.team.find(t => t.ID_Osoby === mustIncludeId);
+    if (extra) list = [extra, ...list];
+  }
   return [["", "— wybierz —"], ...list.map(t => [t.ID_Osoby, t.Imie_i_nazwisko])];
 }
 function teamNamePairs() { return [["", "— wybierz —"], ...STATE.team.map(t => [t.Imie_i_nazwisko, t.Imie_i_nazwisko])]; }
@@ -1931,8 +1968,8 @@ function openTicketForm(pid, tid = null) {
         currentPid) : ""}
     ${fInput("Tytuł *", "Tytul", t.Tytul, "text", "required")}
     ${fSelect("Zgłaszający", "ID_Osoby_zglaszajacej", teamOptionsPairs(), zglaszajacyDefault)}
-    ${fSelect("Przypisana osoba (zespół wewnętrzny)", "ID_Osoby_przypisanej", assignedTeamOptionsPairs(currentPid), t.ID_Osoby_przypisanej)}
-    ${fSelect("Wspomagający (opcjonalnie)", "ID_Osoby_wspomagajacej", assignedTeamOptionsPairs(currentPid), t.ID_Osoby_wspomagajacej)}
+    ${fSelect("Przypisana osoba (zespół wewnętrzny)", "ID_Osoby_przypisanej", assignedTeamOptionsPairs(currentPid, t.ID_Osoby_przypisanej), t.ID_Osoby_przypisanej)}
+    ${fSelect("Wspomagający (opcjonalnie)", "ID_Osoby_wspomagajacej", assignedTeamOptionsPairs(currentPid, t.ID_Osoby_wspomagajacej), t.ID_Osoby_wspomagajacej)}
     ${fSelect("Podwykonawca (jeśli zlecone branżyście)", "ID_Podwykonawcy", subcontractorOptionsPairs(), t.ID_Podwykonawcy)}
     ${fInput("Wycena podwykonawcy", "Wycena_podwykonawcy", t.Wycena_podwykonawcy, "number", "min=0 step=0.01")}
     ${fInput("Termin *", "Termin", t.Termin, "date", "required")}
@@ -1962,8 +1999,8 @@ function openTicketForm(pid, tid = null) {
       const osobaSelect = $('#modalForm [name="ID_Osoby_przypisanej"]');
       const wspomagajacySelect = $('#modalForm [name="ID_Osoby_wspomagajacej"]');
       const etapSelect = $('#modalForm [name="ID_Etapu"]');
-      osobaSelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid), osobaSelect.value);
-      wspomagajacySelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid), wspomagajacySelect.value);
+      osobaSelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid, osobaSelect.value), osobaSelect.value);
+      wspomagajacySelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid, wspomagajacySelect.value), wspomagajacySelect.value);
       etapSelect.innerHTML = optionsHtml(stageOptionsPairs(chosenPid), etapSelect.value);
     });
   }

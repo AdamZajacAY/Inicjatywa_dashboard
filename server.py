@@ -1054,7 +1054,7 @@ def ticket_comments(ticket_id):
         abort(404)
 
     if request.method == "GET":
-        if g.user["Rola"] == "Specjalista" and ticket["ID_Projektu"] not in assigned_project_ids(conn, g.user["ID_Osoby"]):
+        if not scoped_rows(conn, g.user, "zadania_tickety", [ticket]):
             abort(403)
         rows = conn.execute(
             "SELECT * FROM komentarze_tickety WHERE ID_Tickietu = ? ORDER BY Data_utworzenia", (ticket_id,)
@@ -1069,12 +1069,17 @@ def ticket_comments(ticket_id):
         return jsonify({"error": "Treść komentarza nie może być pusta."}), 400
     cid = next_id(conn, "komentarze_tickety", "ID_Komentarza", "KOM", 4)
     autor = g.user.get("Imie_i_nazwisko") or g.user.get("Email")
-    conn.execute(
-        "INSERT INTO komentarze_tickety (ID_Komentarza, ID_Tickietu, Autor, Tresc, Data_utworzenia) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (cid, ticket_id, autor, tresc, datetime.datetime.now().isoformat(timespec="seconds")),
-    )
-    conn.commit()
+    try:
+        conn.execute(
+            "INSERT INTO komentarze_tickety (ID_Komentarza, ID_Tickietu, Autor, Tresc, Data_utworzenia) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (cid, ticket_id, autor, tresc, datetime.datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        # next_id() skanuje MAX(...) bez blokady - dwa niemal jednoczesne komentarze moga
+        # trafic na ten sam ID_Komentarza (jak w generycznej fabryce collection(), patrz wyzej).
+        return jsonify({"error": integrity_error_message(e, "komentarze_tickety")}), 409
     return jsonify(fetch_row(conn, "komentarze_tickety", "ID_Komentarza", cid)), 201
 
 

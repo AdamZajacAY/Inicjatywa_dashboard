@@ -127,6 +127,14 @@ def ensure_komentarze_table(db_path):
     wielokrotnego wywolania."""
     conn = sqlite3.connect(db_path)
     try:
+        # Tanie sprawdzenie przed czytaniem/parsowaniem schema.sql - w przeciwienstwie do
+        # migrate_schema()/ensure_ticket_role_columns() ta funkcja robila to bezwarunkowo na
+        # kazdym starcie serwera, nawet gdy tabela juz istnieje (audyt: efficiency).
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='komentarze_tickety'"
+        ).fetchone()
+        if exists:
+            return
         with open(SCHEMA_PATH, encoding="utf-8") as f:
             schema_sql = f.read()
         create_statements = _extract_create_statements(schema_sql)
