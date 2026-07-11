@@ -121,6 +121,15 @@ CREATE TABLE IF NOT EXISTS zadania_tickety (
   Data_zakonczenia TEXT
 );
 
+CREATE TABLE IF NOT EXISTS komentarze_tickety (
+  ID_Komentarza TEXT PRIMARY KEY NOT NULL,
+  ID_Tickietu TEXT NOT NULL REFERENCES zadania_tickety(ID_Tickietu) ON DELETE CASCADE,
+  Autor TEXT,
+  Tresc TEXT NOT NULL,
+  Data_utworzenia TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_komentarze_tickiet ON komentarze_tickety(ID_Tickietu);
+
 CREATE TABLE IF NOT EXISTS kamienie_milowe (
   ID_Kamienia TEXT PRIMARY KEY NOT NULL,
   ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,

@@ -34,7 +34,7 @@ from flask import Flask, abort, g, jsonify, redirect, request, send_from_directo
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
-from baza_danych.schema_migrate import migrate_schema
+from baza_danych.schema_migrate import migrate_schema, ensure_komentarze_table
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # Lokalnie zawsze domyslna sciezka w repo (baza juz tam jest). DATABASE_PATH ustawiane w
@@ -83,6 +83,7 @@ def backup_on_startup():
 
 ensure_database_ready()
 SCHEMA_MIGRATION_NOTE = migrate_schema(DB_PATH)  # idempotentny - no-op po pierwszym udanym uruchomieniu
+ensure_komentarze_table(DB_PATH)  # jw. - nowa tabela, CREATE TABLE IF NOT EXISTS wiec bezpieczne za kazdym startem
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -1025,6 +1026,43 @@ def item(table, item_id):
     # nadpisanymi zmienionymi polami) - ten sam merge juz raz policzony wyzej do re-checku
     # can_write(); fetch_row() tutaj bylby zbednym SELECT-em na dane juz posiadane w pamieci.
     return jsonify(redact_row(g.user, table, {**existing, **data}))
+
+
+@app.route("/api/zadania_tickety/<ticket_id>/komentarze", methods=["GET", "POST"])
+def ticket_comments(ticket_id):
+    # Zagniezdzony endpoint, nie kolejna tabela w TABLES/generycznej fabryce collection()/
+    # item() - komentarze sa zawsze "komentarze DO konkretnego ticketu", nigdy plaska lista
+    # do pobrania w calosci, wiec generyczny GET /api/komentarze_tickety (bez wymuszonego
+    # filtra po ID_Tickietu) nie mialby tu sensu. Uprawnienia identyczne jak przy edycji
+    # samego ticketu (can_write "update") - bez nowej, osobnej warstwy uprawnien.
+    conn = get_db()
+    ticket = fetch_row(conn, "zadania_tickety", "ID_Tickietu", ticket_id)
+    if ticket is None:
+        abort(404)
+
+    if request.method == "GET":
+        if g.user["Rola"] == "Specjalista" and ticket["ID_Projektu"] not in assigned_project_ids(conn, g.user["ID_Osoby"]):
+            abort(403)
+        rows = conn.execute(
+            "SELECT * FROM komentarze_tickety WHERE ID_Tickietu = ? ORDER BY Data_utworzenia", (ticket_id,)
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
+
+    if not can_write(conn, g.user, "update", "zadania_tickety", ticket):
+        abort(403)
+    data = request.get_json(force=True, silent=True) or {}
+    tresc = str(data.get("Tresc") or "").strip()
+    if not tresc:
+        return jsonify({"error": "Treść komentarza nie może być pusta."}), 400
+    cid = next_id(conn, "komentarze_tickety", "ID_Komentarza", "KOM", 4)
+    autor = g.user.get("Imie_i_nazwisko") or g.user.get("Email")
+    conn.execute(
+        "INSERT INTO komentarze_tickety (ID_Komentarza, ID_Tickietu, Autor, Tresc, Data_utworzenia) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (cid, ticket_id, autor, tresc, datetime.datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    return jsonify(fetch_row(conn, "komentarze_tickety", "ID_Komentarza", cid)), 201
 
 
 @app.route("/api/backup", methods=["GET", "POST"])

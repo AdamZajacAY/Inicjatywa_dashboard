@@ -116,6 +116,15 @@ function fmtDateShort(v) {
   if (!d) return "—";
   return d.toLocaleDateString("pl-PL", { year: "2-digit", month: "short" });
 }
+function fmtDateTime(iso) {
+  // Komentarze nie sa czescia STATE/bootstrap (pobierane na zadanie per ticket), wiec
+  // Data_utworzenia przychodzi jako surowy string ISO, nie ozywiony wczesniej przez
+  // reviveDates()/parseDateInput() (ktore i tak obcinaja czas, licza sie tylko z data).
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d)) return "—";
+  return d.toLocaleDateString("pl-PL", { year: "numeric", month: "2-digit", day: "2-digit" })
+    + " " + d.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+}
 function fmtMoney(n, currency) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   // esc() na currency TUTAJ, nie na kazdym call site - Waluta to wolny tekst (bez enuma/
@@ -1850,6 +1859,62 @@ function stageOptionsPairs(pid) {
   return [["", "— brak (samodzielny ticket) —"], ...tasksForProject(pid).map(t => [t.ID_Zadania, t.Nazwa_zadania])];
 }
 
+function commentItemHtml(c) {
+  return `<div class="comment-item">
+    <div class="comment-meta"><b>${esc(c.Autor || "—")}</b> · ${esc(fmtDateTime(c.Data_utworzenia))}</div>
+    <div class="comment-text">${esc(c.Tresc)}</div>
+  </div>`;
+}
+
+async function loadTicketComments(tid) {
+  const listEl = $(`[data-comments-list="${tid}"]`);
+  if (!listEl) return;
+  try {
+    const comments = await apiGet(`/api/zadania_tickety/${tid}/komentarze`);
+    listEl.innerHTML = comments.map(commentItemHtml).join("") || `<div class="kpi-sub">Brak komentarzy.</div>`;
+  } catch (e) {
+    listEl.innerHTML = `<div class="kpi-sub">Nie udało się wczytać komentarzy: ${esc(e.message)}</div>`;
+  }
+}
+
+async function addTicketComment(tid) {
+  const textarea = $(`[data-comment-input="${tid}"]`);
+  const tresc = textarea.value.trim();
+  if (!tresc) return;
+  const btn = $(`[data-add-comment="${tid}"]`);
+  btn.disabled = true;
+  try {
+    const comment = await apiPost(`/api/zadania_tickety/${tid}/komentarze`, { Tresc: tresc });
+    const listEl = $(`[data-comments-list="${tid}"]`);
+    const emptyHint = listEl.querySelector(".kpi-sub");
+    if (emptyHint) emptyHint.remove();
+    listEl.insertAdjacentHTML("beforeend", commentItemHtml(comment));
+    textarea.value = "";
+  } catch (e) {
+    alert("Nie udało się dodać komentarza: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Sekcja komentarzy jest wlasnym, niezaleznym od reszty formularza cyklem zycia (wlasny
+// fetch/POST, wlasny re-render tylko tej jednej sekcji) - dodanie komentarza NIE powinno
+// zapisywac/zamykac reszty niezapisanych zmian w formularzu ticketu, wiec przycisk jest
+// type="button" (nie submit modala) z osobnym handlerem, nie modalSubmitHandler.
+function ticketCommentsSectionHtml(t, tid) {
+  if (!tid) return "";
+  const editable = can("update", "zadania_tickety", t);
+  return `
+    <div class="form-section-title">Komentarze</div>
+    <div class="comment-list" data-comments-list="${esc(tid)}">Wczytywanie…</div>
+    ${editable ? `
+      <div class="comment-add">
+        <textarea data-comment-input="${esc(tid)}" rows="2" placeholder="Dodaj komentarz…"></textarea>
+        <button type="button" data-add-comment="${esc(tid)}">Dodaj komentarz</button>
+      </div>` : ""}
+  `;
+}
+
 function openTicketForm(pid, tid = null) {
   const t = tid ? STATE.tickets.find(x => x.ID_Tickietu === tid) : {};
   if (!requireExisting(t, "ticket")) return;
@@ -1869,12 +1934,14 @@ function openTicketForm(pid, tid = null) {
     ${fInput("Szacowane roboczogodziny", "Szacowane_roboczogodziny", t.Szacowane_roboczogodziny, "number", "min=0 step=0.5")}
     ${fInput("Rzeczywiste roboczogodziny", "Rzeczywiste_roboczogodziny", t.Rzeczywiste_roboczogodziny, "number", "min=0 step=0.5")}
     ${fTextarea("Opis zadania", "Opis", t.Opis)}
+    ${ticketCommentsSectionHtml(t, tid)}
   `;
   openModal(tid ? "Edytuj zadanie (ticket)" : "Nowe zadanie (ticket)", body, {
     wide: true,
     submitLabel: "Zapisz zadanie",
     onSubmit: (data) => saveTicketFromForm(data, pid, tid),
   });
+  if (tid) loadTicketComments(tid);
   // bez ustalonego projektu (formularz otwarty z zakladki Zadania) - po wybraniu projektu
   // zawez liste "Przypisana osoba" do zespolu przypisanego do tego projektu, i odswiez etapy
   if (!pid) {
@@ -2766,6 +2833,8 @@ document.addEventListener("click", (e) => {
   if (addTicket) { openTicketForm(addTicket.getAttribute("data-add-ticket")); return; }
   const deleteTicketBtn = e.target.closest("[data-delete-ticket]");
   if (deleteTicketBtn) { deleteTicket(deleteTicketBtn.getAttribute("data-delete-ticket"), deleteTicketBtn.getAttribute("data-project")); return; }
+  const addCommentBtn = e.target.closest("[data-add-comment]");
+  if (addCommentBtn) { addTicketComment(addCommentBtn.getAttribute("data-add-comment")); return; }
   const tkViewBtn = e.target.closest("[data-tk-view]");
   if (tkViewBtn) { ticketFilters.view = tkViewBtn.getAttribute("data-tk-view"); renderTickets(); return; }
   const openTicketRow = e.target.closest("[data-open-ticket]");

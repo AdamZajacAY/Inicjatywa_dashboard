@@ -119,7 +119,27 @@ def migrate_schema(db_path):
         conn.close()
 
 
+def ensure_komentarze_table(db_path):
+    """Dodaje tabele komentarze_tickety (nowa funkcjonalnosc) do baz, ktore powstaly przed jej
+    wprowadzeniem. W przeciwienstwie do migrate_schema() powyzej to zwykla NOWA tabela, nie
+    retrofit ograniczenia na istniejacej - CREATE TABLE/INDEX IF NOT EXISTS wystarcza, wprost
+    z schema.sql (jedno zrodlo definicji), bez przebudowy niczego innego. Bezpieczne do
+    wielokrotnego wywolania."""
+    conn = sqlite3.connect(db_path)
+    try:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            schema_sql = f.read()
+        create_statements = _extract_create_statements(schema_sql)
+        conn.execute(create_statements["komentarze_tickety"])
+        for stmt in re.findall(r"CREATE INDEX IF NOT EXISTS idx_komentarze_tickiet.*?;", schema_sql):
+            conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")
     print(migrate_schema(path))
+    print(ensure_komentarze_table(path) or "komentarze_tickety: OK")
