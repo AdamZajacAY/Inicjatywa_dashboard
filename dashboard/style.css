@@ -472,7 +472,7 @@ body.report-mode #execReport {
 
 /* ---------- Nowoczesny kalendarz (date picker) ---------- */
 .date-input-wrap { position: relative; display: flex; }
-.date-input-wrap .date-input { width: 100%; padding-right: 32px; cursor: pointer; }
+.date-input-wrap .date-input { width: 100%; padding-right: 32px; cursor: text; }
 .date-input-wrap .date-icon {
   position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
   width: 16px; height: 16px; color: var(--text-muted); pointer-events: none;

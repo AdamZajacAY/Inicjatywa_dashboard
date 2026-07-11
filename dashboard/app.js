@@ -147,8 +147,12 @@ function parseDateInput(str) {
   if (str instanceof Date) return isNaN(str) ? null : str;
   let s = String(str).trim();
   if (s.includes(".")) {
-    const [d, m, y] = s.split(".").map(Number);
-    if (!y || !m || !d) return null;
+    const [d, m, yRaw] = s.split(".").map(Number);
+    if (!yRaw || !m || !d) return null;
+    // new Date(y, ...) z 0<=y<=99 interpretuje rok jako 1900+y (np. 26 -> 1926) - legacy
+    // zachowanie konstruktora Date. Rok 2-cyfrowy wpisany recznie ("1.3.26") ma dla
+    // uzytkownika oczywiscie znaczyc 2026, nie 1926.
+    const y = yRaw < 100 ? 2000 + yRaw : yRaw;
     const dt = new Date(y, m - 1, d);
     return isNaN(dt) ? null : dt;
   }
@@ -1529,7 +1533,7 @@ function fInput(label, name, value, type = "text", extra = "") {
   if (type === "date") {
     const d = value instanceof Date ? value : parseDateInput(value);
     const v = dateDisplayVal(d);
-    return `<label class="f-label date-field">${esc(label)}<span class="date-input-wrap"><input name="${name}" type="text" class="date-input" value="${esc(v)}" placeholder="dd.mm.rrrr" autocomplete="off" readonly ${extra}><svg class="date-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M3 9.5H21" stroke="currentColor" stroke-width="1.6"/><path d="M8 3V6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M16 3V6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span></label>`;
+    return `<label class="f-label date-field">${esc(label)}<span class="date-input-wrap"><input name="${name}" type="text" class="date-input" value="${esc(v)}" placeholder="dd.mm.rrrr" autocomplete="off" ${extra}><svg class="date-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M3 9.5H21" stroke="currentColor" stroke-width="1.6"/><path d="M8 3V6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M16 3V6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span></label>`;
   }
   const v = value ?? "";
   return `<label class="f-label">${esc(label)}<input name="${name}" type="${type}" value="${esc(v)}" ${extra}></label>`;
@@ -2688,11 +2692,21 @@ function addTagFromInput(input) {
 }
 
 document.addEventListener("keydown", (e) => {
-  const dateTrigger = e.target.closest && e.target.closest(".date-input");
-  if (dateTrigger && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openDatePicker(dateTrigger); return; }
+  // Pole daty jest teraz zwyklym polem tekstowym (mozna wpisac date recznie) - zadna klawisza
+  // nie powinna byc przechwytywana do otwierania pickera, zeby nie kolidowac z pisaniem
+  // (probne "Spacja otwiera picker" psulo pisanie dowolnego tekstu zawierajacego spacje -
+  // zweryfikowane bezposrednio). Klik nadal otwiera picker (myszka), Escape nadal zamyka.
   if (e.key === "Escape") closeDatePicker();
   const tagInput = e.target.closest && e.target.closest(".tag-chip-input");
   if (tagInput && (e.key === "Enter" || e.key === ",")) { e.preventDefault(); addTagFromInput(tagInput); return; }
+});
+document.addEventListener("focusout", (e) => {
+  // blur() nie bubble'uje - focusout tak, wiec to jedyny sposob na delegacje zamiast pod
+  // wpiecia osobnego listenera do kazdego pola daty osobno przy kazdym renderze formularza.
+  const dateInput = e.target.closest && e.target.closest(".date-input");
+  if (!dateInput) return;
+  const parsed = parseDateInput(dateInput.value);
+  if (parsed) dateInput.value = dateDisplayVal(parsed);
 });
 
 document.addEventListener("click", (e) => {
