@@ -6,7 +6,8 @@
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
-  projectById: new Map(), teamById: new Map(), subcontractorById: new Map(),
+  clients: [], clientContacts: [],
+  projectById: new Map(), teamById: new Map(), subcontractorById: new Map(), clientById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
 
@@ -18,7 +19,7 @@ const TABLE_SCOPE = {
   przypisania: "project_scoped", harmonogram: "project_scoped", zadania_tickety: "project_scoped",
   kamienie_milowe: "project_scoped", ryzyka_i_problemy: "project_scoped",
   raporty_statusowe: "project_scoped", przypisania_podwykonawcow: "project_scoped", users: "admin_only",
-  ideapool: "global",
+  ideapool: "global", klienci: "global", kontakty_klienta: "global",
 };
 const FULL_ACCESS_ROLES = ["COO", "Admin"];
 
@@ -42,7 +43,7 @@ function can(action, table, row) {
     return row && row.ID_Osoby_przypisanej === STATE.me.personId && STATE.me.assignedProjectIds.includes(row.ID_Projektu);
   }
   if (role === "Architekt_PM") {
-    if (table === "zespol") return false;
+    if (table === "zespol" || table === "klienci" || table === "kontakty_klienta") return false;
     if (table === "projekty" && action === "delete") return false;
     if (table === "podwykonawcy") return action !== "delete";
     if (table === "projekty" && action === "create") return true;
@@ -329,6 +330,7 @@ function reindex() {
   STATE.projectById = new Map(STATE.projects.map(p => [p.ID_Projektu, p]));
   STATE.teamById = new Map(STATE.team.map(t => [t.ID_Osoby, t]));
   STATE.subcontractorById = new Map(STATE.subcontractors.map(s => [s.ID_Podwykonawcy, s]));
+  STATE.clientById = new Map(STATE.clients.map(c => [c.ID_Klienta, c]));
 }
 
 // Etykiety wyswietlane uzytkownikowi - celowo inne niz wewnetrzne wartosci Rola w bazie
@@ -364,6 +366,7 @@ async function loadFromApi() {
   STATE.subcontractors = data.subcontractors || []; STATE.subcontractorAssignments = data.subcontractorAssignments || [];
   STATE.tickets = data.tickets || [];
   STATE.ideapool = data.ideapool || [];
+  STATE.clients = data.clients || []; STATE.clientContacts = data.clientContacts || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
     assignedProjectIds: data.me.assignedProjectIds || [],
@@ -1743,6 +1746,7 @@ function teamOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.map
 // istniejacej, prawdziwej wartosci enuma Dzial="Zarzad" (nic nowego nie trzeba dodawac do
 // zespol, zeby wiedziec "kto jest w zarzadzie").
 function boardMemberOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.filter(t => t.Dzial === "Zarzad").map(t => [t.ID_Osoby, t.Imie_i_nazwisko])]; }
+function clientOptionsPairs() { return [["", "— brak / spoza rejestru —"], ...STATE.clients.map(c => [c.ID_Klienta, c.Nazwa])]; }
 function assignedTeamOptionsPairs(pid, mustIncludeId) {
   const assignedIds = new Set(assignmentsForProject(pid).map(a => a.ID_Osoby));
   const assigned = STATE.team.filter(t => assignedIds.has(t.ID_Osoby));
@@ -1798,7 +1802,8 @@ function openProjectForm(pid = null) {
     ${fInput("Miasto", "Miasto", p.Miasto)}
     ${fInput("Powierzchnia (m²)", "Powierzchnia_m2", p.Powierzchnia_m2, "number", "min=0")}
     ${fInput("Liczba jednostek", "Liczba_jednostek", p.Liczba_jednostek, "number", "min=0")}
-    ${fInput("Inwestor / Klient", "Inwestor_Klient", p.Inwestor_Klient)}
+    ${fInput("Inwestor / Klient (opis, jeśli brak w rejestrze)", "Inwestor_Klient", p.Inwestor_Klient)}
+    ${fSelect("Klient (z rejestru)", "ID_Klienta", clientOptionsPairs(), p.ID_Klienta)}
 
     <div class="form-section-title">Zakres projektu (karta projektowa)</div>
     ${fTextarea("Opis / zakres", "Opis", p.Opis)}
@@ -1837,7 +1842,7 @@ async function saveProjectFromForm(data, pid) {
     Lokalizacja_Adres: data.Lokalizacja_Adres, Miasto: data.Miasto,
     Powierzchnia_m2: data.Powierzchnia_m2 ? num(data.Powierzchnia_m2) : null,
     Liczba_jednostek: data.Liczba_jednostek ? num(data.Liczba_jednostek) : null,
-    Inwestor_Klient: data.Inwestor_Klient, Opis: data.Opis,
+    Inwestor_Klient: data.Inwestor_Klient, ID_Klienta: data.ID_Klienta, Opis: data.Opis,
     Link_do_dokumentacji: existing.Link_do_dokumentacji || "",
     Data_ostatniej_aktualizacji: new Date(),
     Komentarz: data.Komentarz,
@@ -2350,6 +2355,163 @@ async function deleteSubcontractor(sid) {
   renderAll();
 }
 
+/* ================================================================== VIEW: KLIENCI (Inwestorzy/Klienci) */
+function clientStatusBadge(status) { return status === "Aktywny" ? "good" : "muted"; }
+function contactsForClient(cid) { return STATE.clientContacts.filter(c => c.ID_Klienta === cid); }
+
+function renderClients() {
+  const cards = STATE.clients.map(c => `
+    <div class="team-card" data-open-client="${esc(c.ID_Klienta)}">
+      <div class="tc-name">${esc(c.Nazwa)}</div>
+      <div class="tc-role">${esc(c.Typ || "—")} · ${esc(c.Miasto || "—")}</div>
+      <div style="margin:6px 0">${badge(c.Status || "—", clientStatusBadge(c.Status))}</div>
+      <div class="pc-row"><span>NIP</span><b>${esc(c.NIP || "—")}</b></div>
+      <div class="pc-row"><span>Opiekun (zarząd)</span><b>${c.ID_Osoby_opiekuna ? esc(personName(c.ID_Osoby_opiekuna)) : "—"}</b></div>
+      <div class="tc-projects">
+        <div style="font-weight:600;color:var(--text-primary);margin-bottom:2px">Kontakty (${contactsForClient(c.ID_Klienta).length})</div>
+        ${contactsForClient(c.ID_Klienta).map(k => `<div>• ${esc(k.Imie_i_nazwisko)}${k.Stanowisko ? " — " + esc(k.Stanowisko) : ""}</div>`).join("") || "<div>Brak kontaktów.</div>"}
+      </div>
+    </div>`);
+  $("#view-klienci").innerHTML = `
+    <div class="section-head"><h2>Klienci</h2>${can("create", "klienci") ? `<button data-add-client="1">+ Dodaj klienta</button>` : ""}</div>
+    <div class="empty-hint" style="margin-bottom:12px">Karta klienta/inwestora (NIP, dane, kontakty) pod przyszłe fakturowanie — zarządzanie zarezerwowane dla zarządu (COO/Admin).</div>
+    <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak klientów w rejestrze${can("create", "klienci") ? ` — kliknij „+ Dodaj klienta”.` : "."}</div>`}</div>
+  `;
+}
+
+function openClientDetail(cid) {
+  const c = STATE.clientById.get(cid);
+  if (!c) return;
+  const contacts = contactsForClient(cid);
+  $("#dpContent").innerHTML = `
+    <div style="display:flex;justify-content:flex-end;gap:6px">
+      ${can("update", "klienci", c) ? `<button class="icon-btn" data-edit-client="${esc(cid)}">Edytuj</button>` : ""}
+      ${can("delete", "klienci", c) ? `<button class="icon-btn danger" data-delete-client="${esc(cid)}">Usuń</button>` : ""}
+    </div>
+    <h2>${esc(c.Nazwa)}</h2>
+    <div class="dp-sub">${esc(c.Typ || "—")}</div>
+    <div style="margin-bottom:6px">${badge(c.Status || "—", clientStatusBadge(c.Status))}</div>
+    <div class="dp-grid">
+      <div><div class="k">NIP</div><div class="v">${esc(c.NIP || "—")}</div></div>
+      <div><div class="k">REGON</div><div class="v">${esc(c.Regon || "—")}</div></div>
+      <div><div class="k">Adres siedziby</div><div class="v">${esc(c.Adres_siedziby || "—")}</div></div>
+      <div><div class="k">Miasto</div><div class="v">${esc(c.Miasto || "—")}</div></div>
+      <div><div class="k">Email</div><div class="v">${esc(c.Email || "—")}</div></div>
+      <div><div class="k">Telefon</div><div class="v">${esc(c.Telefon || "—")}</div></div>
+      <div><div class="k">Opiekun (zarząd)</div><div class="v">${c.ID_Osoby_opiekuna ? esc(personName(c.ID_Osoby_opiekuna)) : "—"}</div></div>
+    </div>
+    ${c.Uwagi ? `<div class="dp-section"><h4>Uwagi</h4><div style="font-size:13px">${esc(c.Uwagi)}</div></div>` : ""}
+    <div class="dp-section">
+      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Kontakty (${contacts.length})</h4>
+        ${can("create", "kontakty_klienta", { ID_Klienta: cid }) ? `<button class="icon-btn" data-add-contact="${esc(cid)}">+ Dodaj kontakt</button>` : ""}</div>
+      ${contacts.map(k => `
+        <div class="dp-list-item" ${can("update", "kontakty_klienta", k) ? `data-edit-contact="${esc(k.ID_Kontaktu)}" data-client="${esc(cid)}" style="cursor:pointer"` : ""}>
+          <div class="item-actions">
+            ${can("delete", "kontakty_klienta", k) ? `<button class="icon-btn danger" data-delete-contact="${esc(k.ID_Kontaktu)}" data-client="${esc(cid)}">Usuń</button>` : ""}
+          </div>
+          <div class="title">${esc(k.Imie_i_nazwisko)}${k.Stanowisko ? " — " + esc(k.Stanowisko) : ""}</div>
+          <div class="meta">${k.Email ? esc(k.Email) : ""}${k.Email && k.Telefon ? " · " : ""}${k.Telefon ? esc(k.Telefon) : ""}</div>
+        </div>`).join("") || `<div class="kpi-sub">Brak kontaktów.</div>`}
+    </div>
+  `;
+  $("#overlay").classList.add("open");
+  $("#detailPanel").classList.add("open");
+}
+
+function openClientForm(cid = null) {
+  const c = cid ? STATE.clientById.get(cid) : {};
+  if (!requireExisting(c, "klient")) return;
+  const body = `
+    ${fInput("Nazwa *", "Nazwa", c.Nazwa, "text", "required")}
+    ${fSelect("Typ", "Typ", pairs(["Inwestor", "Klient", "Deweloper", "Inne"]), c.Typ || "Klient")}
+    ${fInput("NIP", "NIP", c.NIP)}
+    ${fInput("REGON", "Regon", c.Regon)}
+    ${fInput("Adres siedziby", "Adres_siedziby", c.Adres_siedziby)}
+    ${fInput("Miasto", "Miasto", c.Miasto)}
+    ${fInput("Email", "Email", c.Email, "email")}
+    ${fInput("Telefon", "Telefon", c.Telefon)}
+    ${fSelect("Opiekun (zarząd)", "ID_Osoby_opiekuna", boardMemberOptionsPairs(), c.ID_Osoby_opiekuna)}
+    ${fSelect("Status", "Status", pairs(["Aktywny", "Nieaktywny"]), c.Status || "Aktywny")}
+    ${fTextarea("Uwagi", "Uwagi", c.Uwagi)}
+  `;
+  openModal(cid ? "Edytuj klienta" : "Nowy klient", body, {
+    wide: true,
+    submitLabel: "Zapisz klienta",
+    onSubmit: (data) => saveClientFromForm(data, cid),
+  });
+}
+
+async function saveClientFromForm(data, cid) {
+  if (!data.Nazwa) { alert("Podaj nazwę klienta."); return; }
+  const isNew = !cid;
+  const existing = isNew ? {} : STATE.clientById.get(cid);
+  if (!requireExisting(existing, "klient")) return;
+  const fields = {
+    Nazwa: data.Nazwa, Typ: data.Typ, NIP: data.NIP, Regon: data.Regon,
+    Adres_siedziby: data.Adres_siedziby, Miasto: data.Miasto, Email: data.Email, Telefon: data.Telefon,
+    ID_Osoby_opiekuna: data.ID_Osoby_opiekuna, Status: data.Status, Uwagi: data.Uwagi,
+  };
+  const saved = await persistEntity({ isNew, endpoint: "/api/klienci", id: cid, fields, errorLabel: "klienta" });
+  if (!saved) return;
+  if (isNew) { STATE.clients.push(saved); STATE.clientById.set(saved.ID_Klienta, saved); }
+  else { Object.assign(existing, saved); }
+  closeModal();
+  renderAll();
+  openClientDetail(saved.ID_Klienta);
+}
+
+async function deleteClient(cid) {
+  if (!confirm("Usunąć klienta z rejestru? Powiązane kontakty zostaną również usunięte, a projekty stracą powiązanie z tym klientem.")) return;
+  if (!await deleteEntity(`/api/klienci/${cid}`, "klienta")) return;
+  STATE.clients = STATE.clients.filter(c => c.ID_Klienta !== cid);
+  STATE.clientContacts = STATE.clientContacts.filter(k => k.ID_Klienta !== cid);
+  STATE.projects.forEach(p => { if (p.ID_Klienta === cid) p.ID_Klienta = null; });
+  STATE.clientById.delete(cid);
+  closeDetail();
+  renderAll();
+}
+
+function openContactForm(cid, kid = null) {
+  const k = kid ? STATE.clientContacts.find(x => x.ID_Kontaktu === kid) : {};
+  if (!requireExisting(k, "kontakt")) return;
+  const body = `
+    ${fInput("Imię i nazwisko *", "Imie_i_nazwisko", k.Imie_i_nazwisko, "text", "required")}
+    ${fInput("Stanowisko", "Stanowisko", k.Stanowisko)}
+    ${fInput("Email", "Email", k.Email, "email")}
+    ${fInput("Telefon", "Telefon", k.Telefon)}
+  `;
+  openModal(kid ? "Edytuj kontakt" : "Nowy kontakt", body, {
+    submitLabel: "Zapisz kontakt",
+    onSubmit: (data) => saveContactFromForm(data, cid, kid),
+  });
+}
+
+async function saveContactFromForm(data, cid, kid) {
+  if (!data.Imie_i_nazwisko) { alert("Podaj imię i nazwisko kontaktu."); return; }
+  const isNew = !kid;
+  const existing = isNew ? {} : STATE.clientContacts.find(x => x.ID_Kontaktu === kid);
+  if (!requireExisting(existing, "kontakt")) return;
+  const fields = {
+    ID_Klienta: cid, Imie_i_nazwisko: data.Imie_i_nazwisko, Stanowisko: data.Stanowisko,
+    Email: data.Email, Telefon: data.Telefon,
+  };
+  const saved = await persistEntity({ isNew, endpoint: "/api/kontakty_klienta", id: kid, fields, errorLabel: "kontaktu" });
+  if (!saved) return;
+  if (isNew) STATE.clientContacts.push(saved);
+  else Object.assign(existing, saved);
+  closeModal();
+  renderAll();
+  openClientDetail(cid);
+}
+
+async function deleteContact(kid, cid) {
+  if (!confirm("Usunąć kontakt?")) return;
+  if (!await deleteEntity(`/api/kontakty_klienta/${kid}`, "kontaktu")) return;
+  STATE.clientContacts = STATE.clientContacts.filter(k => k.ID_Kontaktu !== kid);
+  renderAll();
+  openClientDetail(cid);
+}
+
 /* ================================================================== VIEW: IDEAPOOL */
 function ideaStatusBadge(status) {
   if (status === "Zaakceptowany") return "good";
@@ -2641,7 +2803,7 @@ function openProjectDetail(pid) {
         <div><div class="k">Data rozpoczęcia</div><div class="v">${fmtDate(p.Data_rozpoczecia)}</div></div>
         <div><div class="k">Zakończenie (plan)</div><div class="v">${fmtDate(p.Data_zakonczenia_planowana)}</div></div>
         <div><div class="k">Zakończenie (rzeczywiste)</div><div class="v">${fmtDate(p.Data_zakonczenia_rzeczywista)}</div></div>
-        <div><div class="k">Inwestor / Klient</div><div class="v">${esc(p.Inwestor_Klient)}</div></div>
+        <div><div class="k">Klient</div><div class="v">${p.ID_Klienta && STATE.clientById.get(p.ID_Klienta) ? `<span class="clickable" data-open-client="${esc(p.ID_Klienta)}" style="cursor:pointer;text-decoration:underline">${esc(STATE.clientById.get(p.ID_Klienta).Nazwa)}</span>` : esc(p.Inwestor_Klient) || "—"}</div></div>
         <div><div class="k">Powierzchnia</div><div class="v">${p.Powierzchnia_m2 != null ? p.Powierzchnia_m2.toLocaleString("pl-PL") + " m²" : "—"}</div></div>
         <div><div class="k">Liczba jednostek</div><div class="v">${p.Liczba_jednostek ?? "—"}</div></div>
       </div>
@@ -2883,6 +3045,7 @@ function renderAll() {
   renderProjects();
   renderTeam();
   renderSubcontractors();
+  renderClients();
   renderTickets();
   renderGanttView();
   renderRyzyka();
@@ -3132,6 +3295,19 @@ document.addEventListener("click", (e) => {
   const ceidgSettingsBtn = e.target.closest("[data-ceidg-settings]");
   if (ceidgSettingsBtn) { openCeidgTokenForm(); return; }
 
+  const addClient = e.target.closest("[data-add-client]");
+  if (addClient) { openClientForm(); return; }
+  const deleteClientBtn = e.target.closest("[data-delete-client]");
+  if (deleteClientBtn) { deleteClient(deleteClientBtn.getAttribute("data-delete-client")); return; }
+  const editClient = e.target.closest("[data-edit-client]");
+  if (editClient) { openClientForm(editClient.getAttribute("data-edit-client")); return; }
+  const addContact = e.target.closest("[data-add-contact]");
+  if (addContact) { openContactForm(addContact.getAttribute("data-add-contact")); return; }
+  const deleteContactBtn = e.target.closest("[data-delete-contact]");
+  if (deleteContactBtn) { deleteContact(deleteContactBtn.getAttribute("data-delete-contact"), deleteContactBtn.getAttribute("data-client")); return; }
+  const editContact = e.target.closest("[data-edit-contact]");
+  if (editContact) { openContactForm(editContact.getAttribute("data-client"), editContact.getAttribute("data-edit-contact")); return; }
+
   const addSubAssign = e.target.closest("[data-add-subcontractor-assignment]");
   if (addSubAssign) { openSubcontractorAssignmentForm(addSubAssign.getAttribute("data-add-subcontractor-assignment")); return; }
   const editSubAssign = e.target.closest("[data-edit-subcontractor-assignment]");
@@ -3167,6 +3343,8 @@ document.addEventListener("click", (e) => {
   if (openPerson) { openPersonDetail(openPerson.getAttribute("data-open-person")); return; }
   const openSub = e.target.closest("[data-open-subcontractor]");
   if (openSub) { openSubcontractorDetail(openSub.getAttribute("data-open-subcontractor")); return; }
+  const openClient = e.target.closest("[data-open-client]");
+  if (openClient) { openClientDetail(openClient.getAttribute("data-open-client")); return; }
   const tabBtn = e.target.closest(".tab-btn");
   if (tabBtn) {
     $all(".tab-btn").forEach(b => b.classList.remove("active"));

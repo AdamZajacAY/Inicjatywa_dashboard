@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS projekty (
   Powierzchnia_m2 REAL,
   Liczba_jednostek INTEGER,
   Inwestor_Klient TEXT,
+  ID_Klienta TEXT REFERENCES klienci(ID_Klienta) ON DELETE SET NULL,
   Opis TEXT,
   Link_do_dokumentacji TEXT,
   Data_ostatniej_aktualizacji TEXT,
@@ -102,6 +103,36 @@ CREATE TABLE IF NOT EXISTS podwykonawcy (
   Ocena TEXT,
   Status TEXT,
   Uwagi TEXT
+);
+
+-- Inwestorzy/Klienci: pelna karta pod przyszle fakturowanie (NIP, adres siedziby, opiekun z
+-- zarzadu), zamiast wolnego tekstu. projekty.Inwestor_Klient (powyzej) zostaje NIETKNIETE dla
+-- projektow jeszcze niepowiazanych z rejestrem - projekty.ID_Klienta to nowy, opcjonalny FK
+-- obok niego, nie zamiennik.
+CREATE TABLE IF NOT EXISTS klienci (
+  ID_Klienta TEXT PRIMARY KEY NOT NULL,
+  Nazwa TEXT,
+  Typ TEXT,
+  NIP TEXT,
+  Regon TEXT,
+  Adres_siedziby TEXT,
+  Miasto TEXT,
+  Email TEXT,
+  Telefon TEXT,
+  ID_Osoby_opiekuna TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
+  Status TEXT,
+  Uwagi TEXT
+);
+
+-- Osoby kontaktowe po stronie klienta/inwestora - firma zwykle ma kilka, w odroznieniu od
+-- podwykonawcy.Osoba_kontaktowa (jedno pole tekstowe wystarczajace tam, bo relacja jest prostsza).
+CREATE TABLE IF NOT EXISTS kontakty_klienta (
+  ID_Kontaktu TEXT PRIMARY KEY NOT NULL,
+  ID_Klienta TEXT NOT NULL REFERENCES klienci(ID_Klienta) ON DELETE CASCADE,
+  Imie_i_nazwisko TEXT,
+  Stanowisko TEXT,
+  Email TEXT,
+  Telefon TEXT
 );
 
 CREATE TABLE IF NOT EXISTS zadania_tickety (

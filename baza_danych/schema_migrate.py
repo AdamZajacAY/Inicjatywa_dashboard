@@ -201,6 +201,20 @@ def ensure_project_sponsor_column(db_path):
     })
 
 
+def ensure_klienci_tables(db_path):
+    """Dodaje tabele klienci/kontakty_klienta do baz, ktore powstaly przed ich wprowadzeniem."""
+    _ensure_table(db_path, "klienci")
+    _ensure_table(db_path, "kontakty_klienta")
+
+
+def ensure_project_klient_column(db_path):
+    """Dodaje ID_Klienta do projekty w bazach powstalych przed jej wprowadzeniem - opcjonalny FK
+    do klienci, obok istniejacego wolnotekstowego Inwestor_Klient (nietkniete, patrz schema.sql)."""
+    _ensure_columns(db_path, "projekty", {
+        "ID_Klienta": "TEXT REFERENCES klienci(ID_Klienta) ON DELETE SET NULL",
+    })
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")
@@ -208,4 +222,7 @@ if __name__ == "__main__":
     print(ensure_komentarze_table(path) or "komentarze_tickety: OK")
     print(ensure_ticket_role_columns(path) or "zadania_tickety role columns: OK")
     print(ensure_project_sponsor_column(path) or "projekty sponsor column: OK")
+    print(ensure_ideapool_table(path) or "ideapool: OK")
+    print(ensure_klienci_tables(path) or "klienci/kontakty_klienta: OK")
+    print(ensure_project_klient_column(path) or "projekty klient column: OK")
     print(ensure_ideapool_table(path) or "ideapool: OK")

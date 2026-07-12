@@ -40,7 +40,9 @@ DB_PATH = path.join(ROOT, "baza_projektow.db")
 # ID_Zadania_poprzedzajacego (samo-referencja w harmonogram) obslugiwane osobno, druga turą.
 MIGRATION_PLAN = [
     ("zespol", {}),
-    ("projekty", {"ID_Osoby_sponsora": "zespol"}),
+    ("klienci", {"ID_Osoby_opiekuna": "zespol"}),
+    ("kontakty_klienta", {"ID_Klienta": "klienci"}),
+    ("projekty", {"ID_Osoby_sponsora": "zespol", "ID_Klienta": "klienci"}),
     ("podwykonawcy", {}),
     ("przypisania", {"ID_Projektu": "projekty", "ID_Osoby": "zespol"}),
     ("harmonogram", {"ID_Projektu": "projekty", "ID_Osoby_odpowiedzialnej": "zespol"}),
@@ -56,7 +58,8 @@ PK_COLUMNS = {
     "projekty": "ID_Projektu", "zespol": "ID_Osoby", "podwykonawcy": "ID_Podwykonawcy",
     "przypisania": "ID_Przypisania", "harmonogram": "ID_Zadania", "kamienie_milowe": "ID_Kamienia",
     "zadania_tickety": "ID_Tickietu", "ryzyka_i_problemy": "ID", "raporty_statusowe": "id",
-    "przypisania_podwykonawcow": "ID_Przypisania_Podw",
+    "przypisania_podwykonawcow": "ID_Przypisania_Podw", "klienci": "ID_Klienta",
+    "kontakty_klienta": "ID_Kontaktu",
 }
 
 

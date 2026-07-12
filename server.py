@@ -36,7 +36,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
 from baza_danych.schema_migrate import (
     migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns, ensure_project_sponsor_column,
-    ensure_ideapool_table,
+    ensure_ideapool_table, ensure_klienci_tables, ensure_project_klient_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -90,6 +90,8 @@ ensure_komentarze_table(DB_PATH)  # jw. - nowa tabela, CREATE TABLE IF NOT EXIST
 ensure_ticket_role_columns(DB_PATH)  # jw. - nowe nullable kolumny, ALTER TABLE ADD COLUMN bezpieczne za kazdym startem
 ensure_project_sponsor_column(DB_PATH)  # jw. - nowa nullable kolumna sponsora na projekty
 ensure_ideapool_table(DB_PATH)  # jw. - nowa tabela, CREATE TABLE IF NOT EXISTS wiec bezpieczne za kazdym startem
+ensure_klienci_tables(DB_PATH)  # jw. - dwie nowe tabele
+ensure_project_klient_column(DB_PATH)  # jw. - nowa nullable kolumna, wolana PO ensure_klienci_tables
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -176,6 +178,8 @@ TABLES = {
     "przypisania_podwykonawcow": ("ID_Przypisania_Podw", "SUBA", 3),
     "users": ("ID_Uzytkownika", "USR", 3),
     "ideapool": ("ID_Pomyslu", "IDE", 3),
+    "klienci": ("ID_Klienta", "KLI", 3),
+    "kontakty_klienta": ("ID_Kontaktu", "KKL", 3),
 }
 
 # tabela SQL -> klucz w odpowiedzi /api/bootstrap (nazwy pol STATE.* w dashboard/app.js)
@@ -184,7 +188,7 @@ BOOTSTRAP_KEYS = {
     "harmonogram": "tasks", "zadania_tickety": "tickets", "kamienie_milowe": "milestones",
     "ryzyka_i_problemy": "risks", "raporty_statusowe": "statusReports",
     "podwykonawcy": "subcontractors", "przypisania_podwykonawcow": "subcontractorAssignments",
-    "ideapool": "ideapool",
+    "ideapool": "ideapool", "klienci": "clients", "kontakty_klienta": "clientContacts",
 }
 
 
@@ -336,6 +340,8 @@ TABLE_SCOPE = {
     "przypisania_podwykonawcow": "project_scoped",
     "users": "admin_only",
     "ideapool": "global",
+    "klienci": "global",
+    "kontakty_klienta": "global",
 }
 
 # Pola zerowane w odpowiedzi GET wylacznie dla roli Specjalista (nigdy nie usuwane - fmtMoney()/
@@ -416,7 +422,11 @@ def can_write(conn, user, action, table, row):
         return (row.get("ID_Osoby_przypisanej") == user["ID_Osoby"]
                 and row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"]))
     if user["Rola"] == "Architekt_PM":
-        if table == "zespol":
+        if table in ("zespol", "klienci", "kontakty_klienta"):
+            # Klienci/kontakty: zarzadzanie (create/update/delete) zarezerwowane dla
+            # czlonkow zarzadu (COO/Admin, juz obsluzeni wyzej) - "przypisywani sa jedynie do
+            # czlonkow zarzadu". Odczyt (GET) zostaje portfolio-wide bez zmian (scope "global"),
+            # to zawezenie dotyczy wylacznie zapisu.
             return False
         if table == "projekty" and action == "delete":
             return False  # kaskadowe usuniecie zbyt ryzykowne nawet dla wlasnego projektu
@@ -605,6 +615,10 @@ ENUM_FIELDS = {
     },
     "ideapool": {
         "Status": {"Zgloszony", "W rozwazaniu", "Zaakceptowany", "Odrzucony"},
+    },
+    "klienci": {
+        "Typ": {"Inwestor", "Klient", "Deweloper", "Inne"},
+        "Status": {"Aktywny", "Nieaktywny"},
     },
 }
 
