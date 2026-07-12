@@ -1017,7 +1017,18 @@ async function moveProjectToStatus(pid, newStatus) {
 
 /* ================================================================== VIEW: ZESPOL */
 
-const HOURS_PER_DAY = 8; // zalozenie: pelny etat (100% FTE) = 8h dziennie - brak innej normy w danych zrodlowych
+const HOURS_PER_DAY = 8; // zalozenie: pelny etat (100% FTE) = 8h dziennie - nominalny dobowy wymiar czasu pracy (Art. 129 KP)
+// Art. 134 KP: przy dniowce >=6h pracownikowi przysluguje co najmniej 15-minutowa przerwa,
+// wliczana do czasu pracy (placona, ale nieproduktywna) - obowiazkowa dla kazdego etatowego
+// pracownika biurowego. Art. 141 KP: pracodawca MOZE dodatkowo wprowadzic jedna przerwe na
+// posilek do 60 minut, NIEWLICZANA do czasu pracy (bezplatna) - powszechna praktyka w biurach,
+// przyjeto typowe 30 minut (brak w danych zrodlowych informacji o konkretnej polityce firmy,
+// wiec to swiadome zalozenie, nie odczyt z bazy). Obie przerwy razem redukuja liczbe godzin
+// realnie dostepnych pod przydzial zadan projektowych - stad PRODUCTIVE_HOURS_PER_DAY ponizej,
+// osobno od HOURS_PER_DAY (ktory zostaje "czym jest pelny etat" bez zmian).
+const BREAK_MINUTES_PER_DAY = 15;
+const LUNCH_MINUTES_PER_DAY = 30;
+const PRODUCTIVE_HOURS_PER_DAY = HOURS_PER_DAY - (BREAK_MINUTES_PER_DAY + LUNCH_MINUTES_PER_DAY) / 60;
 
 const _workingDaysCache = new Map();
 function workingDaysInMonth(year, month) {
@@ -1055,13 +1066,13 @@ function taskHoursForPersonInMonth(oid, refDate) {
 function workloadHoursInfo(person, refDate = new Date()) {
   const fte = num(person.Dostepnosc_FTE_procent, 100) / 100;
   const workDays = workingDaysInMonth(refDate.getFullYear(), refDate.getMonth());
-  const capacityHours = workDays * HOURS_PER_DAY * fte;
+  const capacityHours = workDays * PRODUCTIVE_HOURS_PER_DAY * fte;
   const assignedHours = taskHoursForPersonInMonth(person.ID_Osoby, refDate);
   return {
     workDays,
     capacityHours,
     assignedHours,
-    dailyCapacityHours: HOURS_PER_DAY * fte,
+    dailyCapacityHours: PRODUCTIVE_HOURS_PER_DAY * fte,
     percent: capacityHours ? Math.round((assignedHours / capacityHours) * 100) : 0,
   };
 }
@@ -1081,7 +1092,7 @@ function teamCardHtml(person) {
       <div class="tc-role">${esc(person.Stanowisko_Rola)} · ${esc(person.Dzial)}</div>
       <div class="pc-row"><span>Obciążenie</span><b>${hrs.percent}% / ${fte}%</b></div>
       <div class="workload-track"><div class="workload-fill ${cls}" style="width:${Math.min(150, hrs.percent) / 1.5}%"></div></div>
-      <div class="tc-hours">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h w tym miesiącu · ${hrs.workDays} dni rob. × ${hrs.dailyCapacityHours.toFixed(1)}h/dzień</div>
+      <div class="tc-hours">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h w tym miesiącu · ${hrs.workDays} dni rob. × ${hrs.dailyCapacityHours.toFixed(2)}h/dzień (${HOURS_PER_DAY}h − ${BREAK_MINUTES_PER_DAY + LUNCH_MINUTES_PER_DAY} min przerw/lunch)</div>
       <div class="tc-projects">
         ${myAssignments.map(a => `<div>• ${esc(projectName(a.ID_Projektu))} — ${esc(a.Rola_w_projekcie)} (${pctOrDash(a.Procent_zaangazowania)})</div>`).join("") || "<div>Brak aktywnych przypisań.</div>"}
       </div>
@@ -3104,7 +3115,8 @@ function openPersonDetail(oid) {
       <div><div class="k">Stawka godzinowa</div><div class="v">${person.Stawka_godzinowa ? num(person.Stawka_godzinowa).toLocaleString("pl-PL") + " PLN/h" : "—"}</div></div>
       <div><div class="k">Obecne obciążenie</div><div class="v">${hrs.percent}%</div></div>
       <div><div class="k">Godziny w tym miesiącu</div><div class="v">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h</div></div>
-      <div><div class="k">Dni robocze / dzienna pojemność</div><div class="v">${hrs.workDays} dni × ${hrs.dailyCapacityHours.toFixed(1)}h</div></div>
+      <div><div class="k">Dni robocze / dzienna pojemność</div><div class="v">${hrs.workDays} dni × ${hrs.dailyCapacityHours.toFixed(2)}h</div></div>
+      <div><div class="k">Przerwy wg KP (Art. 134/141)</div><div class="v">${HOURS_PER_DAY}h nominalnie − ${BREAK_MINUTES_PER_DAY + LUNCH_MINUTES_PER_DAY} min/dzień</div></div>
     </div>
     <div class="dp-section">
       <h4>Przypisania do projektów (${assigns.length})</h4>
