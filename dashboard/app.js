@@ -997,30 +997,84 @@ function workloadHoursInfo(person, refDate = new Date()) {
   };
 }
 
-function renderTeam() {
-  const cards = STATE.team.map(person => {
-    // Lista przypisan do projektow zostaje jako informacja kontekstowa (do jakich projektow
-    // ktos nalezy), ale nie jest juz zrodlem liczby obciazenia - patrz workloadHoursInfo().
-    const myAssignments = assignmentsForPerson(person.ID_Osoby).filter(a => a.Status === "Aktywny");
-    const fte = num(person.Dostepnosc_FTE_procent, 100);
-    const hrs = workloadHoursInfo(person);
-    const cls = hrs.percent > 100 ? "over" : hrs.percent >= 90 ? "warn" : "";
+let teamFilters = { view: "cards" };
+
+function teamCardHtml(person) {
+  // Lista przypisan do projektow zostaje jako informacja kontekstowa (do jakich projektow
+  // ktos nalezy), ale nie jest juz zrodlem liczby obciazenia - patrz workloadHoursInfo().
+  const myAssignments = assignmentsForPerson(person.ID_Osoby).filter(a => a.Status === "Aktywny");
+  const fte = num(person.Dostepnosc_FTE_procent, 100);
+  const hrs = workloadHoursInfo(person);
+  const cls = hrs.percent > 100 ? "over" : hrs.percent >= 90 ? "warn" : "";
+  return `
+    <div class="team-card" data-open-person="${esc(person.ID_Osoby)}">
+      <div class="tc-name">${esc(person.Imie_i_nazwisko)}</div>
+      <div class="tc-role">${esc(person.Stanowisko_Rola)} · ${esc(person.Dzial)}</div>
+      <div class="pc-row"><span>Obciążenie</span><b>${hrs.percent}% / ${fte}%</b></div>
+      <div class="workload-track"><div class="workload-fill ${cls}" style="width:${Math.min(150, hrs.percent) / 1.5}%"></div></div>
+      <div class="tc-hours">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h w tym miesiącu · ${hrs.workDays} dni rob. × ${hrs.dailyCapacityHours.toFixed(1)}h/dzień</div>
+      <div class="tc-projects">
+        ${myAssignments.map(a => `<div>• ${esc(projectName(a.ID_Projektu))} — ${esc(a.Rola_w_projekcie)} (${pctOrDash(a.Procent_zaangazowania)})</div>`).join("") || "<div>Brak aktywnych przypisań.</div>"}
+      </div>
+    </div>`;
+}
+
+function renderTeamTable(list) {
+  const groups = new Map();
+  list.forEach(person => {
+    const key = person.Dzial || "— bez działu —";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(person);
+  });
+  const keys = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b, "pl"));
+  return keys.map(key => {
+    const rows = groups.get(key);
     return `
-      <div class="team-card" data-open-person="${esc(person.ID_Osoby)}">
-        <div class="tc-name">${esc(person.Imie_i_nazwisko)}</div>
-        <div class="tc-role">${esc(person.Stanowisko_Rola)} · ${esc(person.Dzial)}</div>
-        <div class="pc-row"><span>Obciążenie</span><b>${hrs.percent}% / ${fte}%</b></div>
-        <div class="workload-track"><div class="workload-fill ${cls}" style="width:${Math.min(150, hrs.percent) / 1.5}%"></div></div>
-        <div class="tc-hours">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h w tym miesiącu · ${hrs.workDays} dni rob. × ${hrs.dailyCapacityHours.toFixed(1)}h/dzień</div>
-        <div class="tc-projects">
-          ${myAssignments.map(a => `<div>• ${esc(projectName(a.ID_Projektu))} — ${esc(a.Rola_w_projekcie)} (${pctOrDash(a.Procent_zaangazowania)})</div>`).join("") || "<div>Brak aktywnych przypisań.</div>"}
+      <div class="table-group">
+        <div class="table-group-head">${esc(key)}<span class="count-pill">${rows.length}</span></div>
+        <div class="panel" style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>Imię i nazwisko</th><th>Rola</th><th>Obciążenie</th><th class="num">Godziny (przyp. / pojemność)</th><th class="num">FTE</th><th>Email</th>
+            </tr></thead>
+            <tbody>
+              ${rows.map(person => {
+                const fte = num(person.Dostepnosc_FTE_procent, 100);
+                const hrs = workloadHoursInfo(person);
+                return `
+                <tr class="clickable" data-open-person="${esc(person.ID_Osoby)}">
+                  <td>${esc(person.Imie_i_nazwisko)}</td>
+                  <td>${esc(person.Stanowisko_Rola || "—")}</td>
+                  <td>${badge(hrs.percent + "%", hrs.percent > 100 ? "critical" : hrs.percent >= 90 ? "warning" : "good")}</td>
+                  <td class="num">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h</td>
+                  <td class="num">${fte}%</td>
+                  <td>${esc(person.Email || "—")}</td>
+                </tr>`; }).join("")}
+            </tbody>
+          </table>
         </div>
       </div>`;
-  });
+  }).join("");
+}
+
+function renderTeam() {
+  const view = teamFilters.view || "cards";
+  const body = view === "tabela"
+    ? renderTeamTable(STATE.team) || `<div class="empty-hint">Brak osób w zespole — kliknij „+ Dodaj osobę”.</div>`
+    : `<div class="team-grid">${STATE.team.map(teamCardHtml).join("") || `<div class="empty-hint">Brak osób w zespole — kliknij „+ Dodaj osobę”.</div>`}</div>`;
   $("#view-zespol").innerHTML = `
-    <div class="section-head"><h2>Zespół</h2>${can("create", "zespol") ? `<button data-add-team="1">+ Dodaj osobę</button>` : ""}</div>
+    <div class="section-head">
+      <h2>Zespół</h2>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div class="view-toggle">
+          <button type="button" class="view-toggle-btn ${view === "cards" ? "active" : ""}" data-team-view="cards">Karty</button>
+          <button type="button" class="view-toggle-btn ${view === "tabela" ? "active" : ""}" data-team-view="tabela">Tabela wg działu</button>
+        </div>
+        ${can("create", "zespol") ? `<button data-add-team="1">+ Dodaj osobę</button>` : ""}
+      </div>
+    </div>
     ${STATE.me.role === "Specjalista" ? `<div class="empty-hint" style="margin-bottom:12px">Obciążenie i lista projektów uwzględniają tylko projekty, do których i Ty jesteś przypisany/a — mogą nie odzwierciedlać pełnego obciążenia danej osoby.</div>` : ""}
-    <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak osób w zespole — kliknij „+ Dodaj osobę”.</div>`}</div>
+    ${body}
   `;
 }
 
@@ -2871,6 +2925,8 @@ document.addEventListener("click", (e) => {
   if (addProject) { openProjectForm(); return; }
   const projViewBtn = e.target.closest("[data-proj-view]");
   if (projViewBtn) { projectFilters.view = projViewBtn.getAttribute("data-proj-view"); renderProjects(); return; }
+  const teamViewBtn = e.target.closest("[data-team-view]");
+  if (teamViewBtn) { teamFilters.view = teamViewBtn.getAttribute("data-team-view"); renderTeam(); return; }
   const editProject = e.target.closest("[data-edit-project]");
   if (editProject) { openProjectForm(editProject.getAttribute("data-edit-project")); return; }
   const deleteProjectBtn = e.target.closest("[data-delete-project]");
