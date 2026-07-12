@@ -922,6 +922,7 @@ function renderProjects() {
         <div class="view-toggle">
           <button type="button" class="view-toggle-btn ${view === "cards" ? "active" : ""}" data-proj-view="cards">Karty</button>
           <button type="button" class="view-toggle-btn ${view === "tabela" ? "active" : ""}" data-proj-view="tabela">Tabela wg architekta</button>
+          <button type="button" class="view-toggle-btn ${view === "kanban" ? "active" : ""}" data-proj-view="kanban">Kanban</button>
         </div>
         ${can("create", "projekty") ? `<button data-add-project="1">+ Nowy projekt</button>` : ""}
       </div>
@@ -931,9 +932,9 @@ function renderProjects() {
       const hint = can("create", "projekty")
         ? "Brak projektów spełniających kryteria — dostosuj filtry albo dodaj nowy projekt."
         : "Brak projektów spełniających kryteria — dostosuj filtry (widzisz tylko projekty, do których jesteś przypisany/a).";
-      return view === "tabela"
-        ? (list.length ? renderProjectsTable(list) : `<div class="empty-hint">${hint}</div>`)
-        : `<div class="card-grid">${list.map(projectCardHtml).join("") || `<div class="empty-hint">${hint}</div>`}</div>`;
+      if (view === "tabela") return list.length ? renderProjectsTable(list) : `<div class="empty-hint">${hint}</div>`;
+      if (view === "kanban") return renderProjectsKanban(list);
+      return `<div class="card-grid">${list.map(projectCardHtml).join("") || `<div class="empty-hint">${hint}</div>`}</div>`;
     })()}
   `;
   $("#fProjCount").textContent = `${list.length} / ${STATE.projects.length} projektów`;
@@ -944,6 +945,58 @@ function renderProjects() {
   $("#fProjRag").addEventListener("change", e => { projectFilters.rag = e.target.value; renderProjects(); });
   $("#fProjTag")?.addEventListener("change", e => { projectFilters.tag = e.target.value; renderProjects(); });
   $("#fProjSort").addEventListener("change", e => { projectFilters.sort = e.target.value; renderProjects(); });
+}
+
+function projectKanbanCardHtml(p) {
+  const editable = can("update", "projekty", p);
+  return `
+    <div class="kanban-card" draggable="${editable}" data-drag-kind="project" data-drag-id="${esc(p.ID_Projektu)}" data-open-project="${esc(p.ID_Projektu)}">
+      <div class="kc-title">${esc(p.Nazwa)}</div>
+      <div class="kc-meta">${typeTag(p.Typ_projektu)} · ${esc(p.Kierownik_projektu || "—")}</div>
+      <div class="kc-meta">Termin: ${fmtDate(p.Data_zakonczenia_planowana)} · ${fmtPctFraction(p.Procent_postepu)}</div>
+      <div class="kc-foot">
+        ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
+        ${badge(p.Priorytet || "—", p.Priorytet === "Wysoki" ? "critical" : p.Priorytet === "Niski" ? "muted" : "warning")}
+      </div>
+    </div>`;
+}
+
+function renderProjectsKanban(list) {
+  return `<div class="kanban-board">${STATUSES.map(status => {
+    const items = list.filter(p => p.Status === status);
+    return `
+      <div class="kanban-col" data-drop-status="${esc(status)}">
+        <div class="kanban-col-head">${esc(status)}<span class="count-pill">${items.length}</span></div>
+        <div class="kanban-col-body">
+          ${items.map(projectKanbanCardHtml).join("") || `<div class="kanban-empty">Brak projektów</div>`}
+        </div>
+      </div>`;
+  }).join("")}</div>`;
+}
+
+const projectMoveSeq = new Map(); // ID_Projektu -> numer najnowszego w locie zadania PUT (mirror ticketMoveSeq)
+
+async function moveProjectToStatus(pid, newStatus) {
+  const p = STATE.projectById.get(pid);
+  if (!p || p.Status === newStatus || !STATUSES.includes(newStatus)) return;
+  if (!can("update", "projekty", p)) return; // unika bezuzytecznego 403 z proba optymistycznej zmiany
+  const prevStatus = p.Status;
+  p.Status = newStatus;
+  renderProjects();
+  const seq = (projectMoveSeq.get(pid) || 0) + 1;
+  projectMoveSeq.set(pid, seq);
+  try {
+    const payload = serializeForApi({ Status: p.Status }, []);
+    const saved = await apiPut(`/api/projekty/${pid}`, payload);
+    if (projectMoveSeq.get(pid) !== seq) return; // nowsze przeciagniecie juz w toku
+    reviveDates([saved], DATE_FIELDS.projects);
+    Object.assign(p, saved);
+  } catch (e) {
+    if (projectMoveSeq.get(pid) !== seq) return;
+    p.Status = prevStatus;
+    alert("Nie udało się zmienić statusu projektu: " + e.message);
+  }
+  renderProjects();
 }
 
 /* ================================================================== VIEW: ZESPOL */
@@ -1126,7 +1179,7 @@ function ticketCardHtml(t) {
   const isSub = !!t.ID_Podwykonawcy;
   const editable = can("update", "zadania_tickety", t);
   return `
-    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue ? "overdue" : ""}" draggable="${editable}" data-drag-ticket="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue ? "overdue" : ""}" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
       <div class="kc-title">${esc(t.Tytul)}</div>
       <div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>
       <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)}</div>
@@ -1241,15 +1294,22 @@ async function moveTicketToStatus(tid, newStatus) {
   renderTickets();
 }
 
+// Uogolniony kanban drag&drop - karty dowolnego "rodzaju" (na razie ticket/project) niosa
+// data-drag-kind + data-drag-id zamiast osobnego atrybutu per typ (byl tu tylko
+// data-drag-ticket, dopoki istnial jeden kanban). KANBAN_MOVE_HANDLERS to rejestr
+// {kind: moveFn} zamiast twardego wywolania moveTicketToStatus - drop dispatch'uje przez
+// niego, wiec dodanie kolejnego przeciaganego typu (np. ideapool) to jeden nowy wpis, nie
+// kopiowanie piatego zestawu listenerow.
+const KANBAN_MOVE_HANDLERS = { ticket: moveTicketToStatus, project: moveProjectToStatus };
 document.addEventListener("dragstart", (e) => {
-  const card = e.target.closest("[data-drag-ticket]");
+  const card = e.target.closest("[data-drag-kind]");
   if (!card) return;
-  e.dataTransfer.setData("text/plain", card.getAttribute("data-drag-ticket"));
+  e.dataTransfer.setData("text/plain", `${card.getAttribute("data-drag-kind")}|${card.getAttribute("data-drag-id")}`);
   e.dataTransfer.effectAllowed = "move";
   setTimeout(() => card.classList.add("dragging"), 0);
 });
 document.addEventListener("dragend", (e) => {
-  const card = e.target.closest("[data-drag-ticket]");
+  const card = e.target.closest("[data-drag-kind]");
   if (card) card.classList.remove("dragging");
   $all(".kanban-col.drag-over").forEach(c => c.classList.remove("drag-over"));
 });
@@ -1269,8 +1329,9 @@ document.addEventListener("drop", (e) => {
   if (!col) return;
   e.preventDefault();
   col.classList.remove("drag-over");
-  const tid = e.dataTransfer.getData("text/plain");
-  if (tid) moveTicketToStatus(tid, col.getAttribute("data-drop-status"));
+  const [kind, id] = (e.dataTransfer.getData("text/plain") || "").split("|");
+  const handler = KANBAN_MOVE_HANDLERS[kind];
+  if (handler && id) handler(id, col.getAttribute("data-drop-status"));
 });
 
 /* ================================================================== VIEW: GANTT */
