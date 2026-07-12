@@ -119,31 +119,51 @@ def migrate_schema(db_path):
         conn.close()
 
 
-def ensure_komentarze_table(db_path):
-    """Dodaje tabele komentarze_tickety (nowa funkcjonalnosc) do baz, ktore powstaly przed jej
-    wprowadzeniem. W przeciwienstwie do migrate_schema() powyzej to zwykla NOWA tabela, nie
-    retrofit ograniczenia na istniejacej - CREATE TABLE/INDEX IF NOT EXISTS wystarcza, wprost
-    z schema.sql (jedno zrodlo definicji), bez przebudowy niczego innego. Bezpieczne do
-    wielokrotnego wywolania."""
+def _ensure_table(db_path, table_name):
+    """Generyczny CREATE TABLE IF NOT EXISTS dla nowej, niezaleznej tabeli, wprost z schema.sql
+    (jedno zrodlo definicji) - tani sqlite_master check przed czytaniem/parsowaniem pliku, zeby
+    nie robic tego bezwarunkowo na kazdym starcie serwera (audyt: efficiency). Nie tworzy
+    indeksow - jesli tabela ich potrzebuje, dodaj je osobno (patrz ensure_komentarze_table).
+    Wspolny helper dla wszystkich nowych tabel ponizej, zamiast kopiowania tej samej funkcji
+    za kazdym razem, gdy przybywa kolejna."""
     conn = sqlite3.connect(db_path)
     try:
-        # Tanie sprawdzenie przed czytaniem/parsowaniem schema.sql - w przeciwienstwie do
-        # migrate_schema()/ensure_ticket_role_columns() ta funkcja robila to bezwarunkowo na
-        # kazdym starcie serwera, nawet gdy tabela juz istnieje (audyt: efficiency).
         exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='komentarze_tickety'"
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
         ).fetchone()
         if exists:
             return
         with open(SCHEMA_PATH, encoding="utf-8") as f:
             schema_sql = f.read()
         create_statements = _extract_create_statements(schema_sql)
-        conn.execute(create_statements["komentarze_tickety"])
+        conn.execute(create_statements[table_name])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_komentarze_table(db_path):
+    """Dodaje tabele komentarze_tickety (nowa funkcjonalnosc) do baz, ktore powstaly przed jej
+    wprowadzeniem. Indeks tworzony osobno, bezwarunkowo (idempotentny CREATE INDEX IF NOT
+    EXISTS) - w przeciwienstwie do samej tabeli, nie ma kosztu wartego pomijania go, gdy tabela
+    juz istnieje, a to jedyny sposob, zeby przyszly nowy indeks na tej tabeli tez sie doinstalowal
+    na juz zmigrowanych bazach."""
+    _ensure_table(db_path, "komentarze_tickety")
+    conn = sqlite3.connect(db_path)
+    try:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            schema_sql = f.read()
         for stmt in re.findall(r"CREATE INDEX IF NOT EXISTS idx_komentarze_tickiet.*?;", schema_sql):
             conn.execute(stmt)
         conn.commit()
     finally:
         conn.close()
+
+
+def ensure_ideapool_table(db_path):
+    """Dodaje tabele ideapool (zgloszenia inicjatyw wewnetrznych) do baz, ktore powstaly przed
+    jej wprowadzeniem."""
+    _ensure_table(db_path, "ideapool")
 
 
 def _ensure_columns(db_path, table, new_cols):
@@ -188,3 +208,4 @@ if __name__ == "__main__":
     print(ensure_komentarze_table(path) or "komentarze_tickety: OK")
     print(ensure_ticket_role_columns(path) or "zadania_tickety role columns: OK")
     print(ensure_project_sponsor_column(path) or "projekty sponsor column: OK")
+    print(ensure_ideapool_table(path) or "ideapool: OK")

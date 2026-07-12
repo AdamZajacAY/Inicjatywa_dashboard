@@ -36,6 +36,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
 from baza_danych.schema_migrate import (
     migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns, ensure_project_sponsor_column,
+    ensure_ideapool_table,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -88,6 +89,7 @@ SCHEMA_MIGRATION_NOTE = migrate_schema(DB_PATH)  # idempotentny - no-op po pierw
 ensure_komentarze_table(DB_PATH)  # jw. - nowa tabela, CREATE TABLE IF NOT EXISTS wiec bezpieczne za kazdym startem
 ensure_ticket_role_columns(DB_PATH)  # jw. - nowe nullable kolumny, ALTER TABLE ADD COLUMN bezpieczne za kazdym startem
 ensure_project_sponsor_column(DB_PATH)  # jw. - nowa nullable kolumna sponsora na projekty
+ensure_ideapool_table(DB_PATH)  # jw. - nowa tabela, CREATE TABLE IF NOT EXISTS wiec bezpieczne za kazdym startem
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -173,6 +175,7 @@ TABLES = {
     "podwykonawcy": ("ID_Podwykonawcy", "SUB", 3),
     "przypisania_podwykonawcow": ("ID_Przypisania_Podw", "SUBA", 3),
     "users": ("ID_Uzytkownika", "USR", 3),
+    "ideapool": ("ID_Pomyslu", "IDE", 3),
 }
 
 # tabela SQL -> klucz w odpowiedzi /api/bootstrap (nazwy pol STATE.* w dashboard/app.js)
@@ -181,6 +184,7 @@ BOOTSTRAP_KEYS = {
     "harmonogram": "tasks", "zadania_tickety": "tickets", "kamienie_milowe": "milestones",
     "ryzyka_i_problemy": "risks", "raporty_statusowe": "statusReports",
     "podwykonawcy": "subcontractors", "przypisania_podwykonawcow": "subcontractorAssignments",
+    "ideapool": "ideapool",
 }
 
 
@@ -331,6 +335,7 @@ TABLE_SCOPE = {
     "raporty_statusowe": "project_scoped",
     "przypisania_podwykonawcow": "project_scoped",
     "users": "admin_only",
+    "ideapool": "global",
 }
 
 # Pola zerowane w odpowiedzi GET wylacznie dla roli Specjalista (nigdy nie usuwane - fmtMoney()/
@@ -385,6 +390,17 @@ def can_write(conn, user, action, table, row):
     istniejacy wiersz z bazy (update/delete) - zawsze dict, nigdy None."""
     if user["Rola"] in FULL_ACCESS_ROLES:
         return True
+    if table == "ideapool":
+        # "Kazdy moze zglosic pomysl" (decyzja uzytkownika) - musi zadzialac tez dla
+        # Specjalisty, ktory ponizej jest odciety od wszystkiego poza zadania_tickety, wiec ta
+        # galaz stoi PRZED rozgalezieniem na role, nie w srodku jednej z nich.
+        if action == "create":
+            return True
+        if action == "delete":
+            return False  # tylko FULL_ACCESS_ROLES (juz obsluzone wyzej)
+        # update: zglaszajacy edytuje WLASNY, jeszcze nieoceniony pomysl (zarzad zmienia status/
+        # dopisuje uwagi w kazdej chwili, ale to juz pokryte przez FULL_ACCESS_ROLES powyzej)
+        return row.get("ID_Osoby_zglaszajacej") == user.get("ID_Osoby") and row.get("Status") == "Zgloszony"
     scope = TABLE_SCOPE.get(table)
     if scope in ("admin_only", None):
         return False
@@ -469,6 +485,16 @@ def _default_zglaszajacy(data, user):
         data["ID_Osoby_zglaszajacej"] = user["ID_Osoby"]
 
 
+def _default_ideapool(data, user):
+    # Ta sama logika auto-wypelnienia zglaszajacego co _default_zglaszajacy() powyzej (tickety),
+    # plus domyslny status/data zgloszenia - "kazdy moze zglosic pomysl" (can_write() nizej)
+    # nie powinno wymagac recznego wypelniania tych pol przy kazdym zgloszeniu.
+    if not data.get("ID_Osoby_zglaszajacej") and user.get("ID_Osoby"):
+        data["ID_Osoby_zglaszajacej"] = user["ID_Osoby"]
+    data.setdefault("Status", "Zgloszony")
+    data.setdefault("Data_zgloszenia", datetime.datetime.now().isoformat(timespec="seconds"))
+
+
 TABLE_VALIDATORS = {
     "users": validate_user_payload,
 }
@@ -477,6 +503,7 @@ TABLE_CREATE_DEFAULTS = {
     # to domyka trzecia sciezke (COO/Admin tworzy konto w samej appce).
     "users": lambda data, user: data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds")),
     "zadania_tickety": _default_zglaszajacy,
+    "ideapool": _default_ideapool,
 }
 
 
@@ -575,6 +602,9 @@ ENUM_FIELDS = {
     },
     "raporty_statusowe": {
         "RAG_Status": {"Zielony", "Zolty", "Czerwony"},
+    },
+    "ideapool": {
+        "Status": {"Zgloszony", "W rozwazaniu", "Zaakceptowany", "Odrzucony"},
     },
 }
 

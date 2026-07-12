@@ -133,6 +133,23 @@ CREATE TABLE IF NOT EXISTS komentarze_tickety (
 );
 CREATE INDEX IF NOT EXISTS idx_komentarze_tickiet ON komentarze_tickety(ID_Tickietu);
 
+-- Ideapool: zgloszenia wewnetrznych inicjatyw/projektow rozwojowych - kazdy zalogowany moze
+-- zglosic (patrz can_write() w server.py), niezalezne od projekty (plaska lista, nie
+-- project_scoped). Tytul celowo nullable (nie NOT NULL) - ta sama konwencja co
+-- zadania_tickety.Tytul, walidacja wymagalnosci po stronie frontendu (required), bo tabela
+-- idzie przez generyczna fabryke collection()/item(), nie ma wlasnego bespoke route jak
+-- komentarze_tickety.
+CREATE TABLE IF NOT EXISTS ideapool (
+  ID_Pomyslu TEXT PRIMARY KEY NOT NULL,
+  Tytul TEXT,
+  Opis TEXT,
+  Kategoria TEXT,
+  ID_Osoby_zglaszajacej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
+  Status TEXT,
+  Data_zgloszenia TEXT NOT NULL,
+  Uwagi_zarzadu TEXT
+);
+
 CREATE TABLE IF NOT EXISTS kamienie_milowe (
   ID_Kamienia TEXT PRIMARY KEY NOT NULL,
   ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,

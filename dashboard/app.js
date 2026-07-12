@@ -5,7 +5,7 @@
 
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
-  subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [],
+  subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -18,12 +18,20 @@ const TABLE_SCOPE = {
   przypisania: "project_scoped", harmonogram: "project_scoped", zadania_tickety: "project_scoped",
   kamienie_milowe: "project_scoped", ryzyka_i_problemy: "project_scoped",
   raporty_statusowe: "project_scoped", przypisania_podwykonawcow: "project_scoped", users: "admin_only",
+  ideapool: "global",
 };
 const FULL_ACCESS_ROLES = ["COO", "Admin"];
 
 function can(action, table, row) {
   const role = STATE.me.role;
   if (FULL_ACCESS_ROLES.includes(role)) return true;
+  if (table === "ideapool") {
+    // "Kazdy moze zglosic pomysl" - musi zadzialac tez dla Specjalisty, wiec ta galaz stoi
+    // PRZED rozgalezieniem na role, mirror can_write() w server.py.
+    if (action === "create") return true;
+    if (action === "delete") return false;
+    return row && row.ID_Osoby_zglaszajacej === STATE.me.personId && row.Status === "Zgloszony";
+  }
   const scope = TABLE_SCOPE[table];
   if (scope === "admin_only" || !scope) return false;
   if (role === "Specjalista") {
@@ -99,6 +107,7 @@ const DATE_FIELDS = {
   subcontractorAssignments: ["Data_od", "Data_do"],
   tickets: ["Data_utworzenia", "Termin", "Data_zakonczenia"],
   users: ["Data_utworzenia", "Data_ostatniego_logowania"],
+  ideapool: ["Data_zgloszenia"],
 };
 
 /* ---------------------------------------------------------------- utils */
@@ -354,6 +363,7 @@ async function loadFromApi() {
   STATE.statusReports = data.statusReports || [];
   STATE.subcontractors = data.subcontractors || []; STATE.subcontractorAssignments = data.subcontractorAssignments || [];
   STATE.tickets = data.tickets || [];
+  STATE.ideapool = data.ideapool || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
     assignedProjectIds: data.me.assignedProjectIds || [],
@@ -2340,6 +2350,79 @@ async function deleteSubcontractor(sid) {
   renderAll();
 }
 
+/* ================================================================== VIEW: IDEAPOOL */
+function ideaStatusBadge(status) {
+  if (status === "Zaakceptowany") return "good";
+  if (status === "Odrzucony") return "critical";
+  if (status === "W rozwazaniu") return "warning";
+  return "muted"; // Zgloszony
+}
+
+function renderIdeapool() {
+  const list = [...STATE.ideapool].sort((a, b) => (b.Data_zgloszenia?.getTime() || 0) - (a.Data_zgloszenia?.getTime() || 0));
+  $("#view-ideapool").innerHTML = `
+    <div class="section-head">
+      <h2>Ideapool</h2>
+      <button data-add-idea="1">+ Zgłoś pomysł</button>
+    </div>
+    <div class="empty-hint" style="margin-bottom:12px">Zgłoszenia wewnętrznych inicjatyw i projektów rozwojowych — może zgłosić każdy, ocenia zarząd (COO/Admin).</div>
+    <div class="panel">
+      ${list.map(i => `
+        <div class="dp-list-item" ${can("update", "ideapool", i) ? `data-edit-idea="${esc(i.ID_Pomyslu)}" style="cursor:pointer"` : ""}>
+          <div class="item-actions">
+            ${can("delete", "ideapool", i) ? `<button class="icon-btn danger" data-delete-idea="${esc(i.ID_Pomyslu)}">Usuń</button>` : ""}
+          </div>
+          <div class="title">${esc(i.Tytul)} ${badge(i.Status, ideaStatusBadge(i.Status))}</div>
+          <div class="meta">${i.Kategoria ? esc(i.Kategoria) + " · " : ""}zgłosił: ${esc(personName(i.ID_Osoby_zglaszajacej))} · ${fmtDate(i.Data_zgloszenia)}</div>
+          ${i.Opis ? `<div class="meta" style="margin-top:4px">${esc(i.Opis)}</div>` : ""}
+          ${i.Uwagi_zarzadu ? `<div class="meta" style="margin-top:4px"><i>Uwagi zarządu: ${esc(i.Uwagi_zarzadu)}</i></div>` : ""}
+        </div>`).join("") || `<div class="empty-hint">Brak zgłoszeń — kliknij „+ Zgłoś pomysł”.</div>`}
+    </div>
+  `;
+}
+
+function openIdeaForm(id = null) {
+  const i = id ? STATE.ideapool.find(x => x.ID_Pomyslu === id) : {};
+  if (!requireExisting(i, "pomysł")) return;
+  // Status/Uwagi zarzadu tylko dla COO/Admin przy edycji - can_write() na backendzie i tak
+  // odrzuci probe zapisu tych pol od kogokolwiek innego, ale nie ma sensu ich nawet pokazywac
+  // osobie, ktora zglasza wlasny, jeszcze nieoceniony pomysl.
+  const showBoardFields = id && FULL_ACCESS_ROLES.includes(STATE.me.role);
+  const body = `
+    ${fInput("Tytuł *", "Tytul", i.Tytul, "text", "required")}
+    ${fInput("Kategoria", "Kategoria", i.Kategoria)}
+    ${fTextarea("Opis", "Opis", i.Opis)}
+    ${showBoardFields ? fSelect("Status", "Status", pairs(["Zgloszony", "W rozwazaniu", "Zaakceptowany", "Odrzucony"]), i.Status || "Zgloszony") : ""}
+    ${showBoardFields ? fTextarea("Uwagi zarządu", "Uwagi_zarzadu", i.Uwagi_zarzadu) : ""}
+  `;
+  openModal(id ? "Edytuj pomysł" : "Zgłoś pomysł", body, {
+    submitLabel: id ? "Zapisz" : "Zgłoś pomysł",
+    onSubmit: (data) => saveIdeaFromForm(data, id, showBoardFields),
+  });
+}
+
+async function saveIdeaFromForm(data, id, includeBoardFields) {
+  if (!data.Tytul) { alert("Podaj tytuł pomysłu."); return; }
+  const isNew = !id;
+  const existing = isNew ? {} : STATE.ideapool.find(x => x.ID_Pomyslu === id);
+  if (!requireExisting(existing, "pomysł")) return;
+  const fields = { Tytul: data.Tytul, Kategoria: data.Kategoria, Opis: data.Opis };
+  if (includeBoardFields) { fields.Status = data.Status; fields.Uwagi_zarzadu = data.Uwagi_zarzadu; }
+  const saved = await persistEntity({ isNew, endpoint: "/api/ideapool", id, fields, dateFields: DATE_FIELDS.ideapool, errorLabel: "pomysłu" });
+  if (!saved) return;
+  if (isNew) STATE.ideapool.push(saved);
+  else Object.assign(existing, saved);
+  closeModal();
+  renderAll();
+}
+
+async function deleteIdea(id) {
+  if (!confirm("Usunąć zgłoszenie pomysłu?")) return;
+  if (!await deleteEntity(`/api/ideapool/${id}`, "pomysłu")) return;
+  STATE.ideapool = STATE.ideapool.filter(x => x.ID_Pomyslu !== id);
+  renderAll();
+}
+
 /* ---------- Integracja z CEIDG (pobieranie danych firmy po NIP) ---------- */
 const CEIDG_TOKEN_KEY = "ip_ceidg_api_token";
 function getCeidgToken() { try { return localStorage.getItem(CEIDG_TOKEN_KEY) || ""; } catch (e) { return ""; } }
@@ -2803,6 +2886,7 @@ function renderAll() {
   renderTickets();
   renderGanttView();
   renderRyzyka();
+  renderIdeapool();
   if (FULL_ACCESS_ROLES.includes(STATE.me.role)) renderUsers();
   // Kazdy render*() odbudowuje swoj kawalek DOM od zera (innerHTML), wiec [data-roles] trzeba
   // ponownie wymietc na koniec kazdego pelnego przebiegu, nie tylko raz po boot().
@@ -3054,6 +3138,13 @@ document.addEventListener("click", (e) => {
   if (editSubAssign) { openSubcontractorAssignmentForm(editSubAssign.getAttribute("data-project"), editSubAssign.getAttribute("data-edit-subcontractor-assignment")); return; }
   const deleteSubAssignBtn = e.target.closest("[data-delete-subcontractor-assignment]");
   if (deleteSubAssignBtn) { deleteSubcontractorAssignment(deleteSubAssignBtn.getAttribute("data-delete-subcontractor-assignment"), deleteSubAssignBtn.getAttribute("data-project")); return; }
+
+  const addIdea = e.target.closest("[data-add-idea]");
+  if (addIdea) { openIdeaForm(); return; }
+  const deleteIdeaBtn = e.target.closest("[data-delete-idea]");
+  if (deleteIdeaBtn) { deleteIdea(deleteIdeaBtn.getAttribute("data-delete-idea")); return; }
+  const editIdea = e.target.closest("[data-edit-idea]");
+  if (editIdea) { openIdeaForm(editIdea.getAttribute("data-edit-idea")); return; }
 
   const addUser = e.target.closest("[data-add-user]");
   if (addUser) { openUserForm(); return; }
