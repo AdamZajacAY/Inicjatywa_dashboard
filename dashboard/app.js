@@ -946,9 +946,6 @@ function renderProjects() {
 }
 
 /* ================================================================== VIEW: ZESPOL */
-function workloadForPerson(oid) {
-  return assignmentsForPerson(oid).filter(a => a.Status === "Aktywny").reduce((s, a) => s + num(a.Procent_zaangazowania), 0);
-}
 
 const HOURS_PER_DAY = 8; // zalozenie: pelny etat (100% FTE) = 8h dziennie - brak innej normy w danych zrodlowych
 
@@ -972,36 +969,47 @@ function workingDaysInMonth(year, month) {
   return count;
 }
 
-// load = suma Procent_zaangazowania z aktywnych przypisan (0-100, ta sama skala co
-// Dostepnosc_FTE_procent) - przeliczenie na godziny wzgledem biezacego miesiaca, nie sumowanie
-// realnych godzin z ticketow/etapow (te maja zakresy dat, wymagaloby proracji miedzy miesiacami).
-function workloadHoursInfo(person, load, refDate = new Date()) {
+// Obciazenie liczone z zadan (ticketow) i ich roboczogodzin, nie z % zaangazowania w
+// przypisaniach projektowych (decyzja uzytkownika - poprzedni model % byl przyblizeniem
+// "ile procent czasu ktos jest przypisany do projektu", nie realna praca do wykonania).
+// harmonogram/etapy nie maja w ogole pola z godzinami - jedynym zrodlem godzin sa
+// zadania_tickety.Szacowane_roboczogodziny. Ticket ma tylko jeden termin (Termin), nie zakres
+// dat, wiec cala jego szacowana liczba godzin trafia w calosci do miesiaca terminu - swiadome
+// uproszczenie zamiast proracji godzin na dni miedzy utworzeniem a terminem.
+function taskHoursForPersonInMonth(oid, refDate) {
+  return STATE.tickets
+    .filter(t => t.ID_Osoby_przypisanej === oid && t.Termin instanceof Date
+      && t.Termin.getFullYear() === refDate.getFullYear() && t.Termin.getMonth() === refDate.getMonth())
+    .reduce((s, t) => s + num(t.Szacowane_roboczogodziny), 0);
+}
+function workloadHoursInfo(person, refDate = new Date()) {
   const fte = num(person.Dostepnosc_FTE_procent, 100) / 100;
   const workDays = workingDaysInMonth(refDate.getFullYear(), refDate.getMonth());
+  const capacityHours = workDays * HOURS_PER_DAY * fte;
+  const assignedHours = taskHoursForPersonInMonth(person.ID_Osoby, refDate);
   return {
     workDays,
-    capacityHours: workDays * HOURS_PER_DAY * fte,
-    assignedHours: workDays * HOURS_PER_DAY * (load / 100),
+    capacityHours,
+    assignedHours,
     dailyCapacityHours: HOURS_PER_DAY * fte,
+    percent: capacityHours ? Math.round((assignedHours / capacityHours) * 100) : 0,
   };
 }
 
 function renderTeam() {
   const cards = STATE.team.map(person => {
-    // Jedno przejscie po przypisaniach danej osoby zamiast dwoch (workloadForPerson() +
-    // osobne assignmentsForPerson() nizej filtrowaly to samo STATE.assignments niezaleznie).
+    // Lista przypisan do projektow zostaje jako informacja kontekstowa (do jakich projektow
+    // ktos nalezy), ale nie jest juz zrodlem liczby obciazenia - patrz workloadHoursInfo().
     const myAssignments = assignmentsForPerson(person.ID_Osoby).filter(a => a.Status === "Aktywny");
-    const load = myAssignments.reduce((s, a) => s + num(a.Procent_zaangazowania), 0);
     const fte = num(person.Dostepnosc_FTE_procent, 100);
-    const ratio = fte ? load / fte : 0;
-    const cls = ratio > 1 ? "over" : ratio >= 0.9 ? "warn" : "";
-    const hrs = workloadHoursInfo(person, load);
+    const hrs = workloadHoursInfo(person);
+    const cls = hrs.percent > 100 ? "over" : hrs.percent >= 90 ? "warn" : "";
     return `
       <div class="team-card" data-open-person="${esc(person.ID_Osoby)}">
         <div class="tc-name">${esc(person.Imie_i_nazwisko)}</div>
         <div class="tc-role">${esc(person.Stanowisko_Rola)} · ${esc(person.Dzial)}</div>
-        <div class="pc-row"><span>Obciążenie</span><b>${load}% / ${fte}%</b></div>
-        <div class="workload-track"><div class="workload-fill ${cls}" style="width:${Math.min(150, load) / 1.5}%"></div></div>
+        <div class="pc-row"><span>Obciążenie</span><b>${hrs.percent}% / ${fte}%</b></div>
+        <div class="workload-track"><div class="workload-fill ${cls}" style="width:${Math.min(150, hrs.percent) / 1.5}%"></div></div>
         <div class="tc-hours">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h w tym miesiącu · ${hrs.workDays} dni rob. × ${hrs.dailyCapacityHours.toFixed(1)}h/dzień</div>
         <div class="tc-projects">
           ${myAssignments.map(a => `<div>• ${esc(projectName(a.ID_Projektu))} — ${esc(a.Rola_w_projekcie)} (${pctOrDash(a.Procent_zaangazowania)})</div>`).join("") || "<div>Brak aktywnych przypisań.</div>"}
@@ -2561,8 +2569,7 @@ function openPersonDetail(oid) {
   const person = STATE.teamById.get(oid);
   if (!person) return;
   const assigns = assignmentsForPerson(oid);
-  const load = workloadForPerson(oid);
-  const hrs = workloadHoursInfo(person, load);
+  const hrs = workloadHoursInfo(person);
   const myTickets = ticketsForPerson(oid).sort((a, b) => (a.Termin?.getTime() || 0) - (b.Termin?.getTime() || 0));
   $("#dpContent").innerHTML = `
     <div style="display:flex;justify-content:flex-end;gap:6px">
@@ -2576,7 +2583,7 @@ function openPersonDetail(oid) {
       <div><div class="k">Telefon</div><div class="v">${esc(person.Telefon)}</div></div>
       <div><div class="k">Dostępność (FTE)</div><div class="v">${person.Dostepnosc_FTE_procent}%</div></div>
       <div><div class="k">Stawka godzinowa</div><div class="v">${person.Stawka_godzinowa ? num(person.Stawka_godzinowa).toLocaleString("pl-PL") + " PLN/h" : "—"}</div></div>
-      <div><div class="k">Obecne obciążenie</div><div class="v">${load}%</div></div>
+      <div><div class="k">Obecne obciążenie</div><div class="v">${hrs.percent}%</div></div>
       <div><div class="k">Godziny w tym miesiącu</div><div class="v">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h</div></div>
       <div><div class="k">Dni robocze / dzienna pojemność</div><div class="v">${hrs.workDays} dni × ${hrs.dailyCapacityHours.toFixed(1)}h</div></div>
     </div>
