@@ -37,6 +37,7 @@ from baza_danych.backup_db import create_backup, enforce_retention, list_backups
 from baza_danych.schema_migrate import (
     migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns, ensure_project_sponsor_column,
     ensure_ideapool_table, ensure_klienci_tables, ensure_project_klient_column, ensure_checklist_table,
+    ensure_client_krs_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -93,6 +94,7 @@ ensure_ideapool_table(DB_PATH)  # jw. - nowa tabela, CREATE TABLE IF NOT EXISTS 
 ensure_klienci_tables(DB_PATH)  # jw. - dwie nowe tabele
 ensure_project_klient_column(DB_PATH)  # jw. - nowa nullable kolumna, wolana PO ensure_klienci_tables
 ensure_checklist_table(DB_PATH)  # jw. - nowa tabela
+ensure_client_krs_column(DB_PATH)  # jw. - nowa nullable kolumna
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -224,16 +226,18 @@ def close_db(_exc):
 # przepisany na delegowany listener przy tej samej okazji). style-src potrzebuje
 # 'unsafe-inline' - app.js generuje mnostwo inline style="" na elementach, przepisanie
 # tego na klasy CSS to osobny, znacznie wiekszy refaktor. connect-src dopuszcza jawnie
-# tylko CEIDG (jedyne zewnetrzne wywolanie fetch() w calej appce, patrz przycisk "Pobierz
-# z CEIDG"). frame-ancestors 'none' + X-Frame-Options: DENY = podwojna, nadmiarowa ochrona
-# przed clickjackingiem (nowe i stare przegladarki).
+# tylko CEIDG i KRS (jedyne zewnetrzne wywolania fetch() w calej appce, patrz przyciski
+# "Pobierz z CEIDG"/"Pobierz z KRS" na karcie klienta - api-krs.ms.gov.pl potwierdzone
+# dopuszcza CORS z dowolnego originu, zero tokena/klucza potrzebne). frame-ancestors 'none'
+# + X-Frame-Options: DENY = podwojna, nadmiarowa ochrona przed clickjackingiem (nowe i stare
+# przegladarki).
 _CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data:; "
     "font-src 'self'; "
-    "connect-src 'self' https://dane.biznes.gov.pl; "
+    "connect-src 'self' https://dane.biznes.gov.pl https://api-krs.ms.gov.pl; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"

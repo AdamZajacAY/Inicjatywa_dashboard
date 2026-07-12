@@ -2449,6 +2449,7 @@ function openClientDetail(cid) {
     <div style="margin-bottom:6px">${badge(c.Status || "—", clientStatusBadge(c.Status))}</div>
     <div class="dp-grid">
       <div><div class="k">NIP</div><div class="v">${esc(c.NIP || "—")}</div></div>
+      <div><div class="k">Numer KRS</div><div class="v">${esc(c.KRS || "—")}</div></div>
       <div><div class="k">REGON</div><div class="v">${esc(c.Regon || "—")}</div></div>
       <div><div class="k">Adres siedziby</div><div class="v">${esc(c.Adres_siedziby || "—")}</div></div>
       <div><div class="k">Miasto</div><div class="v">${esc(c.Miasto || "—")}</div></div>
@@ -2480,7 +2481,21 @@ function openClientForm(cid = null) {
   const body = `
     ${fInput("Nazwa *", "Nazwa", c.Nazwa, "text", "required")}
     ${fSelect("Typ", "Typ", pairs(["Inwestor", "Klient", "Deweloper", "Inne"]), c.Typ || "Klient")}
-    ${fInput("NIP", "NIP", c.NIP)}
+    <label class="f-label">NIP
+      <div style="display:flex;gap:6px">
+        <input name="NIP" type="text" value="${esc(c.NIP || "")}" placeholder="1234567890" style="flex:1" maxlength="13">
+        <button type="button" class="icon-btn" data-ceidg-fetch style="white-space:nowrap">Pobierz z CEIDG</button>
+        <button type="button" class="icon-btn" data-ceidg-settings title="Ustawienia tokena API CEIDG">⚙</button>
+      </div>
+      <span class="ceidg-status" data-ceidg-status></span>
+    </label>
+    <label class="f-label">Numer KRS
+      <div style="display:flex;gap:6px">
+        <input name="KRS" type="text" value="${esc(c.KRS || "")}" placeholder="0000123456" style="flex:1" maxlength="10">
+        <button type="button" class="icon-btn" data-krs-fetch style="white-space:nowrap">Pobierz z KRS</button>
+      </div>
+      <span class="krs-status" data-krs-status></span>
+    </label>
     ${fInput("REGON", "Regon", c.Regon)}
     ${fInput("Adres siedziby", "Adres_siedziby", c.Adres_siedziby)}
     ${fInput("Miasto", "Miasto", c.Miasto)}
@@ -2503,7 +2518,7 @@ async function saveClientFromForm(data, cid) {
   const existing = isNew ? {} : STATE.clientById.get(cid);
   if (!requireExisting(existing, "klient")) return;
   const fields = {
-    Nazwa: data.Nazwa, Typ: data.Typ, NIP: data.NIP, Regon: data.Regon,
+    Nazwa: data.Nazwa, Typ: data.Typ, NIP: data.NIP, KRS: data.KRS, Regon: data.Regon,
     Adres_siedziby: data.Adres_siedziby, Miasto: data.Miasto, Email: data.Email, Telefon: data.Telefon,
     ID_Osoby_opiekuna: data.ID_Osoby_opiekuna, Status: data.Status, Uwagi: data.Uwagi,
   };
@@ -2714,6 +2729,71 @@ async function handleCeidgFetchClick(btn) {
     } else {
       statusEl.textContent = "Nie udało się połączyć z CEIDG (błąd sieci lub CORS) — uzupełnij dane ręcznie.";
     }
+    statusEl.style.color = "var(--status-critical)";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ---------- Integracja z KRS (pobieranie danych spolki po numerze KRS) ---------- */
+// W odroznieniu od CEIDG powyzej: oficjalne API resortu sprawiedliwosci (api-krs.ms.gov.pl)
+// wyszukuje WYLACZNIE po numerze KRS, nie po NIP - potwierdzone bezposrednim zapytaniem
+// (wyszukiwanie po NIP zwraca 404, brak publicznego odpowiednika). Zero tokena/klucza API
+// potrzebne (w odroznieniu od CEIDG) - endpoint jest w pelni publiczny, z CORS dopuszczajacym
+// dowolny origin (potwierdzone naglowkiem Access-Control-Allow-Origin).
+async function fetchKrsByNumber(krs) {
+  const resp = await fetch(`https://api-krs.ms.gov.pl/api/krs/OdpisAktualny/${encodeURIComponent(krs)}?rejestr=P&format=json`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  const dzial1 = data?.odpis?.dane?.dzial1;
+  if (!dzial1) return null;
+  const podmiot = dzial1.danePodmiotu || {};
+  const adres = dzial1.siedzibaIAdres?.adres || {};
+  const siedziba = dzial1.siedzibaIAdres?.siedziba || {};
+  const adresParts = [adres.ulica, adres.nrDomu, adres.kodPocztowy, adres.miejscowosc || siedziba.miejscowosc].filter(Boolean);
+  return {
+    nazwa: podmiot.nazwa || null,
+    nip: podmiot.identyfikatory?.nip || null,
+    regon: podmiot.identyfikatory?.regon || null,
+    miasto: adres.miejscowosc || siedziba.miejscowosc || null,
+    adres: adresParts.length ? adresParts.join(", ") : null,
+  };
+}
+
+async function handleKrsFetchClick(btn) {
+  const label = btn.closest("label");
+  const krsInput = label.querySelector('input[name="KRS"]');
+  const statusEl = label.querySelector("[data-krs-status]");
+  const digits = (krsInput.value || "").replace(/\D/g, "");
+  if (!digits) {
+    statusEl.textContent = "Podaj numer KRS.";
+    statusEl.style.color = "var(--status-critical)";
+    return;
+  }
+  const krs = digits.padStart(10, "0");
+  statusEl.textContent = "Pobieranie z KRS…";
+  statusEl.style.color = "var(--text-muted)";
+  btn.disabled = true;
+  try {
+    const result = await fetchKrsByNumber(krs);
+    if (!result) {
+      statusEl.textContent = "Nie znaleziono podmiotu o podanym numerze KRS (rejestr przedsiębiorców).";
+      statusEl.style.color = "var(--status-warning, #a86a00)";
+      return;
+    }
+    const form = btn.closest("form");
+    if (result.nazwa && form.querySelector('[name="Nazwa"]')) form.querySelector('[name="Nazwa"]').value = result.nazwa;
+    if (result.nip && form.querySelector('[name="NIP"]')) form.querySelector('[name="NIP"]').value = result.nip;
+    if (result.regon && form.querySelector('[name="Regon"]')) form.querySelector('[name="Regon"]').value = result.regon;
+    if (result.adres && form.querySelector('[name="Adres_siedziby"]')) form.querySelector('[name="Adres_siedziby"]').value = result.adres;
+    if (result.miasto && form.querySelector('[name="Miasto"]')) form.querySelector('[name="Miasto"]').value = result.miasto;
+    krsInput.value = krs;
+    statusEl.textContent = `Pobrano${result.nazwa ? ": " + result.nazwa : ""}`;
+    statusEl.style.color = "var(--status-good)";
+  } catch (e) {
+    statusEl.textContent = "Nie udało się połączyć z KRS (błąd sieci) — uzupełnij dane ręcznie.";
     statusEl.style.color = "var(--status-critical)";
   } finally {
     btn.disabled = false;
@@ -3380,6 +3460,8 @@ document.addEventListener("click", (e) => {
   if (ceidgFetchBtn) { handleCeidgFetchClick(ceidgFetchBtn); return; }
   const ceidgSettingsBtn = e.target.closest("[data-ceidg-settings]");
   if (ceidgSettingsBtn) { openCeidgTokenForm(); return; }
+  const krsFetchBtn = e.target.closest("[data-krs-fetch]");
+  if (krsFetchBtn) { handleKrsFetchClick(krsFetchBtn); return; }
 
   const addClient = e.target.closest("[data-add-client]");
   if (addClient) { openClientForm(); return; }

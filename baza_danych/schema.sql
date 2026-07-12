@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS klienci (
   Nazwa TEXT,
   Typ TEXT,
   NIP TEXT,
+  KRS TEXT,
   Regon TEXT,
   Adres_siedziby TEXT,
   Miasto TEXT,

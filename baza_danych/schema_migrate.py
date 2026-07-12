@@ -220,6 +220,13 @@ def ensure_checklist_table(db_path):
     _ensure_table(db_path, "checklisty_projektow")
 
 
+def ensure_client_krs_column(db_path):
+    """Dodaje KRS do klienci w bazach powstalych przed jej wprowadzeniem - numer KRS, osobne
+    pole od NIP (oficjalne API KRS resortu sprawiedliwosci wyszukuje wylacznie po numerze
+    KRS, nie po NIP)."""
+    _ensure_columns(db_path, "klienci", {"KRS": "TEXT"})
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")
@@ -231,4 +238,4 @@ if __name__ == "__main__":
     print(ensure_klienci_tables(path) or "klienci/kontakty_klienta: OK")
     print(ensure_project_klient_column(path) or "projekty klient column: OK")
     print(ensure_checklist_table(path) or "checklisty_projektow: OK")
-    print(ensure_ideapool_table(path) or "ideapool: OK")
+    print(ensure_client_krs_column(path) or "klienci KRS column: OK")
