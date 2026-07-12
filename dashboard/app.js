@@ -6,7 +6,7 @@
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
-  clients: [], clientContacts: [],
+  clients: [], clientContacts: [], checklists: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(), clientById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -20,6 +20,7 @@ const TABLE_SCOPE = {
   kamienie_milowe: "project_scoped", ryzyka_i_problemy: "project_scoped",
   raporty_statusowe: "project_scoped", przypisania_podwykonawcow: "project_scoped", users: "admin_only",
   ideapool: "global", klienci: "global", kontakty_klienta: "global",
+  checklisty_projektow: "project_scoped",
 };
 const FULL_ACCESS_ROLES = ["COO", "Admin"];
 
@@ -367,6 +368,7 @@ async function loadFromApi() {
   STATE.tickets = data.tickets || [];
   STATE.ideapool = data.ideapool || [];
   STATE.clients = data.clients || []; STATE.clientContacts = data.clientContacts || [];
+  STATE.checklists = data.checklists || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
     assignedProjectIds: data.me.assignedProjectIds || [],
@@ -490,6 +492,7 @@ function assignmentsForProject(pid) { return STATE.assignments.filter(a => a.ID_
 function assignmentsForPerson(oid) { return STATE.assignments.filter(a => a.ID_Osoby === oid); }
 function tasksForProject(pid) { return STATE.tasks.filter(t => t.ID_Projektu === pid); }
 function milestonesForProject(pid) { return STATE.milestones.filter(m => m.ID_Projektu === pid); }
+function checklistForProject(pid) { return STATE.checklists.filter(c => c.ID_Projektu === pid); }
 function risksForProject(pid) { return STATE.risks.filter(r => r.ID_Projektu === pid); }
 function reportsForProject(pid) {
   return STATE.statusReports.filter(r => r.ID_Projektu === pid)
@@ -2294,6 +2297,59 @@ async function deleteMilestone(mid, pid) {
   openProjectDetail(pid);
 }
 
+/* ---------- Formularz: Checklista projektu ---------- */
+function openChecklistItemForm(pid, id = null) {
+  const c = id ? STATE.checklists.find(x => x.ID_Pozycji === id) : {};
+  if (!requireExisting(c, "pozycja checklisty")) return;
+  const body = `${fTextarea("Treść *", "Tresc", c.Tresc)}`;
+  openModal(id ? "Edytuj pozycję checklisty" : "Nowa pozycja checklisty", body, {
+    submitLabel: "Zapisz",
+    onSubmit: (data) => saveChecklistItemFromForm(data, pid, id),
+  });
+}
+
+async function saveChecklistItemFromForm(data, pid, id) {
+  if (!data.Tresc) { alert("Podaj treść pozycji."); return; }
+  const isNew = !id;
+  const existing = isNew ? {} : STATE.checklists.find(x => x.ID_Pozycji === id);
+  if (!requireExisting(existing, "pozycja checklisty")) return;
+  const fields = { ID_Projektu: pid, Tresc: data.Tresc };
+  const saved = await persistEntity({ isNew, endpoint: "/api/checklisty_projektow", id, fields, errorLabel: "pozycji checklisty" });
+  if (!saved) return;
+  if (isNew) STATE.checklists.push(saved);
+  else Object.assign(existing, saved);
+  closeModal();
+  renderAll();
+  openProjectDetail(pid);
+}
+
+async function deleteChecklistItem(id, pid) {
+  if (!confirm("Usunąć pozycję checklisty?")) return;
+  if (!await deleteEntity(`/api/checklisty_projektow/${id}`, "pozycji checklisty")) return;
+  STATE.checklists = STATE.checklists.filter(c => c.ID_Pozycji !== id);
+  renderAll();
+  openProjectDetail(pid);
+}
+
+async function toggleChecklistItem(id, pid) {
+  // Optymistyczny update bez modala (mirror moveTicketToStatus) - zaznaczenie/odznaczenie
+  // pozycji to jednoklikowa akcja, nie zasluguje na otwieranie formularza.
+  const item = STATE.checklists.find(c => c.ID_Pozycji === id);
+  if (!item) return;
+  if (!can("update", "checklisty_projektow", item)) return;
+  const prev = item.Wykonano;
+  item.Wykonano = prev === "Tak" ? "Nie" : "Tak";
+  openProjectDetail(pid);
+  try {
+    const saved = await apiPut(`/api/checklisty_projektow/${id}`, { Wykonano: item.Wykonano });
+    Object.assign(item, saved);
+  } catch (e) {
+    item.Wykonano = prev;
+    alert("Nie udało się zaktualizować pozycji checklisty: " + e.message);
+  }
+  openProjectDetail(pid);
+}
+
 /* ---------- Formularz: Podwykonawca (biblioteka) ---------- */
 function openSubcontractorForm(sid = null) {
   const s = sid ? STATE.subcontractorById.get(sid) : {};
@@ -2726,6 +2782,7 @@ function openProjectDetail(pid) {
   if (!p) return;
   const assigns = assignmentsForProject(pid);
   const mstones = milestonesForProject(pid).sort((a, b) => (a.Data_planowana?.getTime() || 0) - (b.Data_planowana?.getTime() || 0));
+  const checklist = checklistForProject(pid);
   const risks = risksForProject(pid);
   const reports = reportsForProject(pid).slice(0, 3);
   const tasks = tasksForProject(pid);
@@ -2892,6 +2949,21 @@ function openProjectDetail(pid) {
           <div class="title">${esc(m.Nazwa_kamienia)} ${badge(m.Status, milestoneStatusBadge(m.Status))}</div>
           <div class="meta">Plan: ${fmtDate(m.Data_planowana)} ${m.Data_rzeczywista ? "· Rzeczywiste: " + fmtDate(m.Data_rzeczywista) : ""} · ${esc(personName(m.ID_Osoby_odpowiedzialnej))}</div>
         </div>`).join("") || `<div class="kpi-sub">Brak kamieni milowych.</div>`}
+    </div>
+
+    <div class="dp-section">
+      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Checklista (${checklist.length})</h4>
+        ${can("create", "checklisty_projektow", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-checklist="${esc(pid)}">+ Dodaj pozycję</button>` : ""}</div>
+      ${checklist.map(c => `
+        <div class="dp-list-item">
+          <div class="item-actions">
+            ${can("delete", "checklisty_projektow", c) ? `<button class="icon-btn danger" data-delete-checklist="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}">Usuń</button>` : ""}
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:8px">
+            <input type="checkbox" data-toggle-checklist="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}" ${c.Wykonano === "Tak" ? "checked" : ""} ${can("update", "checklisty_projektow", c) ? "" : "disabled"} style="margin-top:3px">
+            <span ${can("update", "checklisty_projektow", c) ? `data-edit-checklist="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}"` : ""} style="${can("update", "checklisty_projektow", c) ? "cursor:pointer;" : ""}${c.Wykonano === "Tak" ? "text-decoration:line-through;color:var(--text-muted)" : ""}">${esc(c.Tresc)}</span>
+          </div>
+        </div>`).join("") || `<div class="kpi-sub">Brak pozycji checklisty.</div>`}
     </div>
 
     <div class="dp-section">
@@ -3203,6 +3275,13 @@ document.addEventListener("focusout", (e) => {
   const parsed = parseDateInput(dateInput.value);
   if (parsed) dateInput.value = dateDisplayVal(parsed);
 });
+document.addEventListener("change", (e) => {
+  // Delegowane, nie podpiete per-element - checklista jest przebudowywana od zera (innerHTML)
+  // przy kazdym openProjectDetail(), wiec bezposredni listener trzeba by wiazac na nowo za
+  // kazdym razem (ten sam powod co dla focusout/date-input powyzej).
+  const checklistCheckbox = e.target.closest && e.target.closest("[data-toggle-checklist]");
+  if (checklistCheckbox) { toggleChecklistItem(checklistCheckbox.getAttribute("data-toggle-checklist"), checklistCheckbox.getAttribute("data-project")); return; }
+});
 
 document.addEventListener("click", (e) => {
   const printView = e.target.closest("[data-print-view]");
@@ -3283,6 +3362,13 @@ document.addEventListener("click", (e) => {
   if (deleteMilestoneBtn) { deleteMilestone(deleteMilestoneBtn.getAttribute("data-delete-milestone"), deleteMilestoneBtn.getAttribute("data-project")); return; }
   const editMilestone = e.target.closest("[data-edit-milestone]");
   if (editMilestone) { openMilestoneForm(editMilestone.getAttribute("data-project"), editMilestone.getAttribute("data-edit-milestone")); return; }
+
+  const addChecklist = e.target.closest("[data-add-checklist]");
+  if (addChecklist) { openChecklistItemForm(addChecklist.getAttribute("data-add-checklist")); return; }
+  const deleteChecklistBtn = e.target.closest("[data-delete-checklist]");
+  if (deleteChecklistBtn) { deleteChecklistItem(deleteChecklistBtn.getAttribute("data-delete-checklist"), deleteChecklistBtn.getAttribute("data-project")); return; }
+  const editChecklist = e.target.closest("[data-edit-checklist]");
+  if (editChecklist) { openChecklistItemForm(editChecklist.getAttribute("data-project"), editChecklist.getAttribute("data-edit-checklist")); return; }
 
   const addSub = e.target.closest("[data-add-subcontractor]");
   if (addSub) { openSubcontractorForm(); return; }

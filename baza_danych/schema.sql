@@ -164,6 +164,19 @@ CREATE TABLE IF NOT EXISTS komentarze_tickety (
 );
 CREATE INDEX IF NOT EXISTS idx_komentarze_tickiet ON komentarze_tickety(ID_Tickietu);
 
+-- Checklisty projektu: prosta lista kontrolna per projekt, czysty mirror kamienie_milowe
+-- (project_scoped, generyczna fabryka, zero bespoke route'ow). Swiadomie BEZ systemu
+-- szablonow per kategoria projektu (Typ_projektu) - decyzja podjeta wprost z uzytkownikiem,
+-- to "miejsce pod checklisty", nie silnik automatycznego wypelniania.
+CREATE TABLE IF NOT EXISTS checklisty_projektow (
+  ID_Pozycji TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  Tresc TEXT,
+  Wykonano TEXT,
+  Kolejnosc INTEGER,
+  Data_utworzenia TEXT
+);
+
 -- Ideapool: zgloszenia wewnetrznych inicjatyw/projektow rozwojowych - kazdy zalogowany moze
 -- zglosic (patrz can_write() w server.py), niezalezne od projekty (plaska lista, nie
 -- project_scoped). Tytul celowo nullable (nie NOT NULL) - ta sama konwencja co
