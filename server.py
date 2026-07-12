@@ -302,11 +302,16 @@ def parse_payload(conn, table, exclude=()):
 
 FULL_ACCESS_ROLES = {"COO", "Admin"}
 VALID_ROLES = {None, "Specjalista", "Architekt_PM", "COO", "Admin"}
-# Role, ktorych odczyt jest zawezony do wlasnych projektow i pozbawiony pol finansowych
-# (patrz scoped_rows()/redact_row()) - jedna definicja zamiast dwoch niezaleznych porownan
-# do literalu "Specjalista" (audyt: latwo dopisac druga zawezona role w jednym miejscu
-# i przeoczyc drugie).
+# Role, ktorych odczyt jest zawezony do wlasnych projektow (patrz scoped_rows()) - jedna
+# definicja zamiast wielu niezaleznych porownan do literalu "Specjalista" (audyt: latwo
+# dopisac druga zawezona role w jednym miejscu i przeoczyc drugie).
 PORTFOLIO_RESTRICTED_ROLES = {"Specjalista"}
+# Role pozbawione pol finansowych (patrz redact_row()) - SZERSZY zbior niz powyzej: Architekt_PM
+# ma i zachowuje odczyt portfolio-wide (widzi wszystkie projekty - swiadoma, wczesniejsza
+# decyzja), ale nie powinien widziec kwot/marzowosci, tylko COO/Admin. Dwa osobne zbiory,
+# bo to dwa rozne wymiary ograniczenia (ktore WIERSZE vs. ktore POLA) - PORTFOLIO_RESTRICTED_ROLES
+# i FINANCIAL_RESTRICTED_ROLES nie musza pokrywac tych samych rol.
+FINANCIAL_RESTRICTED_ROLES = {"Specjalista", "Architekt_PM"}
 
 # "global" = ta sama tabela dla wszystkich (np. rejestr zespolu), "root_project" = sama
 # tabela projekty (jej wlasny PK ID_Projektu = "czyj to projekt"), "project_scoped" = ma
@@ -409,7 +414,7 @@ def redact_row(user, table, row):
         return None
     for field in ALWAYS_STRIP_FIELDS.get(table, ()):
         row.pop(field, None)
-    if user["Rola"] in PORTFOLIO_RESTRICTED_ROLES:
+    if user["Rola"] in FINANCIAL_RESTRICTED_ROLES:
         for field in FINANCIAL_FIELDS.get(table, ()):
             if field in row:
                 row[field] = None
