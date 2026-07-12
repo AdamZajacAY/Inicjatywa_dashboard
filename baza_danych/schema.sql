@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS projekty (
   Segment TEXT,
   Owner TEXT,
   Kierownik_projektu TEXT,
+  ID_Osoby_sponsora TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
   Status TEXT,
   Faza TEXT,
   Priorytet TEXT,

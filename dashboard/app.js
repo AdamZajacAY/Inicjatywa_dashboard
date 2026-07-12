@@ -423,7 +423,7 @@ function showPendingScreen(me) {
 
 /* ---------------------------------------------------------------- eksport do Excela (recznie, migawka) */
 const EXPORT_HEADERS = {
-  Projekty: ["ID_Projektu", "Nazwa", "Typ_projektu", "Funkcja_biura", "Segment", "Owner", "Kierownik_projektu", "Status", "Faza",
+  Projekty: ["ID_Projektu", "Nazwa", "Typ_projektu", "Funkcja_biura", "Segment", "Owner", "Kierownik_projektu", "ID_Osoby_sponsora", "Status", "Faza",
     "Priorytet", "RAG_Status", "Tagi", "Data_rozpoczecia", "Data_zakonczenia_planowana", "Data_zakonczenia_rzeczywista",
     "Procent_postepu", "Budzet_calkowity", "Budzet_wydany", "Waluta", "Przychod_planowany", "Przychod_rzeczywisty",
     "Szacowane_roboczogodziny", "Stawka_godzinowa_srednia", "Lokalizacja_Adres", "Miasto", "Powierzchnia_m2",
@@ -863,6 +863,7 @@ function projectCardHtml(p) {
       </div>
       <div class="pc-row"><span>Owner</span><b>${esc(p.Owner)}</b></div>
       <div class="pc-row"><span>Kierownik projektu</span><b>${esc(p.Kierownik_projektu)}</b></div>
+      ${p.ID_Osoby_sponsora ? `<div class="pc-row"><span>Sponsor</span><b>${esc(personName(p.ID_Osoby_sponsora))}</b></div>` : ""}
       <div class="pc-row"><span>Status</span><b>${esc(p.Status)} · ${esc(p.Faza)}</b></div>
       <div class="pc-row"><span>Termin (plan)</span><b>${fmtDate(p.Data_zakonczenia_planowana)}</b></div>
       <div class="pc-row"><span>Postęp</span><b>${fmtPctFraction(p.Procent_postepu)}</b></div>
@@ -1613,6 +1614,10 @@ function fTagsInput(label, name, valueCsv, suggestions = []) {
 }
 function pairs(arr) { return arr.map(x => [x, x]); }
 function teamOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.map(t => [t.ID_Osoby, t.Imie_i_nazwisko])]; }
+// Sponsor projektu = czlonek zarzadu odpowiedzialny za finansowanie - zawezone do
+// istniejacej, prawdziwej wartosci enuma Dzial="Zarzad" (nic nowego nie trzeba dodawac do
+// zespol, zeby wiedziec "kto jest w zarzadzie").
+function boardMemberOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.filter(t => t.Dzial === "Zarzad").map(t => [t.ID_Osoby, t.Imie_i_nazwisko])]; }
 function assignedTeamOptionsPairs(pid, mustIncludeId) {
   const assignedIds = new Set(assignmentsForProject(pid).map(a => a.ID_Osoby));
   const assigned = STATE.team.filter(t => assignedIds.has(t.ID_Osoby));
@@ -1641,6 +1646,7 @@ function openProjectForm(pid = null) {
     ${fSelect("Segment", "Segment", pairs(SEGMENTS), p.Segment)}
     ${fSelect("Owner *", "Owner", teamNamePairs(), p.Owner)}
     ${fSelect("Kierownik projektu", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu)}
+    ${fSelect("Sponsor (zarząd)", "ID_Osoby_sponsora", boardMemberOptionsPairs(), p.ID_Osoby_sponsora)}
     ${fSelect("Status", "Status", pairs(STATUSES), p.Status || "Planowanie")}
     ${fSelect("Faza", "Faza", pairs(FAZY), p.Faza || "Koncepcja")}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), p.Priorytet || "Sredni")}
@@ -1690,7 +1696,7 @@ async function saveProjectFromForm(data, pid) {
   if (!requireExisting(existing, "projekt")) return;
   const fields = {
     Nazwa: data.Nazwa, Typ_projektu: data.Typ_projektu, Funkcja_biura: data.Funkcja_biura, Segment: data.Segment,
-    Owner: data.Owner, Kierownik_projektu: data.Kierownik_projektu,
+    Owner: data.Owner, Kierownik_projektu: data.Kierownik_projektu, ID_Osoby_sponsora: data.ID_Osoby_sponsora,
     Status: data.Status, Faza: data.Faza, Priorytet: data.Priorytet, RAG_Status: data.RAG_Status,
     Tagi: data.Tagi,
     Data_rozpoczecia: parseDateInput(data.Data_rozpoczecia),
@@ -2433,6 +2439,7 @@ function openProjectDetail(pid) {
         <div><div class="k">Funkcja biura</div><div class="v">${p.Funkcja_biura ? esc(p.Funkcja_biura) : "—"}</div></div>
         <div><div class="k">Owner</div><div class="v">${esc(p.Owner)}</div></div>
         <div><div class="k">Kierownik projektu</div><div class="v">${esc(p.Kierownik_projektu)}</div></div>
+        <div><div class="k">Sponsor</div><div class="v">${p.ID_Osoby_sponsora ? esc(personName(p.ID_Osoby_sponsora)) : "—"}</div></div>
         <div><div class="k">Data rozpoczęcia</div><div class="v">${fmtDate(p.Data_rozpoczecia)}</div></div>
         <div><div class="k">Zakończenie (plan)</div><div class="v">${fmtDate(p.Data_zakonczenia_planowana)}</div></div>
         <div><div class="k">Zakończenie (rzeczywiste)</div><div class="v">${fmtDate(p.Data_zakonczenia_rzeczywista)}</div></div>

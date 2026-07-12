@@ -39,8 +39,8 @@ DB_PATH = path.join(ROOT, "baza_projektow.db")
 # (tabela, {kolumna_FK: tabela_docelowa}) w kolejnosci bezpiecznej pod klucze obce.
 # ID_Zadania_poprzedzajacego (samo-referencja w harmonogram) obslugiwane osobno, druga turą.
 MIGRATION_PLAN = [
-    ("projekty", {}),
     ("zespol", {}),
+    ("projekty", {"ID_Osoby_sponsora": "zespol"}),
     ("podwykonawcy", {}),
     ("przypisania", {"ID_Projektu": "projekty", "ID_Osoby": "zespol"}),
     ("harmonogram", {"ID_Projektu": "projekty", "ID_Osoby_odpowiedzialnej": "zespol"}),

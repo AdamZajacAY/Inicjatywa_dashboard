@@ -34,7 +34,9 @@ from flask import Flask, abort, g, jsonify, redirect, request, send_from_directo
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from baza_danych.backup_db import create_backup, enforce_retention, list_backups
-from baza_danych.schema_migrate import migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns
+from baza_danych.schema_migrate import (
+    migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns, ensure_project_sponsor_column,
+)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # Lokalnie zawsze domyslna sciezka w repo (baza juz tam jest). DATABASE_PATH ustawiane w
@@ -85,6 +87,7 @@ ensure_database_ready()
 SCHEMA_MIGRATION_NOTE = migrate_schema(DB_PATH)  # idempotentny - no-op po pierwszym udanym uruchomieniu
 ensure_komentarze_table(DB_PATH)  # jw. - nowa tabela, CREATE TABLE IF NOT EXISTS wiec bezpieczne za kazdym startem
 ensure_ticket_role_columns(DB_PATH)  # jw. - nowe nullable kolumny, ALTER TABLE ADD COLUMN bezpieczne za kazdym startem
+ensure_project_sponsor_column(DB_PATH)  # jw. - nowa nullable kolumna sponsora na projekty
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
