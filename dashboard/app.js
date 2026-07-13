@@ -1271,7 +1271,7 @@ function renderSubcontractors() {
 }
 
 /* ================================================================== VIEW: ZADANIA (tickety) */
-let ticketFilters = { projekt: "", osoba: "", status: "", onlyOverdue: false, view: "kanban" };
+let ticketFilters = { projekt: "", osoba: "", statuses: [], onlyOverdue: false, view: "kanban" };
 
 function ticketCardHtml(t) {
   const overdue = isOverdueTicket(t);
@@ -1308,7 +1308,7 @@ function renderTickets() {
   const list = STATE.tickets.filter(t => {
     if (ticketFilters.projekt && t.ID_Projektu !== ticketFilters.projekt) return false;
     if (ticketFilters.osoba && t.ID_Osoby_przypisanej !== ticketFilters.osoba) return false;
-    if (ticketFilters.status && ticketEffectiveStatus(t) !== ticketFilters.status) return false;
+    if (ticketFilters.statuses.length && !ticketFilters.statuses.includes(ticketEffectiveStatus(t))) return false;
     if (ticketFilters.onlyOverdue && !isOverdueTicket(t)) return false;
     return true;
   }).sort((a, b) => (a.Termin?.getTime() || 0) - (b.Termin?.getTime() || 0));
@@ -1329,8 +1329,8 @@ function renderTickets() {
       <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
       <select id="fTkOsoba"><option value="">Wszystkie osoby</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ticketFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
       ${view === "lista" ? `<div class="status-chips">
-        <button type="button" class="status-chip badge badge-muted ${!ticketFilters.status ? "active" : ""}" data-tk-status-filter="">Wszystkie</button>
-        ${STATUSY_TICKIETOW.map(s => `<button type="button" class="status-chip badge badge-${ticketStatusBadge(s)} ${ticketFilters.status === s ? "active" : ""}" data-tk-status-filter="${esc(s)}"><span class="dot" style="background:currentColor"></span>${esc(s)}</button>`).join("")}
+        <button type="button" class="status-chip badge badge-muted ${!ticketFilters.statuses.length ? "active" : ""}" data-tk-status-filter="">Wszystkie</button>
+        ${STATUSY_TICKIETOW.map(s => `<button type="button" class="status-chip badge badge-${ticketStatusBadge(s)} ${ticketFilters.statuses.includes(s) ? "active" : ""}" data-tk-status-filter="${esc(s)}"><span class="dot" style="background:currentColor"></span>${esc(s)}</button>`).join("")}
       </div>` : ""}
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)">
         <input type="checkbox" id="fTkOverdue" ${ticketFilters.onlyOverdue ? "checked" : ""}> tylko opóźnione
@@ -3576,7 +3576,16 @@ document.addEventListener("click", (e) => {
   const tkViewBtn = e.target.closest("[data-tk-view]");
   if (tkViewBtn) { ticketFilters.view = tkViewBtn.getAttribute("data-tk-view"); renderTickets(); return; }
   const tkStatusChip = e.target.closest("[data-tk-status-filter]");
-  if (tkStatusChip) { ticketFilters.status = tkStatusChip.getAttribute("data-tk-status-filter"); renderTickets(); return; }
+  if (tkStatusChip) {
+    const val = tkStatusChip.getAttribute("data-tk-status-filter");
+    if (!val) { ticketFilters.statuses = []; }
+    else {
+      const idx = ticketFilters.statuses.indexOf(val);
+      if (idx === -1) ticketFilters.statuses.push(val); else ticketFilters.statuses.splice(idx, 1);
+    }
+    renderTickets();
+    return;
+  }
   const openTicketRow = e.target.closest("[data-open-ticket]");
   if (openTicketRow) { const tkid = openTicketRow.getAttribute("data-open-ticket"); const tk = STATE.tickets.find(x => x.ID_Tickietu === tkid); if (tk) { openTicketForm(tk.ID_Projektu, tkid); return; } }
 
