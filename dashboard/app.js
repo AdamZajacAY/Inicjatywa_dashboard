@@ -818,7 +818,7 @@ function renderOverview() {
 }
 
 /* ================================================================== VIEW: PROJEKTY */
-let projectFilters = { typ: "", status: "", owner: "", rag: "", q: "", tag: "", sort: "priorytet", view: "cards" };
+let projectFilters = { typ: "", status: "", owner: "", rag: "", q: "", tag: "", terminOd: "", terminDo: "", sort: "priorytet", view: "cards" };
 const PRIORITY_RANK = { "Wysoki": 0, "Sredni": 1, "Niski": 2 };
 
 function renderProjectsFilters() {
@@ -837,10 +837,17 @@ function renderProjectsFilters() {
         <option value="Czerwony" ${projectFilters.rag === "Czerwony" ? "selected" : ""}>Czerwony</option>
       </select>
       ${allTags.length ? `<select id="fProjTag"><option value="">Wszystkie tagi</option>${allTags.map(t => `<option ${projectFilters.tag === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>` : ""}
+      <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;color:var(--text-secondary)">Termin od
+        <input type="date" id="fProjTerminOd" value="${esc(projectFilters.terminOd)}">
+      </label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;color:var(--text-secondary)">do
+        <input type="date" id="fProjTerminDo" value="${esc(projectFilters.terminDo)}">
+      </label>
       <select id="fProjSort">
         <option value="priorytet" ${projectFilters.sort === "priorytet" ? "selected" : ""}>Sortuj: priorytet</option>
         <option value="rag" ${projectFilters.sort === "rag" ? "selected" : ""}>Sortuj: RAG (najgorsze pierwsze)</option>
         <option value="termin" ${projectFilters.sort === "termin" ? "selected" : ""}>Sortuj: najbliższy termin</option>
+        <option value="kategoria" ${projectFilters.sort === "kategoria" ? "selected" : ""}>Sortuj: kategoria</option>
         <option value="nazwa" ${projectFilters.sort === "nazwa" ? "selected" : ""}>Sortuj: nazwa A-Z</option>
       </select>
       <span class="count" id="fProjCount"></span>
@@ -856,12 +863,17 @@ function filteredProjects() {
     if (projectFilters.rag && p.RAG_Status !== projectFilters.rag) return false;
     if (projectFilters.tag && !projectTags(p).includes(projectFilters.tag)) return false;
     if (projectFilters.q && !(p.Nazwa || "").toLowerCase().includes(projectFilters.q.toLowerCase())) return false;
+    const terminOd = parseDateInput(projectFilters.terminOd);
+    if (terminOd && (!p.Data_zakonczenia_planowana || p.Data_zakonczenia_planowana < terminOd)) return false;
+    const terminDo = parseDateInput(projectFilters.terminDo);
+    if (terminDo && (!p.Data_zakonczenia_planowana || p.Data_zakonczenia_planowana > terminDo)) return false;
     return true;
   });
   const sort = projectFilters.sort;
   list.sort((a, b) => {
     if (sort === "rag") return (ragRank[a.RAG_Status] ?? 3) - (ragRank[b.RAG_Status] ?? 3);
     if (sort === "termin") return (a.Data_zakonczenia_planowana?.getTime() ?? Infinity) - (b.Data_zakonczenia_planowana?.getTime() ?? Infinity);
+    if (sort === "kategoria") return (TYPE_ORDER.indexOf(a.Typ_projektu) + 1 || 99) - (TYPE_ORDER.indexOf(b.Typ_projektu) + 1 || 99);
     if (sort === "nazwa") return (a.Nazwa || "").localeCompare(b.Nazwa || "");
     return (PRIORITY_RANK[a.Priorytet] ?? 3) - (PRIORITY_RANK[b.Priorytet] ?? 3);
   });
@@ -965,6 +977,8 @@ function renderProjects() {
   $("#fProjOwner").addEventListener("change", e => { projectFilters.owner = e.target.value; renderProjects(); });
   $("#fProjRag").addEventListener("change", e => { projectFilters.rag = e.target.value; renderProjects(); });
   $("#fProjTag")?.addEventListener("change", e => { projectFilters.tag = e.target.value; renderProjects(); });
+  $("#fProjTerminOd").addEventListener("change", e => { projectFilters.terminOd = e.target.value; renderProjects(); });
+  $("#fProjTerminDo").addEventListener("change", e => { projectFilters.terminDo = e.target.value; renderProjects(); });
   $("#fProjSort").addEventListener("change", e => { projectFilters.sort = e.target.value; renderProjects(); });
 }
 
