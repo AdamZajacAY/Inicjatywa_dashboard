@@ -258,6 +258,25 @@ function typeTag(type) {
   const slot = TYPE_COLORS[type] || "cat-3";
   return `<span class="type-tag"><span class="dot" style="background:var(--${slot})"></span>${esc(type || "—")}</span>`;
 }
+function initials(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "?";
+}
+function personColorSlot(name) {
+  // Prosty, deterministyczny hash (suma kodow znakow modulo liczba slotow kategorii) - ten
+  // sam string zawsze daje ten sam kolor, bez potrzeby utrzymywania osobnej mapy/tabeli
+  // przypisan kolor<->osoba. Reuzywa juz istniejaca, zwalidowana palete --cat-1..--cat-8
+  // (rozroznialna dla CVD, patrz komentarz w style.css), zamiast wprowadzac nowa tylko pod
+  // ten jeden cel.
+  let h = 0;
+  for (const ch of (name || "")) h = (h * 31 + ch.charCodeAt(0)) % 8;
+  return `cat-${h + 1}`;
+}
+function ownerTagHtml(name) {
+  if (!name) return "—";
+  const slot = personColorSlot(name);
+  return `<span class="owner-tag"><span class="avatar-circle" style="background:var(--${slot})">${esc(initials(name))}</span>${esc(name)}</span>`;
+}
 
 /* ---------------------------------------------------------------- backend API (Flask + SQLite) */
 async function apiRequest(method, path, body) {
@@ -894,7 +913,7 @@ function projectCardHtml(p) {
         </div>
         ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
       </div>
-      <div class="pc-row"><span>Owner</span><b>${esc(p.Owner)}</b></div>
+      <div class="pc-row"><span>Owner</span><b>${ownerTagHtml(p.Owner)}</b></div>
       <div class="pc-row"><span>Kierownik projektu</span><b>${esc(p.Kierownik_projektu)}</b></div>
       ${p.ID_Osoby_sponsora ? `<div class="pc-row"><span>Sponsor</span><b>${esc(personName(p.ID_Osoby_sponsora))}</b></div>` : ""}
       <div class="pc-row"><span>Status</span><b>${esc(p.Status)} · ${esc(p.Faza)}</b></div>
@@ -923,12 +942,13 @@ function renderProjectsTable(list) {
         <div class="panel" style="overflow-x:auto">
           <table class="data-table">
             <thead><tr>
-              <th>Nazwa</th><th>Typ</th><th>Status</th><th>Faza</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
+              <th>Nazwa</th><th>Owner</th><th>Typ</th><th>Status</th><th>Faza</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
             </tr></thead>
             <tbody>
               ${rows.map(p => `
                 <tr class="clickable" data-open-project="${esc(p.ID_Projektu)}">
                   <td>${esc(p.Nazwa)}</td>
+                  <td>${ownerTagHtml(p.Owner)}</td>
                   <td>${typeTag(p.Typ_projektu)}</td>
                   <td>${esc(p.Status || "—")}</td>
                   <td>${esc(p.Faza || "—")}</td>
@@ -989,6 +1009,7 @@ function projectKanbanCardHtml(p) {
     <div class="kanban-card" draggable="${editable}" data-drag-kind="project" data-drag-id="${esc(p.ID_Projektu)}" data-open-project="${esc(p.ID_Projektu)}">
       <div class="kc-title">${esc(p.Nazwa)}</div>
       <div class="kc-meta">${typeTag(p.Typ_projektu)} · ${esc(p.Kierownik_projektu || "—")}</div>
+      <div class="kc-meta">Owner: ${ownerTagHtml(p.Owner)}</div>
       <div class="kc-meta">Termin: ${fmtDate(p.Data_zakonczenia_planowana)} · ${fmtPctFraction(p.Procent_postepu)}</div>
       ${p.Data_go_live instanceof Date ? `<div class="kc-meta">Go Live: ${fmtDate(p.Data_go_live)}</div>` : ""}
       <div class="kc-foot">
