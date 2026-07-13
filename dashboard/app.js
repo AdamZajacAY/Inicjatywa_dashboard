@@ -1328,7 +1328,10 @@ function renderTickets() {
     <div class="filters">
       <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
       <select id="fTkOsoba"><option value="">Wszystkie osoby</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ticketFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
-      ${view === "lista" ? `<select id="fTkStatus"><option value="">Wszystkie statusy</option>${STATUSY_TICKIETOW.map(s => `<option ${ticketFilters.status === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>` : ""}
+      ${view === "lista" ? `<div class="status-chips">
+        <button type="button" class="status-chip badge badge-muted ${!ticketFilters.status ? "active" : ""}" data-tk-status-filter="">Wszystkie</button>
+        ${STATUSY_TICKIETOW.map(s => `<button type="button" class="status-chip badge badge-${ticketStatusBadge(s)} ${ticketFilters.status === s ? "active" : ""}" data-tk-status-filter="${esc(s)}"><span class="dot" style="background:currentColor"></span>${esc(s)}</button>`).join("")}
+      </div>` : ""}
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)">
         <input type="checkbox" id="fTkOverdue" ${ticketFilters.onlyOverdue ? "checked" : ""}> tylko opóźnione
       </label>
@@ -1359,7 +1362,6 @@ function renderTickets() {
     </div>`}`;
   $("#fTkProj").addEventListener("change", e => { ticketFilters.projekt = e.target.value; renderTickets(); });
   $("#fTkOsoba").addEventListener("change", e => { ticketFilters.osoba = e.target.value; renderTickets(); });
-  $("#fTkStatus")?.addEventListener("change", e => { ticketFilters.status = e.target.value; renderTickets(); });
   $("#fTkOverdue").addEventListener("change", e => { ticketFilters.onlyOverdue = e.target.checked; renderTickets(); });
 }
 
@@ -3573,6 +3575,8 @@ document.addEventListener("click", (e) => {
   if (addCommentBtn) { addTicketComment(addCommentBtn.getAttribute("data-add-comment")); return; }
   const tkViewBtn = e.target.closest("[data-tk-view]");
   if (tkViewBtn) { ticketFilters.view = tkViewBtn.getAttribute("data-tk-view"); renderTickets(); return; }
+  const tkStatusChip = e.target.closest("[data-tk-status-filter]");
+  if (tkStatusChip) { ticketFilters.status = tkStatusChip.getAttribute("data-tk-status-filter"); renderTickets(); return; }
   const openTicketRow = e.target.closest("[data-open-ticket]");
   if (openTicketRow) { const tkid = openTicketRow.getAttribute("data-open-ticket"); const tk = STATE.tickets.find(x => x.ID_Tickietu === tkid); if (tk) { openTicketForm(tk.ID_Projektu, tkid); return; } }
 
