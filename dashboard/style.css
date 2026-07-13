@@ -230,10 +230,12 @@ main { flex: 1; min-width: 0; max-width: 1400px; padding: 20px 24px 80px; }
 
 /* ---------- Filters ---------- */
 .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
-.filters select, .filters input[type=text] {
+.filters select, .filters input[type=text], .filters input[type=date] {
   font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
   background: var(--surface-1); color: var(--text-primary); font-size: 13px;
 }
+.filters input[type=date] { color-scheme: light; }
+@media (prefers-color-scheme: dark) { .filters input[type=date] { color-scheme: dark; } }
 .filters .count { color: var(--text-muted); font-size: 12px; margin-left: auto; }
 
 /* ---------- Badges ---------- */
@@ -244,6 +246,7 @@ main { flex: 1; min-width: 0; max-width: 1400px; padding: 20px 24px 80px; }
 .badge-critical { background: color-mix(in srgb, var(--status-critical) 16%, transparent); color: var(--status-critical); }
 .badge-muted { background: color-mix(in srgb, var(--text-muted) 18%, transparent); color: var(--text-secondary); }
 .badge-serious { background: color-mix(in srgb, var(--status-serious) 18%, transparent); color: var(--status-serious); }
+.badge-active { background: color-mix(in srgb, var(--status-active) 16%, transparent); color: var(--status-active); }
 .badge-sub { background: color-mix(in srgb, var(--cat-5) 18%, transparent); color: var(--cat-5); }
 
 .type-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; color: var(--text-secondary); }

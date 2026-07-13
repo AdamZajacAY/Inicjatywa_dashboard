@@ -568,7 +568,7 @@ ENUM_FIELDS = {
         "Funkcja_biura": {"Projektant wiodacy", "Nadzor autorski", "Analiza/doradztwo",
                            "Uczestnik konkursu", "Koordynacja branzowa"},
         "Segment": {"Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"},
-        "Status": {"Planowanie", "W realizacji", "Wstrzymany", "Zakonczony", "Anulowany"},
+        "Status": {"Planowanie", "W realizacji", "Wstrzymany", "Przeglad", "Zakonczony", "Anulowany"},
         # "Projektowanie" i "Pozwolenia/Przetarg" swiadomie usuniete (nie dopisane obok) - rozbite
         # na szczegolowe fazy ponizej, na wprost zyczenie uzytkownika (2026-07-10). "Konkurs - etap
         # studialny" zmienione na "... etap I (studialny)" dla symetrii z etapem II - jeden istniejacy

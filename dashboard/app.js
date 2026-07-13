@@ -93,7 +93,7 @@ const FAZA_COLORS = {
 const FUNKCJE_BIURA = ["Projektant wiodacy", "Nadzor autorski", "Analiza/doradztwo", "Uczestnik konkursu", "Koordynacja branzowa"];
 
 const SEGMENTS = ["Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"];
-const STATUSES = ["Planowanie", "W realizacji", "Wstrzymany", "Zakonczony", "Anulowany"];
+const STATUSES = ["Planowanie", "W realizacji", "Wstrzymany", "Przeglad", "Zakonczony", "Anulowany"];
 // Kolejnosc = chronologia typowego projektu (uzyta 1:1 w <select>, patrz pairs()) - lustrzane
 // odbicie ENUM_FIELDS["projekty"]["Faza"] w server.py, oba miejsca trzeba aktualizowac razem.
 const FAZY = ["Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs - etap I (studialny)",
@@ -229,14 +229,18 @@ function ragLabel(rag) {
 function priorityBadgeClass(priorytet) {
   if (priorytet === "Wysoki") return "critical";
   if (priorytet === "Niski") return "muted";
-  return "warning"; // Sredni (i brak wartosci)
+  if (priorytet === "Sredni") return "warning";
+  return "muted"; // brak wartosci - szary, neutralny, sygnalizujacy "do wyboru", nie
+  // faktyczny priorytet Sredni (dotad brak wartosci i "Sredni" dzielily ten sam kolor
+  // warning/pomaranczowy, wygladalo jak realny priorytet, mimo ze nic nie wybrano)
 }
 function projectStatusClass(status) {
-  // Wszystkie 5 wartosci STATUSES dostaja rozny kolor badge'a (good/warning/serious/critical/
-  // muted) - dotad "W realizacji" i "Planowanie" byly nierozroznialne (oba "muted"), a
+  // Wszystkie 6 wartosci STATUSES dostaja rozny kolor badge'a (good/warning/active/serious/
+  // critical/muted) - dotad "W realizacji" i "Planowanie" byly nierozroznialne (oba "muted"), a
   // "Wstrzymany" dzielil kolor z "Anulowany" (oba "critical"), mimo ze to bardzo rozne stany.
   if (status === "W realizacji") return "good";
   if (status === "Wstrzymany") return "warning";
+  if (status === "Przeglad") return "active";
   if (status === "Zakonczony") return "serious";
   if (status === "Anulowany") return "critical";
   return "muted"; // Planowanie i kazda inna/brak wartosci
@@ -1430,28 +1434,69 @@ document.addEventListener("drop", (e) => {
 });
 
 /* ================================================================== VIEW: GANTT */
-let ganttFilters = { projekt: "", typ: "", osoba: "", groupBy: "projekt" };
+let ganttFilters = { projekt: "", typ: "", osoba: "", groupBy: "projekt", view: "szczegoly" };
 
 function renderGanttFilters() {
+  const condensed = ganttFilters.view === "skrocony";
   return `
     <div class="section-head">
       <h2>Harmonogram</h2>
       ${can("create", "harmonogram") ? `<button data-add-task="">+ Dodaj etap</button>` : ""}
     </div>
     <div class="filters">
-      <select id="fGanttGroupBy">
+      <div class="view-toggle">
+        <button type="button" class="view-toggle-btn ${!condensed ? "active" : ""}" data-gantt-view="szczegoly">Szczegółowy</button>
+        <button type="button" class="view-toggle-btn ${condensed ? "active" : ""}" data-gantt-view="skrocony">Skrócony (czas trwania)</button>
+      </div>
+      ${condensed ? "" : `<select id="fGanttGroupBy">
         <option value="projekt" ${ganttFilters.groupBy === "projekt" ? "selected" : ""}>Grupuj wg: projektu</option>
         <option value="osoba" ${ganttFilters.groupBy === "osoba" ? "selected" : ""}>Grupuj wg: osoby (zespół)</option>
-      </select>
+      </select>`}
       <select id="fGanttProj"><option value="">Wszystkie projekty</option>${STATE.projects.map(p => `<option value="${esc(p.ID_Projektu)}" ${ganttFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
       <select id="fGanttTyp"><option value="">Wszystkie typy</option>${TYPE_ORDER.map(t => `<option ${ganttFilters.typ === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
-      <select id="fGanttOsoba"><option value="">Wszyscy odpowiedzialni</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ganttFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
+      ${condensed ? "" : `<select id="fGanttOsoba"><option value="">Wszyscy odpowiedzialni</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ganttFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>`}
       <span class="count" id="fGanttCount"></span>
     </div>`;
 }
 
+function projectGanttPseudoStatus(p) {
+  // Mapuje projekt na "status zadania" (TASK_STATUSES) tylko na potrzeby paska Gantta w
+  // widoku skroconym - ten sam kolorowy jezyk (nie rozpoczete/w trakcie/zakonczone/opoznione),
+  // co szczegolowe etapy, zeby oba widoki byly wizualnie spojne mimo innego zrodla danych.
+  if (p.Status === "Zakonczony") return "Zakonczone";
+  const end = p.Data_zakonczenia_planowana;
+  if (end instanceof Date && end < today0()) return "Opoznione";
+  const start = p.Data_rozpoczecia;
+  if (start instanceof Date && start > new Date()) return "Nie rozpoczete";
+  return "W trakcie";
+}
+
+function filteredProjectsForGantt() {
+  return STATE.projects.filter(p => {
+    if (ganttFilters.projekt && p.ID_Projektu !== ganttFilters.projekt) return false;
+    if (ganttFilters.typ && p.Typ_projektu !== ganttFilters.typ) return false;
+    return true;
+  });
+}
+
+function buildGanttCondensed(projects) {
+  const pseudoTasks = projects
+    .filter(p => p.Data_rozpoczecia instanceof Date || p.Data_zakonczenia_planowana instanceof Date)
+    .map(p => ({
+      ID_Zadania: p.ID_Projektu,
+      ID_Projektu: p.ID_Projektu,
+      Nazwa_zadania: p.Nazwa,
+      Data_start_plan: p.Data_rozpoczecia || p.Data_zakonczenia_planowana,
+      Data_koniec_plan: p.Data_zakonczenia_planowana || p.Data_rozpoczecia,
+      Status: projectGanttPseudoStatus(p),
+      Procent_ukonczenia: p.Procent_postepu,
+      ID_Osoby_odpowiedzialnej: null,
+    }));
+  return buildGantt(pseudoTasks, { groupBy: "projekt", hideGroupHeader: true, condensed: true });
+}
+
 function buildGantt(tasks, opts = {}) {
-  if (!tasks.length) return `<div class="kpi-sub">Brak zadań spełniających kryteria.</div>`;
+  if (!tasks.length) return `<div class="kpi-sub">${opts.condensed ? "Brak projektów z ustawionymi datami." : "Brak zadań spełniających kryteria."}</div>`;
   const starts = tasks.map(t => t.Data_start_plan).filter(d => d instanceof Date);
   const ends = tasks.map(t => t.Data_koniec_plan).filter(d => d instanceof Date);
   if (!starts.length || !ends.length) return `<div class="kpi-sub">Brak dat w harmonogramie.</div>`;
@@ -1504,7 +1549,7 @@ function buildGantt(tasks, opts = {}) {
         <div class="gantt-timeline-col"></div>
       </div>`;
     const rows = ptasks.map(t => `
-      <div class="gantt-row" data-task-id="${esc(t.ID_Zadania)}" title="Kliknij, aby edytować etap">
+      <div class="gantt-row" data-task-id="${esc(t.ID_Zadania)}" data-open-project="${esc(t.ID_Projektu)}" title="${opts.condensed ? "Kliknij, aby otworzyć projekt" : "Kliknij, aby edytować etap"}">
         <div class="gantt-label-col" title="${esc(t.Nazwa_zadania)}">${esc(t.Nazwa_zadania)}</div>
         <div class="gantt-track">
           <div class="gantt-today" style="position:absolute;left:${todayPct}%;top:0;bottom:0;border-left:1px dashed var(--status-critical)"></div>
@@ -1546,13 +1591,18 @@ function filteredTasks() {
 }
 
 function renderGanttView() {
-  const tasks = filteredTasks();
-  $("#view-gantt").innerHTML = `${renderGanttFilters()}<div class="panel">${buildGantt(tasks, { groupBy: ganttFilters.groupBy })}</div>`;
-  $("#fGanttCount").textContent = `${tasks.length} zadań`;
-  $("#fGanttGroupBy").addEventListener("change", e => { ganttFilters.groupBy = e.target.value; renderGanttView(); });
+  const condensed = ganttFilters.view === "skrocony";
+  const body = condensed ? buildGanttCondensed(filteredProjectsForGantt()) : buildGantt(filteredTasks(), { groupBy: ganttFilters.groupBy });
+  $("#view-gantt").innerHTML = `${renderGanttFilters()}<div class="panel">${body}</div>`;
+  $("#fGanttCount").textContent = condensed
+    ? `${filteredProjectsForGantt().filter(p => p.Data_rozpoczecia instanceof Date || p.Data_zakonczenia_planowana instanceof Date).length} projektów`
+    : `${filteredTasks().length} zadań`;
   $("#fGanttProj").addEventListener("change", e => { ganttFilters.projekt = e.target.value; renderGanttView(); });
   $("#fGanttTyp").addEventListener("change", e => { ganttFilters.typ = e.target.value; renderGanttView(); });
-  $("#fGanttOsoba").addEventListener("change", e => { ganttFilters.osoba = e.target.value; renderGanttView(); });
+  if (!condensed) {
+    $("#fGanttGroupBy").addEventListener("change", e => { ganttFilters.groupBy = e.target.value; renderGanttView(); });
+    $("#fGanttOsoba").addEventListener("change", e => { ganttFilters.osoba = e.target.value; renderGanttView(); });
+  }
 }
 
 /* ================================================================== VIEW: RYZYKA */
@@ -3487,6 +3537,8 @@ document.addEventListener("click", (e) => {
   if (addProject) { openProjectForm(); return; }
   const projViewBtn = e.target.closest("[data-proj-view]");
   if (projViewBtn) { projectFilters.view = projViewBtn.getAttribute("data-proj-view"); renderProjects(); return; }
+  const ganttViewBtn = e.target.closest("[data-gantt-view]");
+  if (ganttViewBtn) { ganttFilters.view = ganttViewBtn.getAttribute("data-gantt-view"); renderGanttView(); return; }
   const teamViewBtn = e.target.closest("[data-team-view]");
   if (teamViewBtn) { teamFilters.view = teamViewBtn.getAttribute("data-team-view"); renderTeam(); return; }
   const editProject = e.target.closest("[data-edit-project]");
