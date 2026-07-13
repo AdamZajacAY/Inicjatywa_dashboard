@@ -99,7 +99,7 @@ const STATUS_RYZYKA = ["Otwarte", "W trakcie", "Zamkniete"];
 const STATUSY_KAMIENI_MILOWYCH = ["Nie rozpoczete", "W trakcie", "Zakonczone", "Zagrozone"];
 
 const DATE_FIELDS = {
-  projects: ["Data_rozpoczecia", "Data_zakonczenia_planowana", "Data_zakonczenia_rzeczywista", "Data_ostatniej_aktualizacji"],
+  projects: ["Data_rozpoczecia", "Data_zakonczenia_planowana", "Data_zakonczenia_rzeczywista", "Data_go_live", "Data_ostatniej_aktualizacji"],
   team: ["Data_dolaczenia"],
   assignments: ["Data_od", "Data_do"],
   tasks: ["Data_start_plan", "Data_koniec_plan", "Data_start_rzeczywista", "Data_koniec_rzeczywista"],
@@ -923,7 +923,7 @@ function renderProjectsTable(list) {
         <div class="panel" style="overflow-x:auto">
           <table class="data-table">
             <thead><tr>
-              <th>Nazwa</th><th>Typ</th><th>Status</th><th>Faza</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Postęp</th><th>Budżet</th>
+              <th>Nazwa</th><th>Typ</th><th>Status</th><th>Faza</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
             </tr></thead>
             <tbody>
               ${rows.map(p => `
@@ -935,6 +935,7 @@ function renderProjectsTable(list) {
                   <td>${badge(p.Priorytet || "—", priorityBadgeClass(p.Priorytet))}</td>
                   <td>${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}</td>
                   <td>${fmtDate(p.Data_zakonczenia_planowana)}</td>
+                  <td>${fmtDate(p.Data_go_live)}</td>
                   <td>${fmtPctFraction(p.Procent_postepu)}</td>
                   <td>${fmtMoney(p.Budzet_wydany, p.Waluta)} / ${fmtMoney(p.Budzet_calkowity, p.Waluta)}</td>
                 </tr>`).join("")}
@@ -989,6 +990,7 @@ function projectKanbanCardHtml(p) {
       <div class="kc-title">${esc(p.Nazwa)}</div>
       <div class="kc-meta">${typeTag(p.Typ_projektu)} · ${esc(p.Kierownik_projektu || "—")}</div>
       <div class="kc-meta">Termin: ${fmtDate(p.Data_zakonczenia_planowana)} · ${fmtPctFraction(p.Procent_postepu)}</div>
+      ${p.Data_go_live instanceof Date ? `<div class="kc-meta">Go Live: ${fmtDate(p.Data_go_live)}</div>` : ""}
       <div class="kc-foot">
         ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
         ${badge(p.Priorytet || "—", priorityBadgeClass(p.Priorytet))}
@@ -1819,6 +1821,7 @@ function openProjectForm(pid = null) {
     ${fInput("Data rozpoczęcia", "Data_rozpoczecia", p.Data_rozpoczecia, "date")}
     ${fInput("Zakończenie (plan) *", "Data_zakonczenia_planowana", p.Data_zakonczenia_planowana, "date", "required")}
     ${fInput("Zakończenie (rzeczywiste)", "Data_zakonczenia_rzeczywista", p.Data_zakonczenia_rzeczywista, "date")}
+    ${fInput("Data „Go Live”", "Data_go_live", p.Data_go_live, "date")}
     ${fInput("Postęp (%)", "Procent_postepu_pct", p.Procent_postepu != null ? Math.round(p.Procent_postepu * 100) : 0, "number", "min=0 max=100")}
 
     <div class="form-section-title">Wycena i budżet</div>
@@ -1847,6 +1850,18 @@ function openProjectForm(pid = null) {
     submitLabel: "Zapisz projekt",
     onSubmit: (data) => saveProjectFromForm(data, pid),
   });
+  // Sugestia daty Go Live na podstawie terminu zakonczenia ("zgodnie z terminami zakonczenia
+  // projektu") - tylko gdy pole Go Live jest jeszcze puste, zeby nie nadpisywac wartosci
+  // wpisanej juz recznie. Parsuje/formatuje samodzielnie (parseDateInput/dateDisplayVal),
+  // zamiast liczyc na globalny focusout-reformatter (ktory nie odpalilby sie na polu Go Live,
+  // bo ustawienie .value przez JS nie jest tym samym co realne opuszczenie pola przez usera).
+  const terminField = $('#modalForm [name="Data_zakonczenia_planowana"]');
+  const goLiveField = $('#modalForm [name="Data_go_live"]');
+  terminField?.addEventListener("focusout", () => {
+    if (!goLiveField || goLiveField.value.trim()) return;
+    const parsed = parseDateInput(terminField.value);
+    if (parsed) goLiveField.value = dateDisplayVal(parsed);
+  });
 }
 
 async function saveProjectFromForm(data, pid) {
@@ -1865,6 +1880,7 @@ async function saveProjectFromForm(data, pid) {
     Data_rozpoczecia: parseDateInput(data.Data_rozpoczecia),
     Data_zakonczenia_planowana: parseDateInput(data.Data_zakonczenia_planowana),
     Data_zakonczenia_rzeczywista: parseDateInput(data.Data_zakonczenia_rzeczywista),
+    Data_go_live: parseDateInput(data.Data_go_live),
     Procent_postepu: num(data.Procent_postepu_pct) / 100,
     Budzet_calkowity: num(data.Budzet_calkowity), Budzet_wydany: num(data.Budzet_wydany),
     Waluta: data.Waluta || "PLN",
@@ -2970,6 +2986,7 @@ function openProjectDetail(pid) {
         <div><div class="k">Data rozpoczęcia</div><div class="v">${fmtDate(p.Data_rozpoczecia)}</div></div>
         <div><div class="k">Zakończenie (plan)</div><div class="v">${fmtDate(p.Data_zakonczenia_planowana)}</div></div>
         <div><div class="k">Zakończenie (rzeczywiste)</div><div class="v">${fmtDate(p.Data_zakonczenia_rzeczywista)}</div></div>
+        <div><div class="k">Data „Go Live”</div><div class="v">${fmtDate(p.Data_go_live)}</div></div>
         <div><div class="k">Klient</div><div class="v">${p.ID_Klienta && STATE.clientById.get(p.ID_Klienta) ? `<span class="clickable" data-open-client="${esc(p.ID_Klienta)}" style="cursor:pointer;text-decoration:underline">${esc(STATE.clientById.get(p.ID_Klienta).Nazwa)}</span>` : esc(p.Inwestor_Klient) || "—"}</div></div>
         <div><div class="k">Powierzchnia</div><div class="v">${p.Powierzchnia_m2 != null ? p.Powierzchnia_m2.toLocaleString("pl-PL") + " m²" : "—"}</div></div>
         <div><div class="k">Liczba jednostek</div><div class="v">${p.Liczba_jednostek ?? "—"}</div></div>

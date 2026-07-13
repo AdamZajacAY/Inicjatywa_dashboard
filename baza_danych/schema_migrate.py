@@ -227,6 +227,13 @@ def ensure_client_krs_column(db_path):
     _ensure_columns(db_path, "klienci", {"KRS": "TEXT"})
 
 
+def ensure_project_golive_column(db_path):
+    """Dodaje Data_go_live do projekty w bazach powstalych przed jej wprowadzeniem - data
+    wdrozenia, domyslnie sugerowana w UI jako Data_zakonczenia_planowana, ale edytowalna
+    osobno (zwykle nullable TEXT, ta sama konwencja co pozostale daty)."""
+    _ensure_columns(db_path, "projekty", {"Data_go_live": "TEXT"})
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")
@@ -239,3 +246,4 @@ if __name__ == "__main__":
     print(ensure_project_klient_column(path) or "projekty klient column: OK")
     print(ensure_checklist_table(path) or "checklisty_projektow: OK")
     print(ensure_client_krs_column(path) or "klienci KRS column: OK")
+    print(ensure_project_golive_column(path) or "projekty Data_go_live column: OK")

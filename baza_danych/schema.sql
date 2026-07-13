@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS projekty (
   Data_rozpoczecia TEXT,
   Data_zakonczenia_planowana TEXT,
   Data_zakonczenia_rzeczywista TEXT,
+  Data_go_live TEXT,
   Procent_postepu REAL,
   Budzet_calkowity REAL,
   Budzet_wydany REAL,
