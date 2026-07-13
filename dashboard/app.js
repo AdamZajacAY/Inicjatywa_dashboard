@@ -206,6 +206,11 @@ function ragLabel(rag) {
   if (rag === "Zolty") return "Żółty";
   return rag || "—";
 }
+function priorityBadgeClass(priorytet) {
+  if (priorytet === "Wysoki") return "critical";
+  if (priorytet === "Niski") return "muted";
+  return "warning"; // Sredni (i brak wartosci)
+}
 function projectStatusClass(status) {
   switch (status) {
     case "Zakonczony": return "good";
@@ -915,7 +920,7 @@ function renderProjectsTable(list) {
                   <td>${typeTag(p.Typ_projektu)}</td>
                   <td>${esc(p.Status || "—")}</td>
                   <td>${esc(p.Faza || "—")}</td>
-                  <td>${esc(p.Priorytet || "—")}</td>
+                  <td>${badge(p.Priorytet || "—", priorityBadgeClass(p.Priorytet))}</td>
                   <td>${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}</td>
                   <td>${fmtDate(p.Data_zakonczenia_planowana)}</td>
                   <td>${fmtPctFraction(p.Procent_postepu)}</td>
@@ -972,7 +977,7 @@ function projectKanbanCardHtml(p) {
       <div class="kc-meta">Termin: ${fmtDate(p.Data_zakonczenia_planowana)} · ${fmtPctFraction(p.Procent_postepu)}</div>
       <div class="kc-foot">
         ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
-        ${badge(p.Priorytet || "—", p.Priorytet === "Wysoki" ? "critical" : p.Priorytet === "Niski" ? "muted" : "warning")}
+        ${badge(p.Priorytet || "—", priorityBadgeClass(p.Priorytet))}
       </div>
     </div>`;
 }
