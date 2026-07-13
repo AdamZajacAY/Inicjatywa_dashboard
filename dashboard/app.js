@@ -70,6 +70,26 @@ const TYPE_COLORS = {
   "Inne": "cat-3",
 };
 const TYPE_ORDER = Object.keys(TYPE_COLORS);
+// Faza ma 13 wartosci - za duzo na 5-klasowy system badge() (good/warning/serious/critical/
+// muted, uzywany dla Status/Priorytet/RAG), wiec mirror TYPE_COLORS/typeTag() zamiast tego:
+// wlasna paleta z --cat-1..--cat-8, pokrewne etapy cyklu zycia projektu dzielace ten sam
+// kolor (analiza/studium, etapy konkursu, projekt budowlany+techniczny) zamiast losowego
+// przypisania, zeby grupowanie tez cos znaczylo, nie tylko rozroznialo.
+const FAZA_COLORS = {
+  "Analiza": "cat-1",
+  "Projekt studialny": "cat-1",
+  "Konkurs jednoetapowy": "cat-5",
+  "Konkurs - etap I (studialny)": "cat-5",
+  "Konkurs - etap II": "cat-5",
+  "Koncepcja": "cat-2",
+  "Projekt budowlany": "cat-3",
+  "Projekt techniczny": "cat-3",
+  "Przetarg": "cat-8",
+  "Projekt wykonawczy": "cat-4",
+  "Budowa": "cat-6",
+  "Nadzor autorski": "cat-7",
+  "Zakonczenie": "cat-4",
+};
 const FUNKCJE_BIURA = ["Projektant wiodacy", "Nadzor autorski", "Analiza/doradztwo", "Uczestnik konkursu", "Koordynacja branzowa"];
 
 const SEGMENTS = ["Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"];
@@ -212,12 +232,14 @@ function priorityBadgeClass(priorytet) {
   return "warning"; // Sredni (i brak wartosci)
 }
 function projectStatusClass(status) {
-  switch (status) {
-    case "Zakonczony": return "good";
-    case "Wstrzymany": return "critical";
-    case "Anulowany": return "critical";
-    default: return "muted"; // W realizacji, Planowanie i kazda inna/brak wartosci
-  }
+  // Wszystkie 5 wartosci STATUSES dostaja rozny kolor badge'a (good/warning/serious/critical/
+  // muted) - dotad "W realizacji" i "Planowanie" byly nierozroznialne (oba "muted"), a
+  // "Wstrzymany" dzielil kolor z "Anulowany" (oba "critical"), mimo ze to bardzo rozne stany.
+  if (status === "W realizacji") return "good";
+  if (status === "Wstrzymany") return "warning";
+  if (status === "Zakonczony") return "serious";
+  if (status === "Anulowany") return "critical";
+  return "muted"; // Planowanie i kazda inna/brak wartosci
 }
 function taskStatusClass(status) {
   switch (status) {
@@ -257,6 +279,10 @@ function badge(text, cls) {
 function typeTag(type) {
   const slot = TYPE_COLORS[type] || "cat-3";
   return `<span class="type-tag"><span class="dot" style="background:var(--${slot})"></span>${esc(type || "—")}</span>`;
+}
+function fazaTag(faza) {
+  const slot = FAZA_COLORS[faza] || "cat-3";
+  return `<span class="type-tag"><span class="dot" style="background:var(--${slot})"></span>${esc(faza || "—")}</span>`;
 }
 function initials(name) {
   const parts = (name || "").trim().split(/\s+/).filter(Boolean);
@@ -950,8 +976,8 @@ function renderProjectsTable(list) {
                   <td>${esc(p.Nazwa)}</td>
                   <td>${ownerTagHtml(p.Owner)}</td>
                   <td>${typeTag(p.Typ_projektu)}</td>
-                  <td>${esc(p.Status || "—")}</td>
-                  <td>${esc(p.Faza || "—")}</td>
+                  <td>${badge(p.Status || "—", projectStatusClass(p.Status))}</td>
+                  <td>${fazaTag(p.Faza)}</td>
                   <td>${badge(p.Priorytet || "—", priorityBadgeClass(p.Priorytet))}</td>
                   <td>${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}</td>
                   <td>${fmtDate(p.Data_zakonczenia_planowana)}</td>
@@ -2957,8 +2983,8 @@ function openProjectDetail(pid) {
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
       ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
       ${badge(p.Status, projectStatusClass(p.Status))}
-      ${p.Faza ? badge(p.Faza, "muted") : ""}
-      ${p.Priorytet ? badge("Priorytet: " + p.Priorytet, "muted") : ""}
+      ${p.Faza ? fazaTag(p.Faza) : ""}
+      ${p.Priorytet ? badge("Priorytet: " + p.Priorytet, priorityBadgeClass(p.Priorytet)) : ""}
     </div>
 
     <div class="dp-section">
