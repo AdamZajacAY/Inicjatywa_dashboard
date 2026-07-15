@@ -431,12 +431,21 @@ def can_write(conn, user, action, table, row):
         return (row.get("ID_Osoby_przypisanej") == user["ID_Osoby"]
                 and row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"]))
     if user["Rola"] == "Architekt_PM":
-        if table in ("zespol", "klienci", "kontakty_klienta"):
+        if table in ("klienci", "kontakty_klienta"):
             # Klienci/kontakty: zarzadzanie (create/update/delete) zarezerwowane dla
             # czlonkow zarzadu (COO/Admin, juz obsluzeni wyzej) - "przypisywani sa jedynie do
             # czlonkow zarzadu". Odczyt (GET) zostaje portfolio-wide bez zmian (scope "global"),
             # to zawezenie dotyczy wylacznie zapisu.
             return False
+        if table == "zespol":
+            # Architekt prowadzacy moze dodac NOWA osobe do zespolu (np. onboarding czlonka
+            # wlasnego projektu) - na wprost zyczenie uzytkownika (2026-07-15), "pelne
+            # zarzadzanie swoim projektem, w tym dodawanie czlonkow do zespolu". Edycja/usuniecie
+            # ISTNIEJACYCH rekordow kolegow (stawka godzinowa, dostepnosc FTE) zostaje
+            # zarezerwowane dla COO/Admin - create-only nie odsłania ani nie nadpisuje cudzych
+            # danych HR (a Stawka_godzinowa i tak jest redagowana na odczycie, patrz
+            # FINANCIAL_FIELDS, wiec nawet wlasny nowo-utworzony wpis architekt widzi bez stawki).
+            return action == "create"
         if table == "projekty" and action == "delete":
             return False  # kaskadowe usuniecie zbyt ryzykowne nawet dla wlasnego projektu
         if table == "podwykonawcy":

@@ -44,7 +44,8 @@ function can(action, table, row) {
     return row && row.ID_Osoby_przypisanej === STATE.me.personId && STATE.me.assignedProjectIds.includes(row.ID_Projektu);
   }
   if (role === "Architekt_PM") {
-    if (table === "zespol" || table === "klienci" || table === "kontakty_klienta") return false;
+    if (table === "klienci" || table === "kontakty_klienta") return false;
+    if (table === "zespol") return action === "create"; // dodanie nowej osoby - tak, edycja/usuniecie kolegow - nie (mirror can_write())
     if (table === "projekty" && action === "delete") return false;
     if (table === "podwykonawcy") return action !== "delete";
     if (table === "projekty" && action === "create") return true;
