@@ -3495,6 +3495,14 @@ document.addEventListener("keydown", (e) => {
   const tagInput = e.target.closest && e.target.closest(".tag-chip-input");
   if (tagInput && (e.key === "Enter" || e.key === ",")) { e.preventDefault(); addTagFromInput(tagInput); return; }
 });
+document.addEventListener("scroll", () => {
+  // Popup pickera to position:fixed singleton doczepiony do document.body, wiec nie
+  // przesuwa sie automatycznie ze scrollem wewnatrz .modal-box (max-height:86vh;
+  // overflow-y:auto) - bez tego przy przewinieciu formularza kalendarz "rozjezdzal sie"
+  // od pola, do ktorego nalezy (zostawal w starym miejscu na ekranie). capture:true, bo
+  // scroll nie bubble'uje - to jedyny sposob zlapania go z zagniezdzonego kontenera.
+  if (datePickerState.input) positionDatePicker(datePickerState.input);
+}, true);
 document.addEventListener("focusout", (e) => {
   // blur() nie bubble'uje - focusout tak, wiec to jedyny sposob na delegacje zamiast pod
   // wpiecia osobnego listenera do kazdego pola daty osobno przy kazdym renderze formularza.
