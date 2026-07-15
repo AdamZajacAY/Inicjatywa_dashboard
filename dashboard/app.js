@@ -6,7 +6,7 @@
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
-  clients: [], clientContacts: [], checklists: [],
+  clients: [], clientContacts: [], checklists: [], notifications: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(), clientById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -400,6 +400,7 @@ function showDashboard() {
   $("#btnPrint").style.display = "inline-block";
   $("#btnExport").style.display = "inline-block";
   $("#btnExecReport").style.display = "inline-block";
+  $("#notifBellWrap").style.display = "block";
   $("#userMenu").style.display = "flex";
 }
 
@@ -435,12 +436,96 @@ async function loadFromApi() {
     // Dwa niezalezne zapytania - rownolegle zamiast po kolei, oszczedza jeden pelny round-trip.
     [STATE.users, STATE.backups] = await Promise.all([apiGet("/api/users"), apiGet("/api/backup")]);
   }
+  // Powiadomienia sa "moje wlasne" niezaleznie od roli (patrz /api/powiadomienia w server.py) -
+  // bespoke endpoint, nie czesc /api/bootstrap, wiec osobne zapytanie tutaj dla kazdej roli.
+  STATE.notifications = await apiGet("/api/powiadomienia");
   Object.keys(DATE_FIELDS).forEach(key => reviveDates(STATE[key], DATE_FIELDS[key]));
   reindex();
   showDashboard();
   updateFileInfo();
   updateUserMenu();
   renderAll();
+  renderNotificationBell();
+}
+
+async function refreshNotifications() {
+  STATE.notifications = await apiGet("/api/powiadomienia");
+  renderNotificationBell();
+}
+
+function notificationText(n) {
+  const preview = (n.Tresc || "").length > 90 ? n.Tresc.slice(0, 90) + "…" : n.Tresc;
+  return renderCommentText(preview);
+}
+
+function notificationItemHtml(n) {
+  const unread = n.Przeczytane !== "Tak";
+  return `<button type="button" class="notif-item ${unread ? "unread" : ""}" data-notif-open="${esc(n.ID_Powiadomienia)}">
+    <div class="notif-line"><span class="notif-author">${esc(n.Autor || "—")}</span> wspomniał(a) o Tobie</div>
+    <div class="notif-line">${notificationText(n)}</div>
+    <div class="notif-meta">${esc(fmtDateTime(n.Data_utworzenia))}</div>
+  </button>`;
+}
+
+function renderNotificationPanel() {
+  const panel = $("#notifPanel");
+  if (!panel) return;
+  const unreadCount = STATE.notifications.filter(n => n.Przeczytane !== "Tak").length;
+  panel.innerHTML = `
+    <div class="notif-panel-head">
+      <h4>Powiadomienia</h4>
+      ${unreadCount ? `<button type="button" class="notif-mark-all" data-notif-mark-all>Oznacz wszystkie jako przeczytane</button>` : ""}
+    </div>
+    ${STATE.notifications.length ? STATE.notifications.map(notificationItemHtml).join("") : `<div class="notif-empty">Brak powiadomień.</div>`}
+  `;
+}
+
+function renderNotificationBell() {
+  const wrap = $("#notifBellWrap");
+  if (!wrap) return;
+  const unreadCount = STATE.notifications.filter(n => n.Przeczytane !== "Tak").length;
+  const badge = $("#notifBadge");
+  badge.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+  badge.style.display = unreadCount ? "flex" : "none";
+  if ($("#notifPanel").classList.contains("open")) renderNotificationPanel();
+}
+
+function toggleNotificationPanel() {
+  const panel = $("#notifPanel");
+  const opening = !panel.classList.contains("open");
+  panel.classList.toggle("open", opening);
+  if (opening) renderNotificationPanel();
+}
+
+function closeNotificationPanel() {
+  $("#notifPanel")?.classList.remove("open");
+}
+
+async function markAllNotificationsRead() {
+  await apiPost("/api/powiadomienia/przeczytaj-wszystkie", {});
+  STATE.notifications.forEach(n => { n.Przeczytane = "Tak"; });
+  renderNotificationBell();
+}
+
+async function openNotification(id) {
+  const n = STATE.notifications.find(x => x.ID_Powiadomienia === id);
+  if (!n) return;
+  if (n.Przeczytane !== "Tak") {
+    n.Przeczytane = "Tak";
+    renderNotificationBell();
+    apiPost(`/api/powiadomienia/${id}/przeczytane`, {}).catch(() => {});
+  }
+  closeNotificationPanel();
+  const ticket = STATE.tickets.find(t => t.ID_Tickietu === n.ID_Tickietu);
+  if (ticket) {
+    openTicketForm(ticket.ID_Projektu, ticket.ID_Tickietu);
+    return;
+  }
+  // Specjalista ma portfolio zawezone do WLASNYCH projektow (scoped_rows() w server.py) -
+  // ktos moze zostac oznaczony w komentarzu na projekcie, do ktorego jeszcze nie jest
+  // przypisany (np. pytanie o opinie specjalisty spoza zespolu), wiec tego ticketu moze
+  // po prostu nie byc w jego/jej STATE.tickets - bez tego klik po cichu nic by nie robil.
+  alert("Nie masz dostępu do tego ticketu — poproś o dodanie do zespołu tego projektu.");
 }
 
 function showConnectionError(err) {
@@ -2190,10 +2275,28 @@ function stageOptionsPairs(pid) {
   return [["", "— brak (samodzielny ticket) —"], ...tasksForProject(pid).map(t => [t.ID_Zadania, t.Nazwa_zadania])];
 }
 
+function renderCommentText(tresc) {
+  // Wzmianki wstawiane przez autocomplete jako "@[Imie Nazwisko]" (patrz pickMentionSuggestion) -
+  // wyodrebnij PRZED esc() calej tresci (zeby nie zgubic ich w HTML-escapowanym tekscie), a
+  // dopiero po esc() wstaw z powrotem jako stylowany span (kazde imie tez indywidualnie esc(),
+  // ale dopiero raz, PO glownym escapowaniu - w przeciwnym razie znaki typu "&" w imieniu
+  // zostalyby podwojnie zescapowane, gdyby robic to w jednym kroku regex.replace()).
+  const names = [];
+  const withPlaceholders = (tresc || "").replace(/@\[([^\]]+)\]/g, (_, name) => {
+    names.push(name);
+    return ` MENTION${names.length - 1} `;
+  });
+  let escaped = esc(withPlaceholders);
+  names.forEach((name, i) => {
+    escaped = escaped.replace(` MENTION${i} `, `<span class="mention-tag">@${esc(name)}</span>`);
+  });
+  return escaped;
+}
+
 function commentItemHtml(c) {
   return `<div class="comment-item">
     <div class="comment-meta"><b>${esc(c.Autor || "—")}</b> · ${esc(fmtDateTime(c.Data_utworzenia))}</div>
-    <div class="comment-text">${esc(c.Tresc)}</div>
+    <div class="comment-text">${renderCommentText(c.Tresc)}</div>
   </div>`;
 }
 
@@ -2244,6 +2347,90 @@ function ticketCommentsSectionHtml(t, tid) {
         <button type="button" data-add-comment="${esc(tid)}">Dodaj komentarz</button>
       </div>` : ""}
   `;
+}
+
+/* ---------- @wzmianki w komentarzach (autocomplete) ---------- */
+const mentionState = { textarea: null, triggerStart: -1, matches: [], activeIndex: 0 };
+
+function ensureMentionEl() {
+  let el = document.getElementById("mentionSuggestions");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "mentionSuggestions";
+  el.className = "mention-suggestions";
+  document.body.appendChild(el);
+  return el;
+}
+
+function closeMentionSuggestions() {
+  const el = document.getElementById("mentionSuggestions");
+  if (el) el.classList.remove("open");
+  mentionState.textarea = null;
+  mentionState.triggerStart = -1;
+  mentionState.matches = [];
+}
+
+function positionMentionSuggestions(textarea) {
+  const el = document.getElementById("mentionSuggestions");
+  const r = textarea.getBoundingClientRect();
+  const w = el.offsetWidth || 240, h = el.offsetHeight || 220;
+  let left = r.left, top = r.bottom + 4;
+  if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+  if (top + h > window.innerHeight - 8) top = r.top - h - 4;
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+}
+
+function renderMentionSuggestions() {
+  const el = ensureMentionEl();
+  if (!mentionState.matches.length) { el.classList.remove("open"); return; }
+  el.innerHTML = mentionState.matches.map((t, i) =>
+    `<button type="button" class="mention-suggestion ${i === mentionState.activeIndex ? "active" : ""}" data-mention-pick="${esc(t.Imie_i_nazwisko)}">${esc(t.Imie_i_nazwisko)}</button>`
+  ).join("");
+  el.classList.add("open");
+  positionMentionSuggestions(mentionState.textarea);
+}
+
+function updateMentionSuggestions(textarea) {
+  const cursor = textarea.selectionStart;
+  let triggerStart = mentionState.textarea === textarea ? mentionState.triggerStart : -1;
+  if (triggerStart === -1 || cursor <= triggerStart) {
+    // szukaj nowego wyzwalacza "@" bezposrednio przed lub w trakcie budowania wzmianki -
+    // musi byc na poczatku pola albo poprzedzony spacja/nowa linia (nie w srodku slowa/e-maila)
+    const before = textarea.value.slice(0, cursor);
+    const atIndex = before.lastIndexOf("@");
+    if (atIndex === -1) { closeMentionSuggestions(); return; }
+    const precedingChar = before[atIndex - 1];
+    if (atIndex !== 0 && precedingChar !== " " && precedingChar !== "\n") { closeMentionSuggestions(); return; }
+    triggerStart = atIndex;
+  }
+  const query = textarea.value.slice(triggerStart + 1, cursor);
+  // Imiona zawieraja spacje ("Jan B") - dopoki filtrowanie po substring nadal daje jakies
+  // dopasowania, wzmianka "trwa" mimo spacji w query; pusty wynik (i niepusty query) oznacza,
+  // ze uzytkownik po prostu kontynuuje zwykle zdanie zaczynajace sie od "@", nie wzmianke.
+  if (query.includes("\n") || query.length > 40) { closeMentionSuggestions(); return; }
+  const q = query.trim().toLowerCase();
+  const matches = STATE.team.filter(t => (t.Imie_i_nazwisko || "").toLowerCase().includes(q)).slice(0, 6);
+  if (!matches.length && query.length > 0) { closeMentionSuggestions(); return; }
+  mentionState.textarea = textarea;
+  mentionState.triggerStart = triggerStart;
+  mentionState.matches = matches;
+  mentionState.activeIndex = 0;
+  renderMentionSuggestions();
+}
+
+function pickMentionSuggestion(name) {
+  const { textarea, triggerStart } = mentionState;
+  if (!textarea || triggerStart < 0) return;
+  const cursor = textarea.selectionStart;
+  const before = textarea.value.slice(0, triggerStart);
+  const after = textarea.value.slice(cursor);
+  const insertion = `@[${name}] `;
+  textarea.value = before + insertion + after;
+  const newCursor = before.length + insertion.length;
+  textarea.focus();
+  textarea.setSelectionRange(newCursor, newCursor);
+  closeMentionSuggestions();
 }
 
 function openTicketForm(pid, tid = null) {
@@ -3491,9 +3678,18 @@ document.addEventListener("keydown", (e) => {
   // nie powinna byc przechwytywana do otwierania pickera, zeby nie kolidowac z pisaniem
   // (probne "Spacja otwiera picker" psulo pisanie dowolnego tekstu zawierajacego spacje -
   // zweryfikowane bezposrednio). Klik nadal otwiera picker (myszka), Escape nadal zamyka.
-  if (e.key === "Escape") closeDatePicker();
+  if (e.key === "Escape") { closeDatePicker(); closeMentionSuggestions(); }
   const tagInput = e.target.closest && e.target.closest(".tag-chip-input");
   if (tagInput && (e.key === "Enter" || e.key === ",")) { e.preventDefault(); addTagFromInput(tagInput); return; }
+  if (mentionState.textarea && e.target === mentionState.textarea && mentionState.matches.length) {
+    if (e.key === "ArrowDown") { e.preventDefault(); mentionState.activeIndex = (mentionState.activeIndex + 1) % mentionState.matches.length; renderMentionSuggestions(); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); mentionState.activeIndex = (mentionState.activeIndex - 1 + mentionState.matches.length) % mentionState.matches.length; renderMentionSuggestions(); return; }
+    if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickMentionSuggestion(mentionState.matches[mentionState.activeIndex].Imie_i_nazwisko); return; }
+  }
+});
+document.addEventListener("input", (e) => {
+  const commentInput = e.target.closest && e.target.closest("[data-comment-input]");
+  if (commentInput) updateMentionSuggestions(commentInput);
 });
 document.addEventListener("scroll", () => {
   // Popup pickera to position:fixed singleton doczepiony do document.body, wiec nie
@@ -3502,6 +3698,7 @@ document.addEventListener("scroll", () => {
   // od pola, do ktorego nalezy (zostawal w starym miejscu na ekranie). capture:true, bo
   // scroll nie bubble'uje - to jedyny sposob zlapania go z zagniezdzonego kontenera.
   if (datePickerState.input) positionDatePicker(datePickerState.input);
+  if (mentionState.textarea) positionMentionSuggestions(mentionState.textarea);
 }, true);
 document.addEventListener("focusout", (e) => {
   // blur() nie bubble'uje - focusout tak, wiec to jedyny sposob na delegacje zamiast pod
@@ -3543,6 +3740,18 @@ document.addEventListener("click", (e) => {
   const dpDay = e.target.closest("[data-dp-day]");
   if (dpDay) { dpSelectDay(Number(dpDay.getAttribute("data-dp-day"))); return; }
   if (datePickerState.input && !e.target.closest("#datePickerPopup")) closeDatePicker();
+
+  const mentionPick = e.target.closest("[data-mention-pick]");
+  if (mentionPick) { pickMentionSuggestion(mentionPick.getAttribute("data-mention-pick")); return; }
+  if (mentionState.textarea && !e.target.closest("#mentionSuggestions") && e.target !== mentionState.textarea) closeMentionSuggestions();
+
+  const notifBellBtn = e.target.closest("#notifBellBtn");
+  if (notifBellBtn) { toggleNotificationPanel(); return; }
+  const notifMarkAll = e.target.closest("[data-notif-mark-all]");
+  if (notifMarkAll) { markAllNotificationsRead(); return; }
+  const notifItem = e.target.closest("[data-notif-open]");
+  if (notifItem) { openNotification(notifItem.getAttribute("data-notif-open")); return; }
+  if (!e.target.closest("#notifBellWrap")) closeNotificationPanel();
 
   const addProject = e.target.closest("[data-add-project]");
   if (addProject) { openProjectForm(); return; }
@@ -3854,6 +4063,11 @@ async function boot() {
     }
     if (me.pending) { showPendingScreen(me); return; }
     await loadFromApi();
+    // Brak websocketow - odpytywanie co 45s to jedyny sposob na wykrycie nowej wzmianki od
+    // innej osoby bez recznego odswiezenia calej strony (ten sam kompromis "eventually
+    // consistent", co reszta tej aplikacji - inni uzytkownicy i tak nie widza NA ZYWO Twoich
+    // zmian bez wlasnego odswiezenia).
+    setInterval(() => refreshNotifications().catch(() => {}), 45000);
   } catch (e) {
     showConnectionError(e);
   }

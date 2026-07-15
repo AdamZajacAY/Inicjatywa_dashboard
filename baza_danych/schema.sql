@@ -166,6 +166,24 @@ CREATE TABLE IF NOT EXISTS komentarze_tickety (
 );
 CREATE INDEX IF NOT EXISTS idx_komentarze_tickiet ON komentarze_tickety(ID_Tickietu);
 
+-- Powiadomienia: dzis wylacznie wzmianki (@Imie Nazwisko) w komentarzach do ticketow, ale
+-- Typ jest osobnym polem pod przyszle rodzaje. Zawsze "moje wlasne" niezaleznie od roli
+-- (nawet COO/Admin widza tylko swoje) - inny rodzaj scope'owania niz reszta aplikacji
+-- (portfolio-restricted per Specjalista), wiec obsluzone bespoke route'ami w server.py,
+-- nie generyczna fabryka collection()/item() (patrz komentarz przy /api/powiadomienia).
+CREATE TABLE IF NOT EXISTS powiadomienia (
+  ID_Powiadomienia TEXT PRIMARY KEY NOT NULL,
+  ID_Osoby TEXT NOT NULL REFERENCES zespol(ID_Osoby) ON DELETE CASCADE,
+  Typ TEXT,
+  ID_Tickietu TEXT REFERENCES zadania_tickety(ID_Tickietu) ON DELETE CASCADE,
+  ID_Komentarza TEXT REFERENCES komentarze_tickety(ID_Komentarza) ON DELETE CASCADE,
+  Tresc TEXT,
+  Autor TEXT,
+  Przeczytane TEXT,
+  Data_utworzenia TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_powiadomienia_osoba ON powiadomienia(ID_Osoby);
+
 -- Checklisty projektu: prosta lista kontrolna per projekt, czysty mirror kamienie_milowe
 -- (project_scoped, generyczna fabryka, zero bespoke route'ow). Swiadomie BEZ systemu
 -- szablonow per kategoria projektu (Typ_projektu) - decyzja podjeta wprost z uzytkownikiem,

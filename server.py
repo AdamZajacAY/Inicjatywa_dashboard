@@ -37,7 +37,7 @@ from baza_danych.backup_db import create_backup, enforce_retention, list_backups
 from baza_danych.schema_migrate import (
     migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns, ensure_project_sponsor_column,
     ensure_ideapool_table, ensure_klienci_tables, ensure_project_klient_column, ensure_checklist_table,
-    ensure_client_krs_column, ensure_project_golive_column,
+    ensure_client_krs_column, ensure_project_golive_column, ensure_notifications_table,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -96,6 +96,7 @@ ensure_project_klient_column(DB_PATH)  # jw. - nowa nullable kolumna, wolana PO 
 ensure_checklist_table(DB_PATH)  # jw. - nowa tabela
 ensure_client_krs_column(DB_PATH)  # jw. - nowa nullable kolumna
 ensure_project_golive_column(DB_PATH)  # jw. - nowa nullable kolumna
+ensure_notifications_table(DB_PATH)  # jw. - nowa tabela, wzmianki @Imie Nazwisko w komentarzach
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -1157,7 +1158,74 @@ def ticket_comments(ticket_id):
         # next_id() skanuje MAX(...) bez blokady - dwa niemal jednoczesne komentarze moga
         # trafic na ten sam ID_Komentarza (jak w generycznej fabryce collection(), patrz wyzej).
         return jsonify({"error": integrity_error_message(e, "komentarze_tickety")}), 409
+    create_mention_notifications(conn, tresc, ticket_id, cid, autor)
     return jsonify(fetch_row(conn, "komentarze_tickety", "ID_Komentarza", cid)), 201
+
+
+MENTION_RE = re.compile(r"@\[([^\]]+)\]")
+
+
+def create_mention_notifications(conn, tresc, ticket_id, comment_id, autor):
+    # Format @[Imie Nazwisko] wstawiany wylacznie przez autocomplete w app.js (nie recznie
+    # przez uzytkownika) - jednoznaczny do sparsowania niezaleznie od tego, ze imiona i
+    # nazwiska w zespol.Imie_i_nazwisko zawieraja spacje (zwykle "@Imie Nazwisko" bez
+    # nawiasow nie dalby sie odroznic od "@Imie" + dalszy zwykly tekst).
+    mentioned_names = set(MENTION_RE.findall(tresc))
+    if not mentioned_names:
+        return
+    team = conn.execute("SELECT ID_Osoby, Imie_i_nazwisko FROM zespol").fetchall()
+    team_by_name = {t["Imie_i_nazwisko"]: t["ID_Osoby"] for t in team}
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    for name in mentioned_names:
+        target_id = team_by_name.get(name)
+        if not target_id or target_id == g.user.get("ID_Osoby"):
+            continue  # nieznana osoba (literowka/usunieta z zespolu) albo wzmianka samego siebie
+        nid = next_id(conn, "powiadomienia", "ID_Powiadomienia", "NOT", 4)
+        conn.execute(
+            "INSERT INTO powiadomienia (ID_Powiadomienia, ID_Osoby, Typ, ID_Tickietu, ID_Komentarza, "
+            "Tresc, Autor, Przeczytane, Data_utworzenia) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (nid, target_id, "Wzmianka_w_komentarzu", ticket_id, comment_id, tresc, autor, "Nie", now),
+        )
+    conn.commit()
+
+
+@app.route("/api/powiadomienia", methods=["GET"])
+def notifications():
+    # Zawsze wylacznie WLASNE powiadomienia, niezaleznie od roli (nawet COO/Admin) - inny
+    # rodzaj scope'owania niz reszta aplikacji (ktora ogranicza portfolio per Specjalista, ale
+    # portfolio-wide odczyt dla wyzszych rol), wiec bespoke route zamiast generycznej fabryki
+    # collection() (ktora bez dodatkowej pracy zwrocilaby CUDZE powiadomienia kazdej roli poza
+    # Specjalista - patrz scoped_rows()).
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM powiadomienia WHERE ID_Osoby = ? ORDER BY Data_utworzenia DESC LIMIT 50",
+        (g.user["ID_Osoby"],),
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/powiadomienia/<item_id>/przeczytane", methods=["POST"])
+def mark_notification_read(item_id):
+    conn = get_db()
+    row = fetch_row(conn, "powiadomienia", "ID_Powiadomienia", item_id)
+    if row is None:
+        abort(404)
+    if row["ID_Osoby"] != g.user.get("ID_Osoby"):
+        abort(403)
+    conn.execute("UPDATE powiadomienia SET Przeczytane = 'Tak' WHERE ID_Powiadomienia = ?", (item_id,))
+    conn.commit()
+    return "", 204
+
+
+@app.route("/api/powiadomienia/przeczytaj-wszystkie", methods=["POST"])
+def mark_all_notifications_read():
+    conn = get_db()
+    conn.execute(
+        "UPDATE powiadomienia SET Przeczytane = 'Tak' WHERE ID_Osoby = ? AND Przeczytane = 'Nie'",
+        (g.user.get("ID_Osoby"),),
+    )
+    conn.commit()
+    return "", 204
 
 
 @app.route("/api/backup", methods=["GET", "POST"])

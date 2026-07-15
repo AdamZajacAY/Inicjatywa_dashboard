@@ -22,6 +22,12 @@
     <button class="secondary" id="btnExport" style="display:none" data-roles="COO,Admin">Eksportuj do Excela</button>
     <button class="secondary" id="btnPrint" style="display:none" data-roles="COO,Admin">Drukuj widok</button>
     <button class="secondary" id="btnExecReport" style="display:none" data-roles="COO,Admin" title="Generuje podsumowanie portfela projektów do wydruku / zapisu jako PDF (przez okno drukowania przeglądarki)">📄 Raport dla zarządu (PDF)</button>
+    <div class="notif-bell-wrap" id="notifBellWrap" style="display:none">
+      <button class="icon-btn notif-bell" id="notifBellBtn" aria-label="Powiadomienia">
+        🔔<span class="notif-badge" id="notifBadge" style="display:none">0</span>
+      </button>
+      <div class="notif-panel" id="notifPanel"></div>
+    </div>
     <div class="user-menu" id="userMenu" style="display:none">
       <span class="user-menu-name" id="userMenuName"></span>
       <span class="user-menu-role badge badge-muted" id="userMenuRole"></span>

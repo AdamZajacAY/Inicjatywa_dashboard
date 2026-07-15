@@ -551,3 +551,50 @@ body.report-mode #execReport {
 
 .empty-hint { color: var(--text-muted); font-size: 12.5px; padding: 10px 0; }
 .saved-pill { font-size: 11px; color: var(--status-good); }
+
+/* ---------- Powiadomienia (dzwonek + panel) ---------- */
+.notif-bell-wrap { position: relative; }
+.notif-bell {
+  position: relative; background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
+  border-radius: 8px; width: 34px; height: 34px; font-size: 15px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.notif-bell:hover { background: var(--grid); color: var(--text-primary); }
+.notif-badge {
+  position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 3px;
+  border-radius: 999px; background: var(--status-critical); color: #fff; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+}
+.notif-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 55; width: 340px; max-height: 420px;
+  overflow-y: auto; background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 8px; display: none;
+}
+.notif-panel.open { display: block; }
+.notif-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 8px; }
+.notif-panel-head h4 { margin: 0; font-size: 13px; }
+.notif-mark-all { background: none; border: none; color: var(--accent); font-size: 11.5px; font-weight: 600; cursor: pointer; padding: 2px 4px; }
+.notif-item {
+  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  padding: 8px 6px; border-radius: 8px; font: inherit; color: var(--text-primary);
+}
+.notif-item:hover { background: var(--page); }
+.notif-item.unread { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.notif-item .notif-line { font-size: 12.5px; line-height: 1.4; }
+.notif-item .notif-author { font-weight: 700; }
+.notif-item .notif-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.notif-empty { color: var(--text-muted); font-size: 12.5px; padding: 16px 6px; text-align: center; }
+
+/* ---------- Wzmianki (@Imie Nazwisko) w komentarzach ---------- */
+.mention-tag { color: var(--accent); font-weight: 700; }
+.mention-suggestions {
+  position: fixed; z-index: 60; width: 240px; max-height: 220px; overflow-y: auto;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 4px; display: none;
+}
+.mention-suggestions.open { display: block; }
+.mention-suggestion {
+  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  padding: 6px 8px; border-radius: 7px; font: inherit; font-size: 12.5px; color: var(--text-primary);
+}
+.mention-suggestion:hover, .mention-suggestion.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }

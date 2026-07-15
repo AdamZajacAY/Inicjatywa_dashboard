@@ -160,6 +160,22 @@ def ensure_komentarze_table(db_path):
         conn.close()
 
 
+def ensure_notifications_table(db_path):
+    """Dodaje tabele powiadomienia (wzmianki @Imie Nazwisko w komentarzach do ticketow) do baz,
+    ktore powstaly przed jej wprowadzeniem. Indeks tworzony osobno, bezwarunkowo - ten sam powod
+    co ensure_komentarze_table() powyzej."""
+    _ensure_table(db_path, "powiadomienia")
+    conn = sqlite3.connect(db_path)
+    try:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            schema_sql = f.read()
+        for stmt in re.findall(r"CREATE INDEX IF NOT EXISTS idx_powiadomienia_osoba.*?;", schema_sql):
+            conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def ensure_ideapool_table(db_path):
     """Dodaje tabele ideapool (zgloszenia inicjatyw wewnetrznych) do baz, ktore powstaly przed
     jej wprowadzeniem."""
