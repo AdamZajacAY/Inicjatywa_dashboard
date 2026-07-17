@@ -3310,7 +3310,11 @@ async function handleKrsFetchClick(btn) {
 }
 
 /* ---------- Formularz: Przypisanie podwykonawcy do projektu ---------- */
-function subcontractorOptionsPairs() { return [["", "— wybierz z biblioteki —"], ...STATE.subcontractors.map(s => [s.ID_Podwykonawcy, `${s.Nazwa} (${s.Branza})`])]; }
+function subcontractorOptionsPairs() {
+  const sorted = [...STATE.subcontractors].sort((a, b) =>
+    (a.Branza || "").localeCompare(b.Branza || "", "pl") || (a.Nazwa || "").localeCompare(b.Nazwa || "", "pl"));
+  return [["", "— wybierz z biblioteki —"], ...sorted.map(s => [s.ID_Podwykonawcy, `${s.Branza} — ${s.Nazwa}`])];
+}
 
 function openSubcontractorAssignmentForm(pid, said = null) {
   const a = said ? STATE.subcontractorAssignments.find(x => x.ID_Przypisania_Podw === said) : {};
