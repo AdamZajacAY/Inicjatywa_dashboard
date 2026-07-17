@@ -107,8 +107,9 @@ const TASK_STATUSES = ["Nie rozpoczete", "W trakcie", "Zakonczone", "Opoznione"]
 const KATEGORIE_ZADAN = ["Koncepcja", "Konsultacje", "Projektowanie", "Rysunki wykonawcze",
   "Dokumentacja przetargowa", "Pozwolenia/Uzgodnienia", "Nadzor autorski", "Koordynacja branzowa",
   "Wizja lokalna/Spotkanie", "Prezentacja", "Administracja/Inne"];
-const BRANZE_PODWYKONAWCOW = ["Elektryczna", "Sanitarna/Hydrauliczna", "Gazowa", "Wentylacja i klimatyzacja",
-  "Konstrukcyjna", "Drogowa/Infrastruktura", "Teletechniczna/IT", "Przeciwpozarowa", "Inna"];
+const BRANZE_PODWYKONAWCOW = ["Elektryczna i teletechniczna", "Sanitarna", "Projekty przylaczy", "Technologia",
+  "Konstrukcyjna", "Drogowa", "Zielen", "Akustyczna", "Architektoniczna", "Wizualizacje", "Inwentaryzacje",
+  "Uzgodnienia ppoz", "Uzgodnienia hig-sanit", "Uzgodnienia BHP"];
 const TYPY_WSPOLPRACY = ["Projektant branzowy", "Wykonawca robot", "Dostawca", "Konsultant"];
 const OCENY_PODWYKONAWCOW = ["Wysoka", "Srednia", "Niska", "Brak oceny"];
 const STATUSY_PODWYKONAWCOW = ["Aktywny", "Nieaktywny", "Zweryfikowany", "Czarna lista"];

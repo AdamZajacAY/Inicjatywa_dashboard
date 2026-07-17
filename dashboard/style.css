@@ -417,6 +417,11 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 @media print {
   .app-header, .tabs, .overlay { display: none !important; }
   .detail-panel { position: static; transform: none; box-shadow: none; width: auto; }
+  .item-actions { display: none !important; }
+  /* Przegladarki domyslnie NIE drukuja tla/kolorow (oszczednosc tuszu), o ile strona wprost
+     tego nie wymusi - bez tego paski Gantta (czysto kolorem tla, bez obramowania) i wszystkie
+     kolorowe tagi/badge'e wychodzily z drukowania niewidoczne (biale na bialym). */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
 }
 
 /* ---------- Raport dla zarzadu (executive report -> drukowanie / zapis jako PDF) ---------- */

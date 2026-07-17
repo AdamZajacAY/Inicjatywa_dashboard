@@ -671,8 +671,16 @@ ENUM_FIELDS = {
         "Status": {"Nie rozpoczete", "W trakcie", "Zakonczone", "Zagrozone"},
     },
     "podwykonawcy": {
-        "Branza": {"Elektryczna", "Sanitarna/Hydrauliczna", "Gazowa", "Wentylacja i klimatyzacja",
-                    "Konstrukcyjna", "Drogowa/Infrastruktura", "Teletechniczna/IT", "Przeciwpozarowa", "Inna"},
+        # Zawezone na wprost zyczenie uzytkownika (2026-07-17) do listy faktycznie uzywanych
+        # branz projektowych + 3 nowe kategorie rzeczoznawcow (uzgodnienia, nie projektowanie -
+        # stad osobna grupa, nie kolejna "branza" w dawnym sensie). Stare wartosci (Gazowa,
+        # Wentylacja i klimatyzacja, Teletechniczna/IT jako osobna, Inna) usuniete - audyt
+        # produkcji (2026-07-17) potwierdzil zero rekordow z tymi wartosciami poza Inna (1),
+        # ktora przy tej okazji poprawiona na wlasciwa kategorie (patrz migracja).
+        "Branza": {"Elektryczna i teletechniczna", "Sanitarna", "Projekty przylaczy", "Technologia",
+                    "Konstrukcyjna", "Drogowa", "Zielen", "Akustyczna", "Architektoniczna",
+                    "Wizualizacje", "Inwentaryzacje", "Uzgodnienia ppoz", "Uzgodnienia hig-sanit",
+                    "Uzgodnienia BHP"},
         "Typ_wspolpracy": {"Projektant branzowy", "Wykonawca robot", "Dostawca", "Konsultant"},
         "Ocena": {"Wysoka", "Srednia", "Niska", "Brak oceny"},
         "Status": {"Aktywny", "Nieaktywny", "Zweryfikowany", "Czarna lista"},
