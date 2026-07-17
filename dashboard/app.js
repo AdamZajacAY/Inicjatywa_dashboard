@@ -1987,14 +1987,19 @@ function teamNamePairs() { return [["", "— wybierz —"], ...STATE.team.map(t 
 function openProjectForm(pid = null) {
   const p = pid ? STATE.projectById.get(pid) : {};
   if (!requireExisting(p, "projekt")) return;
+  // Architekt prowadzacy tworzacy NOWY projekt zawsze konczy jako jego Owner/Kierownik
+  // (server.py wymusza to bezwarunkowo przy zapisie, patrz _default_project_owner_for_architekt) -
+  // domyslne zaznaczenie tutaj to tylko odzwierciedlenie tego z gory, zeby formularz od razu
+  // pokazywal prawdziwy wynik, a nie mylaco sugerowal wybor, ktory i tak zostanie nadpisany.
+  const architektDefaultOwner = !pid && STATE.me.role === "Architekt_PM" ? STATE.me.name : null;
   const body = `
     <div class="form-section-title">Dane podstawowe</div>
     ${fInput("Nazwa projektu *", "Nazwa", p.Nazwa, "text", "required")}
     ${fSelect("Typ projektu *", "Typ_projektu", pairs(TYPE_ORDER), p.Typ_projektu)}
     ${fSelect("Funkcja biura", "Funkcja_biura", pairs(FUNKCJE_BIURA), p.Funkcja_biura)}
     ${fSelect("Segment", "Segment", pairs(SEGMENTS), p.Segment)}
-    ${fSelect("Owner *", "Owner", teamNamePairs(), p.Owner)}
-    ${fSelect("Kierownik projektu", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu)}
+    ${fSelect("Owner *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
+    ${fSelect("Kierownik projektu", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu || architektDefaultOwner)}
     ${fSelect("Sponsor (zarząd)", "ID_Osoby_sponsora", boardMemberOptionsPairs(), p.ID_Osoby_sponsora)}
     ${fSelect("Status", "Status", pairs(STATUSES), p.Status || "Planowanie")}
     ${fSelect("Faza", "Faza", pairs(FAZY), p.Faza || "Koncepcja")}

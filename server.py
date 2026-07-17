@@ -524,6 +524,44 @@ def _default_ideapool(data, user):
     data.setdefault("Data_zgloszenia", datetime.datetime.now().isoformat(timespec="seconds"))
 
 
+def _default_project_owner_for_architekt(data, user):
+    # Architekt prowadzacy (Architekt_PM) tworzacy NOWY projekt automatycznie staje sie jego
+    # Ownerem i Kierownikiem - na wprost zyczenie uzytkownika (2026-07-17): "jezeli architekt
+    # prowadzacy dodaje projekt, to automatycznie przypisz go jako kierownika i ownera". Celowo
+    # NADPISUJE (nie tylko setdefault) cokolwiek wybrano w formularzu - architekt prowadzacy
+    # tworzy projekt dla SIEBIE, nie przydziela go komus innemu przy tworzeniu (COO/Admin,
+    # ktorzy faktycznie moga zakladac projekty dla kogos innego, nie sa tu w ogole dotknieci -
+    # ich can_write() i tak ma pelny dostep niezaleznie od tych pol).
+    if user.get("Rola") != "Architekt_PM":
+        return
+    name = user.get("Imie_i_nazwisko")
+    if not name:
+        return
+    data["Owner"] = name
+    data["Kierownik_projektu"] = name
+
+
+def _assign_architekt_to_own_project(conn, new_row, user):
+    # Dopelnienie _default_project_owner_for_architekt() powyzej - samo ustawienie
+    # Owner/Kierownik_projektu (wolny tekst, nie FK) NIE wystarczy do faktycznego zarzadzania:
+    # can_write() dla Architekt_PM sprawdza assigned_project_ids(), ktore czyta WYLACZNIE z
+    # przypisania (patrz komentarz przy tej funkcji) - bez wiersza w przypisania architekt
+    # widzialby siebie jako Ownera na karcie projektu, ale i tak dostawalby 403 przy kazdej
+    # probie edycji/dodania zadania na WLASNYM, dopiero co utworzonym projekcie (dokladnie ten
+    # sam problem, ktory recznie naprawiono dla Daniel Stawicki przed wprowadzeniem tej
+    # automatyzacji). Bezpieczne wywolanie wielokrotne nie zachodzi tu w gre (jeden insert per
+    # nowy projekt), wiec bez sprawdzania duplikatow jak w recznej naprawie.
+    if user.get("Rola") != "Architekt_PM" or not user.get("ID_Osoby"):
+        return
+    aid = next_id(conn, "przypisania", "ID_Przypisania", "ASG", 3)
+    conn.execute(
+        "INSERT INTO przypisania (ID_Przypisania, ID_Projektu, ID_Osoby, Rola_w_projekcie, Status) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (aid, new_row["ID_Projektu"], user["ID_Osoby"], "Kierownik projektu", "Aktywny"),
+    )
+    conn.commit()
+
+
 TABLE_VALIDATORS = {
     "users": validate_user_payload,
 }
@@ -533,10 +571,18 @@ TABLE_CREATE_DEFAULTS = {
     "users": lambda data, user: data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds")),
     "zadania_tickety": _default_zglaszajacy,
     "ideapool": _default_ideapool,
+    "projekty": _default_project_owner_for_architekt,
     "checklisty_projektow": lambda data, user: (
         data.setdefault("Wykonano", "Nie"),
         data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds")),
     ),
+}
+# Trzeci, mniejszy rejestr - zaczepy PO udanym zapisie (potrzebuja prawdziwego pk_val nowego
+# wiersza, wiec nie mogly by czyms takim jak TABLE_CREATE_DEFAULTS, ktory dziala na payloadzie
+# PRZED insertem tej samej tabeli). Dzis tylko projekty (patrz _assign_architekt_to_own_project),
+# ale ten sam wzorzec rejestru co powyzej, nie nowa galaz "if table == X" w collection().
+TABLE_CREATE_SIDE_EFFECTS = {
+    "projekty": _assign_architekt_to_own_project,
 }
 
 
@@ -1045,7 +1091,11 @@ def collection(table):
     # parse_payload, wiec to tylko prawdziwe kolumny) - fetch_row() tutaj bylby zbednym SELECT-em
     # odczytujacym z powrotem to, co juz mamy w pamieci (audyt: brak triggerow/wartosci
     # generowanych przez SQLite poza pk_val, ktore i tak jawnie dokladamy).
-    return jsonify(redact_row(g.user, table, {**data, pk: pk_val})), 201
+    new_row = {**data, pk: pk_val}
+    side_effect = TABLE_CREATE_SIDE_EFFECTS.get(table)
+    if side_effect:
+        side_effect(conn, new_row, g.user)
+    return jsonify(redact_row(g.user, table, new_row)), 201
 
 
 @app.route("/api/<table>/<path:item_id>", methods=["PUT", "DELETE"])
