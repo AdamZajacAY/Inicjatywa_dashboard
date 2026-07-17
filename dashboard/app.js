@@ -1735,10 +1735,49 @@ function filteredTasks() {
   });
 }
 
+function harmonogramStatusBadgeClass(status) {
+  if (status === "Zakonczone") return "good";
+  if (status === "Opoznione") return "critical";
+  if (status === "W trakcie") return "active";
+  return "muted"; // Nie rozpoczete i kazda inna/brak wartosci
+}
+function ganttProjectTaskTableHtml(tasks) {
+  // Widok skrocony pokazuje projekt jako JEDEN pasek (celowo, patrz buildGanttCondensed) - gdy
+  // uzytkownik zawezi filtr do KONKRETNEGO projektu, dopisz tez tabele z etapami harmonogramu
+  // pod spodem, zeby nie trzeba bylo przelaczac sie na widok Szczegolowy tylko po to, zeby
+  // zobaczyc rozbicie na etapy jednego, juz wybranego projektu.
+  if (!tasks.length) return `<div class="kpi-sub" style="margin-top:14px">Brak etapów harmonogramu dla tego projektu.</div>`;
+  const sorted = [...tasks].sort((a, b) => (a.Data_start_plan?.getTime() || 0) - (b.Data_start_plan?.getTime() || 0));
+  return `
+    <div class="section-head" style="margin-top:18px"><h2 style="font-size:14px">Etapy harmonogramu tego projektu (${sorted.length})</h2></div>
+    <div class="panel" style="overflow-x:auto">
+      <table class="data-table">
+        <thead><tr>
+          <th>Zadanie / etap</th><th>Kategoria</th><th>Start (plan)</th><th>Koniec (plan)</th>
+          <th>Status</th><th>Postęp</th><th>Priorytet</th><th>Odpowiedzialny</th>
+        </tr></thead>
+        <tbody>
+          ${sorted.map(t => `
+            <tr class="clickable" data-task-id="${esc(t.ID_Zadania)}">
+              <td>${esc(t.Nazwa_zadania)}</td>
+              <td>${esc(t.Kategoria || "—")}</td>
+              <td>${fmtDate(t.Data_start_plan)}</td>
+              <td>${fmtDate(t.Data_koniec_plan)}</td>
+              <td>${badge(t.Status || "—", harmonogramStatusBadgeClass(t.Status))}</td>
+              <td>${fmtPctFraction(t.Procent_ukonczenia)}</td>
+              <td>${t.Priorytet ? badge(t.Priorytet, priorityBadgeClass(t.Priorytet)) : "—"}</td>
+              <td>${esc(personName(t.ID_Osoby_odpowiedzialnej))}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
 function renderGanttView() {
   const condensed = ganttFilters.view === "skrocony";
   const body = condensed ? buildGanttCondensed(filteredProjectsForGantt()) : buildGantt(filteredTasks(), { groupBy: ganttFilters.groupBy });
-  $("#view-gantt").innerHTML = `${renderGanttFilters()}<div class="panel">${body}</div>`;
+  const taskTable = condensed && ganttFilters.projekt ? ganttProjectTaskTableHtml(filteredTasks()) : "";
+  $("#view-gantt").innerHTML = `${renderGanttFilters()}<div class="panel">${body}</div>${taskTable}`;
   $("#fGanttCount").textContent = condensed
     ? `${filteredProjectsForGantt().filter(p => p.Data_rozpoczecia instanceof Date || p.Data_zakonczenia_planowana instanceof Date).length} projektów`
     : `${filteredTasks().length} zadań`;
