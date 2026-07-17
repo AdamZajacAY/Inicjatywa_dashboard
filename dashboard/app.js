@@ -1522,7 +1522,7 @@ document.addEventListener("drop", (e) => {
 });
 
 /* ================================================================== VIEW: GANTT */
-let ganttFilters = { projekt: "", typ: "", osoba: "", groupBy: "projekt", view: "szczegoly" };
+let ganttFilters = { projekt: "", typ: "", osoba: "", groupBy: "projekt", view: "skrocony" };
 
 function renderGanttFilters() {
   const condensed = ganttFilters.view === "skrocony";
@@ -1579,6 +1579,12 @@ function buildGanttCondensed(projects) {
       Status: projectGanttPseudoStatus(p),
       Procent_ukonczenia: p.Procent_postepu,
       ID_Osoby_odpowiedzialnej: null,
+      // Dodatkowe pola tylko na potrzeby widoku skroconego (kolor per architekt prowadzacy +
+      // bogatszy tooltip) - detailed view (prawdziwe zadania harmonogramu) ich nie ma i nie
+      // potrzebuje, barFor() siega po nie tylko gdy opts.condensed.
+      _owner: p.Owner,
+      _goLive: p.Data_go_live,
+      _ticketCount: ticketsForProject(p.ID_Projektu).length,
     }));
   return buildGantt(pseudoTasks, { groupBy: "projekt", hideGroupHeader: true, condensed: true });
 }
@@ -1620,8 +1626,33 @@ function buildGantt(tasks, opts = {}) {
     if (!(s instanceof Date) || !(e instanceof Date)) return "";
     let left = (s.getTime() - tMin.getTime()) / totalMs * 100;
     let width = Math.max(0.6, (e.getTime() - s.getTime()) / totalMs * 100);
-    const cls = taskStatusClass(t.Status);
     const pct = num(t.Procent_ukonczenia) * 100;
+    if (opts.condensed) {
+      // Kolor paska per architekt prowadzacy (Owner), nie per status - "kolory projektow w tym
+      // widoku przypisz per architekt prowadzacy" - ten sam deterministyczny hash co
+      // ownerTagHtml() gdzie indziej w apce (kazdy architekt ma stale, rozpoznawalne barwe we
+      // wszystkich widokach). Tooltip: nazwa, owner, go live (miesiac), liczba ticketow,
+      // procent realizacji - dokladnie w tej kolejnosci, na wprost zyczenie uzytkownika.
+      // Brak ownera dostaje neutralny szary zamiast personColorSlot("") - haszowanie pustego
+      // stringa zawsze daje ten sam slot (cat-1), wiec bez tego wszystkie projekty bez ownera
+      // "przypadkiem" dzielilyby jeden kolor z realnym architektem o tym samym hashu, bez
+      // wyjasnienia w legendzie (ktora i tak pomija puste nazwy - patrz filter(Boolean) nizej).
+      const bg = t._owner ? `var(--${personColorSlot(t._owner)})` : "var(--text-muted)";
+      const goLiveLabel = t._goLive instanceof Date ? `${MIESIACE_PL[t._goLive.getMonth()]} ${t._goLive.getFullYear()}` : "—";
+      const title = [
+        t.Nazwa_zadania,
+        `Owner: ${t._owner || "—"}`,
+        `Go Live: ${goLiveLabel}`,
+        `Tickety: ${t._ticketCount}`,
+        `Realizacja: ${Math.round(pct)}%`,
+      ].map(esc).join("&#10;");
+      return `<div class="gantt-bar" style="left:${left}%;width:${width}%;background:${bg}"
+          title="${title}">
+          <div class="fill-progress" style="width:${pct}%"></div>
+          <span>${esc(t.Nazwa_zadania)} — ${esc(t._owner || "—")} · ${Math.round(pct)}%</span>
+        </div>`;
+    }
+    const cls = taskStatusClass(t.Status);
     return `<div class="gantt-bar status-${cls}" style="left:${left}%;width:${width}%"
         title="${esc(t.Nazwa_zadania)}&#10;${fmtDate(s)} — ${fmtDate(e)}&#10;${Math.round(pct)}% ukończenia&#10;Odpowiedzialny: ${esc(personName(t.ID_Osoby_odpowiedzialnej))}">
         <div class="fill-progress" style="width:${pct}%"></div>
@@ -1647,6 +1678,25 @@ function buildGantt(tasks, opts = {}) {
     return groupHeader + rows;
   }).join("");
 
+  const legendHtml = opts.condensed
+    ? (() => {
+        // Kolor paska = architekt prowadzacy w tym widoku (nie status) - legenda pokazuje wiec
+        // liste WYSTEPUJACYCH architektow z ich barwa, zamiast statusow (patrz barFor()).
+        const owners = Array.from(new Set(tasks.map(t => t._owner).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pl"));
+        const ownerItems = owners.map(name =>
+          `<span class="item"><span class="swatch" style="background:var(--${personColorSlot(name)})"></span>${esc(name)}</span>`
+        ).join("");
+        const noOwnerItem = tasks.some(t => !t._owner)
+          ? `<span class="item"><span class="swatch" style="background:var(--text-muted)"></span>Brak ownera</span>` : "";
+        return `${ownerItems}${noOwnerItem}<span class="item">┊ <span style="color:var(--status-critical)">— dziś</span></span>`;
+      })()
+    : `
+      <span class="item"><span class="swatch status-notstarted"></span>Nie rozpoczęte</span>
+      <span class="item"><span class="swatch status-progress"></span>W trakcie</span>
+      <span class="item"><span class="swatch status-done"></span>Zakończone</span>
+      <span class="item"><span class="swatch status-delayed"></span>Opóźnione</span>
+      <span class="item">┊ <span style="color:var(--status-critical)">— dziś</span></span>`;
+
   return `
     <div class="gantt-scroll">
       <div class="gantt-wrap">
@@ -1657,13 +1707,7 @@ function buildGantt(tasks, opts = {}) {
         <div class="gantt-body">${rowsHtml}</div>
       </div>
     </div>
-    <div class="gantt-legend">
-      <span class="item"><span class="swatch status-notstarted"></span>Nie rozpoczęte</span>
-      <span class="item"><span class="swatch status-progress"></span>W trakcie</span>
-      <span class="item"><span class="swatch status-done"></span>Zakończone</span>
-      <span class="item"><span class="swatch status-delayed"></span>Opóźnione</span>
-      <span class="item">┊ <span style="color:var(--status-critical)">— dziś</span></span>
-    </div>`;
+    <div class="gantt-legend">${legendHtml}</div>`;
 }
 
 function filteredTasks() {
