@@ -23,6 +23,9 @@ const TABLE_SCOPE = {
   checklisty_projektow: "project_scoped",
 };
 const FULL_ACCESS_ROLES = ["COO", "Admin"];
+// "Pracownik biurowy" ma dokladnie te same uprawnienia co "Architekt" (Specjalista) - mirror
+// SPECJALISTA_ROLES w server.py, patrz komentarz tam.
+const SPECJALISTA_ROLES = ["Specjalista", "Pracownik_biurowy"];
 
 function can(action, table, row) {
   const role = STATE.me.role;
@@ -36,7 +39,7 @@ function can(action, table, row) {
   }
   const scope = TABLE_SCOPE[table];
   if (scope === "admin_only" || !scope) return false;
-  if (role === "Specjalista") {
+  if (SPECJALISTA_ROLES.includes(role)) {
     if (table !== "zadania_tickety" || action === "delete") return false;
     // brak row (np. przycisk na zbiorczej zakladce Zadania, bez wybranego projektu) - pokaz;
     // z konkretnym projektem w kontekscie (karta projektu) - tylko jesli to jeden z jej/jego projektow
@@ -405,7 +408,7 @@ function reindex() {
 
 // Etykiety wyswietlane uzytkownikowi - celowo inne niz wewnetrzne wartosci Rola w bazie
 // (Specjalista/Architekt_PM), zeby nie ruszac danych/logiki uprawnien przy zmianie nazewnictwa.
-const ROLE_LABELS = { Specjalista: "Architekt", Architekt_PM: "Architekt Prowadzący", COO: "COO", Admin: "Admin" };
+const ROLE_LABELS = { Specjalista: "Architekt", Pracownik_biurowy: "Pracownik biurowy", Architekt_PM: "Architekt Prowadzący", COO: "COO", Admin: "Admin" };
 
 function showDashboard() {
   $("#emptyState").style.display = "none";
@@ -419,7 +422,7 @@ function showDashboard() {
 }
 
 function updateFileInfo() {
-  const label = STATE.me.role === "Specjalista" ? "Twoich projektów" : "projektów";
+  const label = SPECJALISTA_ROLES.includes(STATE.me.role) ? "Twoich projektów" : "projektów";
   $("#fileInfo").innerHTML = `🔗 Połączono z serwerem · ${STATE.projects.length} ${label}`;
 }
 
@@ -871,11 +874,11 @@ function renderOverview() {
   const portfolioMargin = portfolioRevenue - budSpent;
 
   const html = `
-    ${STATE.me.role === "Specjalista" ? `<div class="panel" style="margin-bottom:16px;padding:10px 16px"><div class="kpi-sub">${total === 0
+    ${SPECJALISTA_ROLES.includes(STATE.me.role) ? `<div class="panel" style="margin-bottom:16px;padding:10px 16px"><div class="kpi-sub">${total === 0
         ? "Nie masz jeszcze przypisanych projektów — poniższy widok będzie pusty, dopóki COO/Admin/Architekt Prowadzący nie przypisze Cię do projektu (przez „Zespół projektu” na karcie projektu)."
         : "Widoczne wyłącznie projekty, do których jesteś przypisany/a — poniższe liczby (i cały ten widok) dotyczą tylko ich, nie całej firmy."}</div></div>` : ""}
     <div class="kpi-grid">
-      <div class="kpi-tile"><div class="kpi-label">${STATE.me.role === "Specjalista" ? "Twoje projekty" : "Projekty ogółem"}</div><div class="kpi-value">${total}</div></div>
+      <div class="kpi-tile"><div class="kpi-label">${SPECJALISTA_ROLES.includes(STATE.me.role) ? "Twoje projekty" : "Projekty ogółem"}</div><div class="kpi-value">${total}</div></div>
       <div class="kpi-tile"><div class="kpi-label">W realizacji</div><div class="kpi-value">${byStatus("W realizacji")}</div></div>
       <div class="kpi-tile accent-critical"><div class="kpi-label">Wstrzymane</div><div class="kpi-value">${byStatus("Wstrzymany")}</div></div>
       <div class="kpi-tile accent-good"><div class="kpi-label">Zakończone</div><div class="kpi-value">${byStatus("Zakonczony")}</div></div>
@@ -902,7 +905,7 @@ function renderOverview() {
           <div class="hbar-track"><div class="hbar-fill" style="width:${Math.min(100, budTotal ? budSpent / budTotal * 100 : 0)}%;background:var(--accent)"></div></div>
           <div class="hbar-value">${budTotal ? Math.round(budSpent / budTotal * 100) : 0}%</div>
         </div>
-        <div class="kpi-sub" style="margin-top:6px">${fmtMoney(budSpent)} z ${fmtMoney(budTotal)} (${STATE.me.role === "Specjalista" ? "dane finansowe ukryte dla tej roli" : "suma widocznych projektów, PLN"})</div>
+        <div class="kpi-sub" style="margin-top:6px">${fmtMoney(budSpent)} z ${fmtMoney(budTotal)} (${SPECJALISTA_ROLES.includes(STATE.me.role) ? "dane finansowe ukryte dla tej roli" : "suma widocznych projektów, PLN"})</div>
 
         <h3 style="margin-top:20px">RAG portfela</h3>
         <div class="segmented-bar">
@@ -1325,7 +1328,7 @@ function renderTeam() {
         ${can("create", "zespol") ? `<button data-add-team="1">+ Dodaj osobę</button>` : ""}
       </div>
     </div>
-    ${STATE.me.role === "Specjalista" ? `<div class="empty-hint" style="margin-bottom:12px">Obciążenie i lista projektów uwzględniają tylko projekty, do których i Ty jesteś przypisany/a — mogą nie odzwierciedlać pełnego obciążenia danej osoby.</div>` : ""}
+    ${SPECJALISTA_ROLES.includes(STATE.me.role) ? `<div class="empty-hint" style="margin-bottom:12px">Obciążenie i lista projektów uwzględniają tylko projekty, do których i Ty jesteś przypisany/a — mogą nie odzwierciedlać pełnego obciążenia danej osoby.</div>` : ""}
     ${body}
   `;
 }
@@ -1363,7 +1366,7 @@ function renderSubcontractors() {
       <select id="fSubStatus"><option value="">Wszystkie statusy</option>${STATUSY_PODWYKONAWCOW.map(s => `<option ${subFilters.status === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
       <span class="count">${list.length} / ${STATE.subcontractors.length} podwykonawców</span>
     </div>
-    ${STATE.me.role === "Specjalista" ? `<div class="empty-hint" style="margin-bottom:12px">Liczba aktywnych/planowanych projektów uwzględnia tylko projekty, do których i Ty jesteś przypisany/a.</div>` : ""}
+    ${SPECJALISTA_ROLES.includes(STATE.me.role) ? `<div class="empty-hint" style="margin-bottom:12px">Liczba aktywnych/planowanych projektów uwzględnia tylko projekty, do których i Ty jesteś przypisany/a.</div>` : ""}
     <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak podwykonawców w bibliotece — kliknij „+ Dodaj podwykonawcę”.</div>`}</div>
   `;
   $("#fSubBranza").addEventListener("change", e => { subFilters.branza = e.target.value; renderSubcontractors(); });
@@ -1890,10 +1893,10 @@ function openUserForm(uid = null) {
   const body = `
     ${fInput("E-mail *", "Email", u.Email, "email", "required")}
     ${fInput("Imię i nazwisko", "Imie_i_nazwisko", u.Imie_i_nazwisko)}
-    ${fSelect("Rola", "Rola", [["", "Oczekujące (brak dostępu)"], ["Specjalista", "Architekt"], ["Architekt_PM", "Architekt Prowadzący"], ["COO", "COO"], ["Admin", "Admin"]], u.Rola || "")}
+    ${fSelect("Rola", "Rola", [["", "Oczekujące (brak dostępu)"], ["Specjalista", "Architekt"], ["Pracownik_biurowy", "Pracownik biurowy"], ["Architekt_PM", "Architekt Prowadzący"], ["COO", "COO"], ["Admin", "Admin"]], u.Rola || "")}
     ${fSelect("Powiązana osoba z zespołu", "ID_Osoby", unlinkedTeamOptionsPairs(uid), u.ID_Osoby)}
     ${fSelect("Aktywny", "Aktywny", [["Tak", "Tak"], ["Nie", "Nie"]], u.Aktywny === 0 ? "Nie" : "Tak")}
-    <div class="empty-hint full" style="grid-column:1/-1">Role Architekt i Architekt Prowadzący wymagają powiązanej osoby z zespołu (do niej odnoszą się przydzielone projekty i tickety).</div>
+    <div class="empty-hint full" style="grid-column:1/-1">Role Architekt, Pracownik biurowy i Architekt Prowadzący wymagają powiązanej osoby z zespołu (do niej odnoszą się przydzielone projekty i tickety).</div>
   `;
   openModal(uid ? "Edytuj użytkownika" : "Nowy użytkownik", body, {
     submitLabel: "Zapisz",

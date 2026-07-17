@@ -329,17 +329,23 @@ def parse_payload(conn, table, exclude=()):
 # jako g.user - before_request blokuje ja wczesniej (patrz load_user).
 
 FULL_ACCESS_ROLES = {"COO", "Admin"}
-VALID_ROLES = {None, "Specjalista", "Architekt_PM", "COO", "Admin"}
+# "Pracownik biurowy" to stanowisko z DOKLADNIE takimi samymi uprawnieniami jak "Architekt"
+# (Specjalista), nie osobny poziom dostepu - na wprost zyczenie uzytkownika (2026-07-17),
+# stanowisko na razie nieprzypisane do zadnej osoby. Jeden zbior zamiast dopisywania literalu
+# "Specjalista" w kazdym miejscu z osobna (patrz komentarz przy PORTFOLIO_RESTRICTED_ROLES
+# ponizej - dokladnie to ryzyko, ktore ten zbior ma zapobiec).
+SPECJALISTA_ROLES = {"Specjalista", "Pracownik_biurowy"}
+VALID_ROLES = {None, "Architekt_PM", "COO", "Admin"} | SPECJALISTA_ROLES
 # Role, ktorych odczyt jest zawezony do wlasnych projektow (patrz scoped_rows()) - jedna
 # definicja zamiast wielu niezaleznych porownan do literalu "Specjalista" (audyt: latwo
 # dopisac druga zawezona role w jednym miejscu i przeoczyc drugie).
-PORTFOLIO_RESTRICTED_ROLES = {"Specjalista"}
+PORTFOLIO_RESTRICTED_ROLES = SPECJALISTA_ROLES
 # Role pozbawione pol finansowych (patrz redact_row()) - SZERSZY zbior niz powyzej: Architekt_PM
 # ma i zachowuje odczyt portfolio-wide (widzi wszystkie projekty - swiadoma, wczesniejsza
 # decyzja), ale nie powinien widziec kwot/marzowosci, tylko COO/Admin. Dwa osobne zbiory,
 # bo to dwa rozne wymiary ograniczenia (ktore WIERSZE vs. ktore POLA) - PORTFOLIO_RESTRICTED_ROLES
 # i FINANCIAL_RESTRICTED_ROLES nie musza pokrywac tych samych rol.
-FINANCIAL_RESTRICTED_ROLES = {"Specjalista", "Architekt_PM"}
+FINANCIAL_RESTRICTED_ROLES = SPECJALISTA_ROLES | {"Architekt_PM"}
 
 # "global" = ta sama tabela dla wszystkich (np. rejestr zespolu), "root_project" = sama
 # tabela projekty (jej wlasny PK ID_Projektu = "czyj to projekt"), "project_scoped" = ma
@@ -428,7 +434,7 @@ def can_write(conn, user, action, table, row):
     scope = TABLE_SCOPE.get(table)
     if scope in ("admin_only", None):
         return False
-    if user["Rola"] == "Specjalista":
+    if user["Rola"] in SPECJALISTA_ROLES:
         if table != "zadania_tickety" or action == "delete":
             return False
         if action == "create":
@@ -502,7 +508,7 @@ def validate_user_payload(data, existing):
         return "Nieprawidłowa rola."
     merged_role = data["Rola"] if "Rola" in data else (existing.get("Rola") if existing else None)
     merged_person = data["ID_Osoby"] if "ID_Osoby" in data else (existing.get("ID_Osoby") if existing else None)
-    if merged_role in ("Specjalista", "Architekt_PM") and not merged_person:
+    if (merged_role in SPECJALISTA_ROLES or merged_role == "Architekt_PM") and not merged_person:
         return "Ta rola wymaga powiązania z osobą z zespołu."
     return None
 
