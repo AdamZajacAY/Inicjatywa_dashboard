@@ -3332,6 +3332,8 @@ function openProjectDetail(pid) {
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
       <div class="type-tag" style="margin-bottom:6px">${typeTag(p.Typ_projektu)} &nbsp;·&nbsp; ${esc(p.Segment || "")}</div>
       <div class="item-actions" style="position:static">
+        <button class="icon-btn" data-goto-tasks="${esc(pid)}" title="Przejdź do zakładki Zadania, przefiltrowanej do tego projektu">Zadania →</button>
+        <button class="icon-btn" data-goto-gantt="${esc(pid)}" title="Przejdź do Harmonogramu, przefiltrowanego do tego projektu">Harmonogram →</button>
         ${can("update", "projekty", p) ? `<button class="icon-btn" data-edit-project="${esc(pid)}">Edytuj</button>` : ""}
         ${can("delete", "projekty", p) ? `<button class="icon-btn danger" data-delete-project="${esc(pid)}">Usuń</button>` : ""}
       </div>
@@ -3642,6 +3644,29 @@ function openSubcontractorDetail(sid) {
 function closeDetail() {
   $("#overlay").classList.remove("open");
   $("#detailPanel").classList.remove("open");
+}
+
+function switchToView(viewName) {
+  // Programowy odpowiednik klikniecia zakladki (patrz delegowany handler .tab-btn nizej) -
+  // potrzebny dla "szybkich sciezek" z panelu szczegolow projektu, ktore maja przelaczyc
+  // zakladke BEZ symulowania klikniecia w konkretny przycisk DOM.
+  $all(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.view === viewName));
+  $all(".view").forEach(v => v.classList.toggle("active", v.id === `view-${viewName}`));
+}
+function gotoProjectTasks(pid) {
+  closeDetail();
+  ticketFilters.projekt = pid;
+  ticketFilters.statuses = [];
+  ticketFilters.osoba = "";
+  ticketFilters.onlyOverdue = false;
+  switchToView("zadania");
+  renderTickets();
+}
+function gotoProjectGantt(pid) {
+  closeDetail();
+  ganttFilters.projekt = pid;
+  switchToView("gantt");
+  renderGanttView();
 }
 
 /* ================================================================== RENDER ALL + WIRING */
@@ -4018,6 +4043,10 @@ document.addEventListener("click", (e) => {
   if (openSub) { openSubcontractorDetail(openSub.getAttribute("data-open-subcontractor")); return; }
   const openClient = e.target.closest("[data-open-client]");
   if (openClient) { openClientDetail(openClient.getAttribute("data-open-client")); return; }
+  const gotoTasks = e.target.closest("[data-goto-tasks]");
+  if (gotoTasks) { gotoProjectTasks(gotoTasks.getAttribute("data-goto-tasks")); return; }
+  const gotoGantt = e.target.closest("[data-goto-gantt]");
+  if (gotoGantt) { gotoProjectGantt(gotoGantt.getAttribute("data-goto-gantt")); return; }
   const tabBtn = e.target.closest(".tab-btn");
   if (tabBtn) {
     $all(".tab-btn").forEach(b => b.classList.remove("active"));
