@@ -132,7 +132,7 @@ const DATE_FIELDS = {
   milestones: ["Data_planowana", "Data_rzeczywista"],
   risks: ["Data_identyfikacji", "Data_zamkniecia"],
   statusReports: ["Data_raportu"],
-  subcontractorAssignments: ["Data_od", "Data_do"],
+  subcontractorAssignments: ["Data_od", "Data_do", "Data_zakonczenia_rzeczywista"],
   tickets: ["Data_utworzenia", "Termin", "Data_zakonczenia"],
   users: ["Data_utworzenia", "Data_ostatniego_logowania"],
   ideapool: ["Data_zgloszenia"],
@@ -282,6 +282,17 @@ function subAssignmentStatusBadge(status) {
   if (status === "Wstrzymany") return "critical";
   if (status === "Planowany") return "warning";
   return "muted";
+}
+// Termin planowany = Data_do (juz istnieje). Termin rzeczywisty ustawiany automatycznie przy
+// zmianie Status na "Zakonczony" - ta sama zasada co deriveTicketCompletionDate() dla ticketow
+// (patrz nizej), zeby mierzyc opoznienie podwykonawcy bez recznego wpisywania daty zakonczenia.
+function deriveSubAssignmentCompletionDate(newStatus, currentDate) {
+  return newStatus === "Zakonczony" ? (currentDate || new Date()) : null;
+}
+function subAssignmentDelayBadgeHtml(a) {
+  if (!(a.Data_do instanceof Date) || !(a.Data_zakonczenia_rzeczywista instanceof Date)) return "";
+  const days = Math.round((a.Data_zakonczenia_rzeczywista - a.Data_do) / 86400000);
+  return days <= 0 ? badge("Zakończone na czas", "good") : badge(`Opóźnienie: ${days} dni`, "critical");
 }
 function badge(text, cls) {
   return `<span class="badge badge-${cls}"><span class="dot" style="background:currentColor"></span>${esc(text)}</span>`;
@@ -620,7 +631,7 @@ const EXPORT_HEADERS = {
   Podwykonawcy: ["ID_Podwykonawcy", "Nazwa", "Branza", "Typ_wspolpracy", "Osoba_kontaktowa", "Email",
     "Telefon", "NIP", "Miasto", "Ocena", "Status", "Uwagi"],
   Przypisania_Podwykonawcow: ["ID_Przypisania_Podw", "ID_Projektu", "ID_Podwykonawcy", "Branza", "Zakres_prac",
-    "Data_od", "Data_do", "Wartosc_umowy", "Waluta", "Status", "Uwagi"],
+    "Data_od", "Data_do", "Data_zakonczenia_rzeczywista", "Wartosc_umowy", "Waluta", "Status", "Uwagi"],
 };
 
 function buildWorkbook() {
@@ -3327,11 +3338,12 @@ function openSubcontractorAssignmentForm(pid, said = null) {
     ${fSelect("Branża (tego przypisania)", "Branza", pairs(BRANZE_PODWYKONAWCOW), a.Branza)}
     ${fTextarea("Zakres prac *", "Zakres_prac", a.Zakres_prac, "required")}
     ${fInput("Data od", "Data_od", a.Data_od, "date")}
-    ${fInput("Data do", "Data_do", a.Data_do, "date")}
+    ${fInput("Termin planowany (Data do)", "Data_do", a.Data_do, "date")}
     ${fInput("Wartość umowy", "Wartosc_umowy", a.Wartosc_umowy, "number", "min=0 step=100")}
     ${fSelect("Status", "Status", pairs(STATUSY_PRZYPISANIA_PODW), a.Status || "Planowany")}
     ${fTextarea("Uwagi", "Uwagi", a.Uwagi)}
     <div class="empty-hint full" style="grid-column:1/-1">Nie ma podwykonawcy na liście? Dodaj go najpierw w zakładce „Podwykonawcy”.</div>
+    <div class="empty-hint full" style="grid-column:1/-1">Termin rzeczywisty ustawia się automatycznie na dziś przy zmianie statusu na „Zakończony” (do mierzenia opóźnienia względem terminu planowanego).</div>
   `;
   openModal(said ? "Edytuj przypisanie podwykonawcy" : "Przypisz podwykonawcę do projektu", body, {
     wide: true,
@@ -3350,6 +3362,7 @@ async function saveSubcontractorAssignmentFromForm(data, pid, said) {
     ID_Projektu: pid, ID_Podwykonawcy: data.ID_Podwykonawcy,
     Branza: data.Branza || sub?.Branza || "", Zakres_prac: data.Zakres_prac,
     Data_od: parseDateInput(data.Data_od), Data_do: parseDateInput(data.Data_do),
+    Data_zakonczenia_rzeczywista: deriveSubAssignmentCompletionDate(data.Status, existing.Data_zakonczenia_rzeczywista),
     Wartosc_umowy: num(data.Wartosc_umowy), Waluta: existing.Waluta || "PLN", Status: data.Status, Uwagi: data.Uwagi,
   };
   const saved = await persistEntity({
@@ -3520,7 +3533,7 @@ function openProjectDetail(pid) {
             ${can("update", "przypisania_podwykonawcow", a) ? `<button class="icon-btn" data-edit-subcontractor-assignment="${esc(a.ID_Przypisania_Podw)}" data-project="${esc(pid)}">Edytuj</button>` : ""}
             ${can("delete", "przypisania_podwykonawcow", a) ? `<button class="icon-btn danger" data-delete-subcontractor-assignment="${esc(a.ID_Przypisania_Podw)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
-          <div class="title">${esc(subcontractorName(a.ID_Podwykonawcy))} — ${esc(a.Branza)} ${badge(a.Status, subAssignmentStatusBadge(a.Status))}</div>
+          <div class="title">${esc(subcontractorName(a.ID_Podwykonawcy))} — ${esc(a.Branza)} ${badge(a.Status, subAssignmentStatusBadge(a.Status))} ${subAssignmentDelayBadgeHtml(a)}</div>
           <div class="meta">${esc(a.Zakres_prac)}</div>
           <div class="meta">${fmtDateShort(a.Data_od)} – ${fmtDateShort(a.Data_do)} ${a.Wartosc_umowy ? "· " + fmtMoney(a.Wartosc_umowy, a.Waluta) : ""}</div>
         </div>`).join("") || `<div class="empty-hint">Brak przypisanych podwykonawców — kliknij „+ Przypisz podwykonawcę” (z biblioteki).</div>`}
@@ -3678,7 +3691,7 @@ function openSubcontractorDetail(sid) {
       <h4>Przypisania do projektów (${assigns.length})</h4>
       ${assigns.map(a => `
         <div class="dp-list-item clickable" data-open-project="${esc(a.ID_Projektu)}" style="cursor:pointer">
-          <div class="title">${esc(projectName(a.ID_Projektu))} — ${esc(a.Branza)} ${badge(a.Status, subAssignmentStatusBadge(a.Status))}</div>
+          <div class="title">${esc(projectName(a.ID_Projektu))} — ${esc(a.Branza)} ${badge(a.Status, subAssignmentStatusBadge(a.Status))} ${subAssignmentDelayBadgeHtml(a)}</div>
           <div class="meta">${esc(a.Zakres_prac)}</div>
           <div class="meta">${fmtDateShort(a.Data_od)} – ${fmtDateShort(a.Data_do)} ${a.Wartosc_umowy ? "· " + fmtMoney(a.Wartosc_umowy, a.Waluta) : ""}</div>
         </div>`).join("") || `<div class="kpi-sub">Brak przypisań do projektów.</div>`}

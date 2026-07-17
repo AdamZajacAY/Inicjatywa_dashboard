@@ -262,6 +262,7 @@ CREATE TABLE IF NOT EXISTS przypisania_podwykonawcow (
   Zakres_prac TEXT,
   Data_od TEXT,
   Data_do TEXT,
+  Data_zakonczenia_rzeczywista TEXT,
   Wartosc_umowy REAL,
   Waluta TEXT,
   Status TEXT,

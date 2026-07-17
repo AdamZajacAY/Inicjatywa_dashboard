@@ -38,7 +38,7 @@ from baza_danych.schema_migrate import (
     migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns, ensure_project_sponsor_column,
     ensure_ideapool_table, ensure_klienci_tables, ensure_project_klient_column, ensure_checklist_table,
     ensure_client_krs_column, ensure_project_golive_column, ensure_notifications_table,
-    ensure_person_photo_column,
+    ensure_person_photo_column, ensure_subcontractor_assignment_actual_end_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -105,6 +105,7 @@ ensure_client_krs_column(DB_PATH)  # jw. - nowa nullable kolumna
 ensure_project_golive_column(DB_PATH)  # jw. - nowa nullable kolumna
 ensure_notifications_table(DB_PATH)  # jw. - nowa tabela, wzmianki @Imie Nazwisko w komentarzach
 ensure_person_photo_column(DB_PATH)  # jw. - nowa nullable kolumna, zdjecie profilowe
+ensure_subcontractor_assignment_actual_end_column(DB_PATH)  # jw. - nowa nullable kolumna, termin rzeczywisty
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy

@@ -257,6 +257,14 @@ def ensure_project_golive_column(db_path):
     _ensure_columns(db_path, "projekty", {"Data_go_live": "TEXT"})
 
 
+def ensure_subcontractor_assignment_actual_end_column(db_path):
+    """Dodaje Data_zakonczenia_rzeczywista do przypisania_podwykonawcow w bazach powstalych
+    przed jej wprowadzeniem - Data_do pelni role terminu planowanego (juz istnieje), ta
+    kolumna to termin rzeczywisty, ustawiany automatycznie przy zmianie Status na "Zakonczony"
+    (mirror deriveTicketCompletionDate() w app.js), do mierzenia opoznienia podwykonawcy."""
+    _ensure_columns(db_path, "przypisania_podwykonawcow", {"Data_zakonczenia_rzeczywista": "TEXT"})
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")
