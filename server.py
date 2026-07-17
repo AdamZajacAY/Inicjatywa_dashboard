@@ -679,8 +679,8 @@ ENUM_FIELDS = {
         # ktora przy tej okazji poprawiona na wlasciwa kategorie (patrz migracja).
         "Branza": {"Elektryczna i teletechniczna", "Sanitarna", "Projekty przylaczy", "Technologia",
                     "Konstrukcyjna", "Drogowa", "Zielen", "Akustyczna", "Architektoniczna",
-                    "Wizualizacje", "Inwentaryzacje", "Uzgodnienia ppoz", "Uzgodnienia hig-sanit",
-                    "Uzgodnienia BHP"},
+                    "Wizualizacje", "Inwentaryzacje", "Geodezyjna", "Geologiczna", "Kosztorysy",
+                    "Uzgodnienia ppoz", "Uzgodnienia hig-sanit", "Uzgodnienia BHP"},
         "Typ_wspolpracy": {"Projektant branzowy", "Wykonawca robot", "Dostawca", "Konsultant"},
         "Ocena": {"Wysoka", "Srednia", "Niska", "Brak oceny"},
         "Status": {"Aktywny", "Nieaktywny", "Zweryfikowany", "Czarna lista"},
