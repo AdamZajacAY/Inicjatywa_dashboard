@@ -2191,6 +2191,23 @@ async function saveProjectFromForm(data, pid) {
   openProjectDetail(saved.ID_Projektu);
 }
 
+async function releaseProject(pid) {
+  const p = STATE.projectById.get(pid);
+  if (!requireExisting(p, "projekt")) return;
+  if (!confirm(`Zwolnić projekt "${p.Nazwa}"? Usunie to Ciebie jako Ownera/Kierownika projektu i Twoje przypisanie do zespołu - projekt wróci do stanu nieprzypisanego, gotowy dla kogoś innego.`)) return;
+  let saved;
+  try {
+    saved = await apiPost(`/api/projekty/${pid}/zwolnij`, {});
+  } catch (e) {
+    alert("Nie udało się zwolnić projektu: " + e.message);
+    return;
+  }
+  Object.assign(p, saved);
+  STATE.assignments = STATE.assignments.filter(a => !(a.ID_Projektu === pid && a.ID_Osoby === STATE.me.personId));
+  closeDetail();
+  renderAll();
+}
+
 async function deleteProject(pid) {
   if (!confirm("Usunąć projekt wraz z powiązanymi przypisaniami, harmonogramem, kamieniami milowymi i ryzykami? Tej operacji nie można cofnąć.")) return;
   if (!await deleteEntity(`/api/projekty/${pid}`, "projekt")) return;
@@ -3375,6 +3392,8 @@ function openProjectDetail(pid) {
         <button class="icon-btn" data-goto-tasks="${esc(pid)}" title="Przejdź do zakładki Zadania, przefiltrowanej do tego projektu">Zadania →</button>
         <button class="icon-btn" data-goto-gantt="${esc(pid)}" title="Przejdź do Harmonogramu, przefiltrowanego do tego projektu">Harmonogram →</button>
         ${can("update", "projekty", p) ? `<button class="icon-btn" data-edit-project="${esc(pid)}">Edytuj</button>` : ""}
+        ${(STATE.me.role === "Architekt_PM" && p.Owner === STATE.me.name) || FULL_ACCESS_ROLES.includes(STATE.me.role)
+          ? `<button class="icon-btn" data-release-project="${esc(pid)}" title="Usuwa Ciebie jako Ownera/Kierownika i zdejmuje Twoje przypisanie - projekt wraca do stanu nieprzypisanego">Zwolnij projekt</button>` : ""}
         ${can("delete", "projekty", p) ? `<button class="icon-btn danger" data-delete-project="${esc(pid)}">Usuń</button>` : ""}
       </div>
     </div>
@@ -3955,6 +3974,8 @@ document.addEventListener("click", (e) => {
   if (teamViewBtn) { teamFilters.view = teamViewBtn.getAttribute("data-team-view"); renderTeam(); return; }
   const editProject = e.target.closest("[data-edit-project]");
   if (editProject) { openProjectForm(editProject.getAttribute("data-edit-project")); return; }
+  const releaseProjectBtn = e.target.closest("[data-release-project]");
+  if (releaseProjectBtn) { releaseProject(releaseProjectBtn.getAttribute("data-release-project")); return; }
   const deleteProjectBtn = e.target.closest("[data-delete-project]");
   if (deleteProjectBtn) { deleteProject(deleteProjectBtn.getAttribute("data-delete-project")); return; }
 

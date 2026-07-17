@@ -1110,7 +1110,17 @@ def collection(table):
     new_row = {**data, pk: pk_val}
     side_effect = TABLE_CREATE_SIDE_EFFECTS.get(table)
     if side_effect:
-        side_effect(conn, new_row, g.user)
+        try:
+            side_effect(conn, new_row, g.user)
+        except Exception as e:
+            # Efekt uboczny (np. auto-przypisanie architekta do wlasnego projektu) nie moze
+            # zawalic calej odpowiedzi - glowny rekord juz jest bezpiecznie zapisany (commit
+            # powyzej). Bez tego rzadka kolizja next_id() (skanuje MAX bez blokady, patrz jego
+            # docstring) przy insercie przypisania psulaby caly request 500-tka, mimo ze projekt
+            # sam w sobie zapisal sie poprawnie - dokladnie to najpewniej przydarzylo sie
+            # "117_ZGN Komorska TEST" (audyt produkcji 2026-07-17: projekt mial poprawny Owner/
+            # Kierownik_projektu, ale brakujace przypisanie - reczna korekta + ten fix).
+            print(f"TABLE_CREATE_SIDE_EFFECTS blad ({table}): {e}")
     return jsonify(redact_row(g.user, table, new_row)), 201
 
 
@@ -1188,6 +1198,31 @@ def item(table, item_id):
     # nadpisanymi zmienionymi polami) - ten sam merge juz raz policzony wyzej do re-checku
     # can_write(); fetch_row() tutaj bylby zbednym SELECT-em na dane juz posiadane w pamieci.
     return jsonify(redact_row(g.user, table, {**existing, **data}))
+
+
+@app.route("/api/projekty/<item_id>/zwolnij", methods=["POST"])
+def release_project(item_id):
+    # "Zwolnienie" wlasnego projektu przez architekta prowadzacego - na wprost zyczenie
+    # uzytkownika (2026-07-17): usuniecie architekta z Ownera/Kierownika NIE jest samym PUT-em
+    # na jedno pole, bo wiaze sie tez z usunieciem jego przypisania (bez tego assigned_project_ids()
+    # dalej pokazywalby projekt jako "jego", pomimo wyczyszczonego Owner/Kierownik_projektu) -
+    # bespoke route zamiast dwoch osobnych wywolan z frontendu, ktore latwo rozjechac.
+    conn = get_db()
+    project = fetch_row(conn, "projekty", "ID_Projektu", item_id)
+    if project is None:
+        abort(404)
+    if g.user["Rola"] not in FULL_ACCESS_ROLES:
+        if g.user["Rola"] != "Architekt_PM" or not g.user.get("ID_Osoby"):
+            abort(403)
+        if item_id not in assigned_project_ids(conn, g.user["ID_Osoby"]):
+            abort(403)  # nie mozna zwolnic projektu, do ktorego sie nie jest przypisanym
+    conn.execute("UPDATE projekty SET Owner = NULL, Kierownik_projektu = NULL WHERE ID_Projektu = ?", (item_id,))
+    if g.user.get("ID_Osoby"):
+        # Usuwa TYLKO WLASNE przypisanie - "zwolnienie" to zejscie z roli prowadzacego, nie
+        # wymazanie calego zespolu projektowego (np. wsparcia/konsultantow tez przypisanych).
+        conn.execute("DELETE FROM przypisania WHERE ID_Projektu = ? AND ID_Osoby = ?", (item_id, g.user["ID_Osoby"]))
+    conn.commit()
+    return jsonify(fetch_row(conn, "projekty", "ID_Projektu", item_id))
 
 
 @app.route("/api/zadania_tickety/<ticket_id>/komentarze", methods=["GET", "POST"])
