@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS zespol (
   Dostepnosc_FTE_procent REAL,
   Stawka_godzinowa REAL,
   Data_dolaczenia TEXT,
-  Aktywny TEXT
+  Aktywny TEXT,
+  Zdjecie_URL TEXT
 );
 
 CREATE TABLE IF NOT EXISTS przypisania (

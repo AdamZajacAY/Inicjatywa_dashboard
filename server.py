@@ -38,6 +38,7 @@ from baza_danych.schema_migrate import (
     migrate_schema, ensure_komentarze_table, ensure_ticket_role_columns, ensure_project_sponsor_column,
     ensure_ideapool_table, ensure_klienci_tables, ensure_project_klient_column, ensure_checklist_table,
     ensure_client_krs_column, ensure_project_golive_column, ensure_notifications_table,
+    ensure_person_photo_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -46,6 +47,12 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # katalog repo jest tam ulotny i znika przy kazdym redeployu (patrz README, sekcja Render).
 DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(ROOT, "baza_danych", "baza_projektow.db"))
 PORT = int(os.environ.get("PORT", 8000))
+# Zdjecia profilowe musza zyc na tym samym trwalym wolumenie co baza (obok DB_PATH, nie pod
+# ROOT/dashboard) - katalog repo na Render jest ulotny i znika przy kazdym redeployu, wiec
+# przeslane pliki w DASHBOARD_DIR zniknelyby przy nastepnym git push (ten sam powod co DB_PATH
+# powyzej).
+AVATARS_DIR = os.path.join(os.path.dirname(DB_PATH), "avatars")
+os.makedirs(AVATARS_DIR, exist_ok=True)
 
 
 def ensure_database_ready():
@@ -97,6 +104,7 @@ ensure_checklist_table(DB_PATH)  # jw. - nowa tabela
 ensure_client_krs_column(DB_PATH)  # jw. - nowa nullable kolumna
 ensure_project_golive_column(DB_PATH)  # jw. - nowa nullable kolumna
 ensure_notifications_table(DB_PATH)  # jw. - nowa tabela, wzmianki @Imie Nazwisko w komentarzach
+ensure_person_photo_column(DB_PATH)  # jw. - nowa nullable kolumna, zdjecie profilowe
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -1120,6 +1128,11 @@ def item(table, item_id):
             error = guard_last_admin(conn, existing, deleting=True)
             if error:
                 return jsonify({"error": error}), 409
+        if table == "zespol":
+            # Usuniecie calej osoby z zespolu tez powinno posprzatac jej plik zdjecia na dysku -
+            # inaczej zostawaloby osierocone (nigdy wiecej nieodwolywane, ale zajmujace miejsce)
+            # przy kazdym usunieciu kogos, kto mial przeslane zdjecie.
+            _remove_existing_avatar_files(item_id)
         try:
             cur = conn.execute(f"DELETE FROM {table} WHERE {pk} = ?", (item_id,))
             conn.commit()
@@ -1320,6 +1333,76 @@ def admin_reset_password(item_id):
     )
     conn.commit()
     return "", 204
+
+
+# rozszerzenie (bez kropki) -> Content-Type do wymuszenia na wyjsciu. Whitelist zamiast
+# zgadywania po naglowku Content-Type wysylanym przez przegladarke (latwy do sfalszowania) -
+# celowo bez SVG (moze zawierac <script>, ryzyko stored XSS przy serwowaniu z tej samej domeny).
+AVATAR_EXTENSIONS = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}
+MAX_AVATAR_BYTES = 3 * 1024 * 1024
+
+
+def _can_manage_avatar(user, person_id):
+    return user["Rola"] in FULL_ACCESS_ROLES or user.get("ID_Osoby") == person_id
+
+
+def _remove_existing_avatar_files(person_id):
+    # Nazwa pliku to zawsze "{ID_Osoby}.{ext}" (nigdy oryginalna nazwa z uploadu - patrz nizej),
+    # ale rozszerzenie moze sie zmienic miedzy uploadami (raz .png, potem .jpg) - bez tego stary
+    # plik zostawalby osierocony na dysku przy kazdej zmianie rozszerzenia.
+    for ext in AVATAR_EXTENSIONS:
+        path = os.path.join(AVATARS_DIR, f"{person_id}.{ext}")
+        if os.path.exists(path):
+            os.remove(path)
+
+
+@app.route("/api/zespol/<item_id>/avatar", methods=["POST", "DELETE"])
+def person_avatar(item_id):
+    conn = get_db()
+    person = fetch_row(conn, "zespol", "ID_Osoby", item_id)
+    if person is None:
+        abort(404)
+    if not _can_manage_avatar(g.user, item_id):
+        abort(403)
+
+    if request.method == "DELETE":
+        _remove_existing_avatar_files(item_id)
+        conn.execute("UPDATE zespol SET Zdjecie_URL = NULL WHERE ID_Osoby = ?", (item_id,))
+        conn.commit()
+        return "", 204
+
+    file = request.files.get("photo")
+    if not file or not file.filename:
+        return jsonify({"error": "Brak pliku zdjęcia."}), 400
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in AVATAR_EXTENSIONS:
+        return jsonify({"error": "Dozwolone formaty: JPG, PNG, WEBP, GIF."}), 400
+    content = file.read()
+    if len(content) > MAX_AVATAR_BYTES:
+        return jsonify({"error": "Zdjęcie jest za duże (limit 3 MB)."}), 400
+    if not content:
+        return jsonify({"error": "Plik jest pusty."}), 400
+
+    _remove_existing_avatar_files(item_id)
+    # Nazwa pliku pochodzi WYLACZNIE z item_id (juz zwalidowanego jako istniejacy ID_Osoby) i
+    # bialej listy rozszerzen - nigdy z oryginalnej nazwy pliku od uzytkownika, wiec path
+    # traversal przez nazwe pliku nie wchodzi w gre.
+    filename = f"{item_id}.{ext}"
+    with open(os.path.join(AVATARS_DIR, filename), "wb") as f:
+        f.write(content)
+    url = f"/api/avatars/{filename}"
+    conn.execute("UPDATE zespol SET Zdjecie_URL = ? WHERE ID_Osoby = ?", (url, item_id))
+    conn.commit()
+    return jsonify({"Zdjecie_URL": url}), 201
+
+
+@app.route("/api/avatars/<path:filename>")
+def serve_avatar(filename):
+    # send_from_directory resolvuje sciezke wzgledem AVATARS_DIR i odrzuca prby wyjscia poza
+    # niego (np. "../"), ten sam mechanizm co _serve()/DASHBOARD_DIR nizej.
+    resp = send_from_directory(AVATARS_DIR, filename)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
 
 
 @app.route("/api/health")

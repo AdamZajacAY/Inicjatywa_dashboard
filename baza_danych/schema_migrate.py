@@ -243,6 +243,13 @@ def ensure_client_krs_column(db_path):
     _ensure_columns(db_path, "klienci", {"KRS": "TEXT"})
 
 
+def ensure_person_photo_column(db_path):
+    """Dodaje Zdjecie_URL do zespol w bazach powstalych przed jej wprowadzeniem - sciezka do
+    przeslanego zdjecia profilowego (patrz /api/zespol/<id>/avatar w server.py), nullable -
+    brak zdjecia to wciaz poprawny, obslugiwany stan (fallback na inicjaly)."""
+    _ensure_columns(db_path, "zespol", {"Zdjecie_URL": "TEXT"})
+
+
 def ensure_project_golive_column(db_path):
     """Dodaje Data_go_live do projekty w bazach powstalych przed jej wprowadzeniem - data
     wdrozenia, domyslnie sugerowana w UI jako Data_zakonczenia_planowana, ale edytowalna

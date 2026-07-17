@@ -303,10 +303,22 @@ function personColorSlot(name) {
   for (const ch of (name || "")) h = (h * 31 + ch.charCodeAt(0)) % 8;
   return `cat-${h + 1}`;
 }
+function avatarCircleHtml(name) {
+  // Wspolny "wnetrze kolka" dla ownera/czlonka zespolu - prawdziwe zdjecie (Zdjecie_URL w
+  // zespol), jesli osoba o tym Imie_i_nazwisko je ma, inaczej fallback na kolorowe inicjaly
+  // (ta sama paleta co dotad - personColorSlot()). Owner na projektach to wolny tekst (nazwa),
+  // nie FK, wiec dopasowanie po nazwisku - to samo ograniczenie co assigned_project_ids() w
+  // server.py (patrz komentarz tam), tu bez wiekszych konsekwencji (czysto wizualne).
+  const person = STATE.team.find(t => t.Imie_i_nazwisko === name);
+  const slot = personColorSlot(name);
+  if (person?.Zdjecie_URL) {
+    return `<span class="avatar-circle has-photo"><img src="${esc(person.Zdjecie_URL)}" alt="${esc(name)}"></span>`;
+  }
+  return `<span class="avatar-circle" style="background:var(--${slot})">${esc(initials(name))}</span>`;
+}
 function ownerTagHtml(name) {
   if (!name) return "—";
-  const slot = personColorSlot(name);
-  return `<span class="owner-tag"><span class="avatar-circle" style="background:var(--${slot})">${esc(initials(name))}</span>${esc(name)}</span>`;
+  return `<span class="owner-tag">${avatarCircleHtml(name)}${esc(name)}</span>`;
 }
 
 /* ---------------------------------------------------------------- backend API (Flask + SQLite) */
@@ -2156,10 +2168,67 @@ async function deleteProject(pid) {
 }
 
 /* ---------- Formularz: Osoba w zespole ---------- */
+function canManageAvatar(personId) {
+  // Mirror _can_manage_avatar() w server.py - wlasne zdjecie kazdy, cudze tylko COO/Admin.
+  // Celowo INNA regula niz can("update", "zespol") (create-only dla Architekt_PM od tej sesji) -
+  // przeslanie WLASNEGO zdjecia to nie edycja cudzych danych HR, ktorej ta restrykcja dotyczy.
+  return FULL_ACCESS_ROLES.includes(STATE.me.role) || STATE.me.personId === personId;
+}
+function avatarRowHtml(t, oid) {
+  const circle = t.Zdjecie_URL
+    ? `<span class="avatar-circle large has-photo"><img src="${esc(t.Zdjecie_URL)}" alt=""></span>`
+    : `<span class="avatar-circle large" style="background:var(--${personColorSlot(t.Imie_i_nazwisko)})">${esc(initials(t.Imie_i_nazwisko))}</span>`;
+  return `<div class="avatar-upload-row" data-avatar-row="${esc(oid)}">
+    ${circle}
+    <div class="avatar-upload-actions">
+      <label class="avatar-upload-btn">Wybierz zdjęcie<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" data-avatar-file="${esc(oid)}" hidden></label>
+      ${t.Zdjecie_URL ? `<button type="button" class="icon-btn danger" data-avatar-remove="${esc(oid)}">Usuń zdjęcie</button>` : ""}
+    </div>
+  </div>`;
+}
+function avatarSectionHtml(t, oid) {
+  if (!oid || !canManageAvatar(oid)) return "";
+  return `<div class="form-section-title">Zdjęcie profilowe</div>${avatarRowHtml(t, oid)}`;
+}
+function refreshAvatarRow(personId) {
+  const row = document.querySelector(`[data-avatar-row="${personId}"]`);
+  const person = STATE.teamById.get(personId);
+  if (row && person) row.outerHTML = avatarRowHtml(person, personId);
+}
+async function uploadAvatar(personId, file) {
+  const formData = new FormData();
+  formData.append("photo", file);
+  const resp = await fetch(`/api/zespol/${personId}/avatar`, { method: "POST", headers: { "X-Requested-With": "fetch" }, body: formData });
+  if (!resp.ok) {
+    let message = "Nie udało się przesłać zdjęcia.";
+    try { const err = await resp.json(); if (err.error) message = err.error; } catch (e) { /* brak JSON w odpowiedzi bledu */ }
+    alert(message);
+    return;
+  }
+  const { Zdjecie_URL } = await resp.json();
+  const person = STATE.teamById.get(personId);
+  if (person) person.Zdjecie_URL = Zdjecie_URL;
+  refreshAvatarRow(personId);
+  renderAll();
+}
+async function removeAvatar(personId) {
+  try {
+    await apiDelete(`/api/zespol/${personId}/avatar`);
+  } catch (e) {
+    alert("Nie udało się usunąć zdjęcia: " + e.message);
+    return;
+  }
+  const person = STATE.teamById.get(personId);
+  if (person) person.Zdjecie_URL = null;
+  refreshAvatarRow(personId);
+  renderAll();
+}
+
 function openTeamForm(oid = null) {
   const t = oid ? STATE.teamById.get(oid) : {};
   if (!requireExisting(t, "osoba")) return;
   const body = `
+    ${avatarSectionHtml(t, oid)}
     ${fInput("Imię i nazwisko *", "Imie_i_nazwisko", t.Imie_i_nazwisko, "text", "required")}
     ${fInput("Stanowisko / rola", "Stanowisko_Rola", t.Stanowisko_Rola)}
     ${fSelect("Dział", "Dzial", pairs(DZIALY), t.Dzial)}
@@ -3763,11 +3832,20 @@ document.addEventListener("change", (e) => {
   // kazdym razem (ten sam powod co dla focusout/date-input powyzej).
   const checklistCheckbox = e.target.closest && e.target.closest("[data-toggle-checklist]");
   if (checklistCheckbox) { toggleChecklistItem(checklistCheckbox.getAttribute("data-toggle-checklist"), checklistCheckbox.getAttribute("data-project")); return; }
+  const avatarFile = e.target.closest && e.target.closest("[data-avatar-file]");
+  if (avatarFile) {
+    const file = avatarFile.files[0];
+    if (file) uploadAvatar(avatarFile.getAttribute("data-avatar-file"), file);
+    avatarFile.value = "";
+    return;
+  }
 });
 
 document.addEventListener("click", (e) => {
   const printView = e.target.closest("[data-print-view]");
   if (printView) { window.print(); return; }
+  const avatarRemove = e.target.closest("[data-avatar-remove]");
+  if (avatarRemove) { removeAvatar(avatarRemove.getAttribute("data-avatar-remove")); return; }
   const dateTrigger = e.target.closest(".date-input");
   if (dateTrigger) { openDatePicker(dateTrigger); return; }
   const tagRemoveBtn = e.target.closest(".tag-chip-remove");
