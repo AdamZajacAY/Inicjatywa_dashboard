@@ -40,7 +40,8 @@ from baza_danych.schema_migrate import (
     ensure_client_krs_column, ensure_project_golive_column, ensure_notifications_table,
     ensure_person_photo_column, ensure_subcontractor_assignment_actual_end_column,
     ensure_harmonogram_subproject_columns, ensure_zadania_etapy_table,
-    ensure_default_subproject_for_legacy_projects,
+    ensure_default_subproject_for_legacy_projects, ensure_project_identification_columns,
+    ensure_project_location_columns, ensure_dzialki_table,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -111,6 +112,9 @@ ensure_subcontractor_assignment_actual_end_column(DB_PATH)  # jw. - nowa nullabl
 ensure_harmonogram_subproject_columns(DB_PATH)  # jw. - Typ_etapu + RAG_Status, harmonogram->sub-projekt (Faza 1)
 ensure_zadania_etapy_table(DB_PATH)  # jw. - nowa tabela n:n zadania_tickety<->harmonogram (Faza 1)
 ensure_default_subproject_for_legacy_projects(DB_PATH)  # jw. - musi biec PO dwoch powyzszych (potrzebuje kolumn/tabeli)
+ensure_project_identification_columns(DB_PATH)  # jw. - Sygnatura/Symbol_projektu/Nazwa_zamierzenia_budowlanego (Faza 2)
+ensure_project_location_columns(DB_PATH)  # jw. - Kraj/Wojewodztwo/Powiat/Gmina/Miejscowosc/Ulica/Kod_pocztowy (Faza 2)
+ensure_dzialki_table(DB_PATH)  # jw. - nowa tabela dzialek ewidencyjnych (Faza 2)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -200,6 +204,7 @@ TABLES = {
     "klienci": ("ID_Klienta", "KLI", 3),
     "kontakty_klienta": ("ID_Kontaktu", "KKL", 3),
     "checklisty_projektow": ("ID_Pozycji", "CHK", 4),
+    "dzialki": ("ID_Dzialki", "DZI", 3),
 }
 
 # tabela SQL -> klucz w odpowiedzi /api/bootstrap (nazwy pol STATE.* w dashboard/app.js)
@@ -215,7 +220,7 @@ BOOTSTRAP_KEYS = {
     "ryzyka_i_problemy": "risks", "raporty_statusowe": "statusReports",
     "podwykonawcy": "subcontractors", "przypisania_podwykonawcow": "subcontractorAssignments",
     "ideapool": "ideapool", "klienci": "clients", "kontakty_klienta": "clientContacts",
-    "checklisty_projektow": "checklists", "zadania_etapy": "taskStages",
+    "checklisty_projektow": "checklists", "zadania_etapy": "taskStages", "dzialki": "parcels",
 }
 
 
@@ -351,12 +356,19 @@ VALID_ROLES = {None, "Architekt_PM", "COO", "Admin"} | SPECJALISTA_ROLES
 # Role, ktorych odczyt jest zawezony do wlasnych projektow (patrz scoped_rows()) - jedna
 # definicja zamiast wielu niezaleznych porownan do literalu "Specjalista" (audyt: latwo
 # dopisac druga zawezona role w jednym miejscu i przeoczyc drugie).
-PORTFOLIO_RESTRICTED_ROLES = SPECJALISTA_ROLES
-# Role pozbawione pol finansowych (patrz redact_row()) - SZERSZY zbior niz powyzej: Architekt_PM
-# ma i zachowuje odczyt portfolio-wide (widzi wszystkie projekty - swiadoma, wczesniejsza
-# decyzja), ale nie powinien widziec kwot/marzowosci, tylko COO/Admin. Dwa osobne zbiory,
-# bo to dwa rozne wymiary ograniczenia (ktore WIERSZE vs. ktore POLA) - PORTFOLIO_RESTRICTED_ROLES
-# i FINANCIAL_RESTRICTED_ROLES nie musza pokrywac tych samych rol.
+# Architekt_PM DOLACZONY tutaj w Faza 2 (A15, warsztat 22.07.2026) - odwraca wczesniejsza,
+# udokumentowana decyzje ("Architekt_PM ma portfolio-wide odczyt") na wprost zyczenie zespolu:
+# "architekci prowadzacy... brak dostepu do... opoznien - rowniez dla innych projektow".
+# SPECJALISTA_ROLES samo w sobie NIE jest zmieniane (dalej rzadzi wezszą galezia can_write()
+# i FINANCIAL_RESTRICTED_ROLES) - to jest TYLKO trzeci, niezalezny wymiar (ktore WIERSZE widac),
+# rozszerzony o Architekt_PM bez dotykania jego szerszych uprawnien zapisu do WLASNYCH projektow
+# (can_write() dla Architekt_PM i tak juz filtruje po assigned_project_ids(), bez zmian tutaj).
+PORTFOLIO_RESTRICTED_ROLES = SPECJALISTA_ROLES | {"Architekt_PM"}
+# Role pozbawione pol finansowych (patrz redact_row()) - Architekt_PM byl tu jeszcze PRZED
+# powyzszym rozszerzeniem PORTFOLIO_RESTRICTED_ROLES (Faza 0) - teraz oba zbiory pokrywaja
+# sie dla Architekt_PM, ale to nadal dwa rozne wymiary ograniczenia (ktore WIERSZE vs. ktore
+# POLA), utrzymywane osobno, bo w przyszlosci mogłyby znow sie rozjechac (np. gdyby ktos inny
+# kiedys dostal zawezenie tylko jednego z dwoch wymiarow).
 FINANCIAL_RESTRICTED_ROLES = SPECJALISTA_ROLES | {"Architekt_PM"}
 
 # "global" = ta sama tabela dla wszystkich (np. rejestr zespolu), "root_project" = sama
@@ -378,6 +390,7 @@ TABLE_SCOPE = {
     "klienci": "global",
     "kontakty_klienta": "global",
     "checklisty_projektow": "project_scoped",
+    "dzialki": "project_scoped",
 }
 
 # Pola zerowane w odpowiedzi GET wylacznie dla roli Specjalista (nigdy nie usuwane - fmtMoney()/
@@ -1447,11 +1460,52 @@ def release_project(item_id):
     return jsonify(prepare_row_for_response(conn, g.user, "projekty", fetch_row(conn, "projekty", "ID_Projektu", item_id)))
 
 
+@app.route("/api/projekty/<item_id>/przypisz", methods=["POST"])
+def assign_project(item_id):
+    # "Przypisz projekt" (Faza 2, A16, warsztat 22.07.2026) - odwrotnosc release_project()
+    # powyzej: przy odejsciu prowadzacego, COO/Admin przepisuje projekt na nowa osobe. Bespoke
+    # route z tego samego powodu co release_project - ustawienie Owner/Kierownik_projektu
+    # (wolny tekst) NIE wystarcza do faktycznego zarzadzania, bo can_write() dla Architekt_PM
+    # sprawdza przypisania (assigned_project_ids()), nie te pola - dwie powiazane zmiany w
+    # jednym atomowym wywolaniu zamiast dwoch osobnych z frontendu, ktore latwo rozjechac.
+    # Celowo NIE usuwa przypisania POPRZEDNIEGO prowadzacego (moze zostac np. jako wsparcie) -
+    # to osobna, reczna decyzja COO/Admin przez istniejacy "Zespol projektu" na karcie.
+    if g.user["Rola"] not in FULL_ACCESS_ROLES:
+        abort(403)
+    conn = get_db()
+    project = fetch_row(conn, "projekty", "ID_Projektu", item_id)
+    if project is None:
+        abort(404)
+    payload = request.get_json(force=True, silent=True) or {}
+    person_id = payload.get("ID_Osoby")
+    if not person_id:
+        return jsonify({"error": "Wskaż osobę, do której przypisujesz projekt."}), 400
+    person = fetch_row(conn, "zespol", "ID_Osoby", person_id)
+    if person is None:
+        return jsonify({"error": "Nie znaleziono takiej osoby w zespole."}), 404
+    conn.execute(
+        "UPDATE projekty SET Owner = ?, Kierownik_projektu = ? WHERE ID_Projektu = ?",
+        (person["Imie_i_nazwisko"], person["Imie_i_nazwisko"], item_id),
+    )
+    already_assigned = conn.execute(
+        "SELECT 1 FROM przypisania WHERE ID_Projektu = ? AND ID_Osoby = ?", (item_id, person_id)
+    ).fetchone()
+    if not already_assigned:
+        aid = next_id(conn, "przypisania", "ID_Przypisania", "ASG", 3)
+        conn.execute(
+            "INSERT INTO przypisania (ID_Przypisania, ID_Projektu, ID_Osoby, Rola_w_projekcie, Status) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (aid, item_id, person_id, "Kierownik projektu", "Aktywny"),
+        )
+    conn.commit()
+    return jsonify(prepare_row_for_response(conn, g.user, "projekty", fetch_row(conn, "projekty", "ID_Projektu", item_id)))
+
+
 # Tabele z FK ID_Projektu, ktore trzeba przepiac przy laczeniu projektow (patrz merge_projects
 # nizej) - jedna lista, zamiast zgadywac przy kazdej nowej project_scoped/root_project tabeli.
 MERGE_CHILD_TABLES = ["harmonogram", "zadania_tickety", "przypisania", "kamienie_milowe",
                        "ryzyka_i_problemy", "raporty_statusowe", "przypisania_podwykonawcow",
-                       "checklisty_projektow"]
+                       "checklisty_projektow", "dzialki"]
 
 
 @app.route("/api/projekty/<master_id>/polacz", methods=["POST"])

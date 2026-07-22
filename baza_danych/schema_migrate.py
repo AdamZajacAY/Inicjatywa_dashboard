@@ -348,6 +348,41 @@ def ensure_default_subproject_for_legacy_projects(db_path):
         conn.close()
 
 
+def ensure_project_identification_columns(db_path):
+    """Dodaje Sygnatura/Symbol_projektu/Nazwa_zamierzenia_budowlanego do projekty w bazach
+    powstalych przed ich wprowadzeniem (Faza 2, A4/A5/A6, warsztat 22.07.2026) - wszystkie
+    trzy nullable, wypelniane recznie (bez automatycznej ekstrakcji z Nazwa - sprawdzone na
+    produkcji, ze rzeczywiste nazwy projektow nie maja spojnego, parsowalnego wzorca)."""
+    _ensure_columns(db_path, "projekty", {
+        "Sygnatura": "TEXT", "Symbol_projektu": "TEXT", "Nazwa_zamierzenia_budowlanego": "TEXT",
+    })
+
+
+def ensure_project_location_columns(db_path):
+    """Dodaje strukturalne pola lokalizacji urzedowej do projekty w bazach powstalych przed
+    ich wprowadzeniem (Faza 2, A7, warsztat 22.07.2026) - osobne od istniejacych Lokalizacja_
+    Adres/Miasto (adres roboczy, nietkniety)."""
+    _ensure_columns(db_path, "projekty", {
+        "Kraj": "TEXT", "Wojewodztwo": "TEXT", "Powiat": "TEXT", "Gmina": "TEXT",
+        "Miejscowosc": "TEXT", "Ulica": "TEXT", "Kod_pocztowy": "TEXT",
+    })
+
+
+def ensure_dzialki_table(db_path):
+    """Dodaje tabele dzialki (dzialki ewidencyjne projektu, 1-10 na projekt) do baz powstalych
+    przed jej wprowadzeniem (Faza 2, A7)."""
+    _ensure_table(db_path, "dzialki")
+    conn = sqlite3.connect(db_path)
+    try:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            schema_sql = f.read()
+        for stmt in re.findall(r"CREATE INDEX IF NOT EXISTS idx_dzialki_.*?;", schema_sql):
+            conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")

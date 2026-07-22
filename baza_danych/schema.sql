@@ -14,6 +14,14 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS projekty (
   ID_Projektu TEXT PRIMARY KEY NOT NULL,
   Nazwa TEXT,
+  -- Sygnatura/Symbol_projektu/Nazwa_zamierzenia_budowlanego (Faza 2, A4/A5/A6, warsztat
+  -- 22.07.2026) - osobne od ID_Projektu (wewnetrzny PK, PRJ###) i od Nazwa (opisowa, robocza).
+  -- Sygnatura = czlon cyfrowy numeru projektu, Symbol_projektu = krotki kod (np. "ZGN"),
+  -- Nazwa_zamierzenia_budowlanego = oficjalny, niezmienny tytul z PFU/inwestora (stron
+  -- tytulowych/dokumentacji) - CELOWO bez limitu dlugosci (A6, bywaja bardzo dlugie).
+  Sygnatura TEXT,
+  Symbol_projektu TEXT,
+  Nazwa_zamierzenia_budowlanego TEXT,
   Typ_projektu TEXT,
   Funkcja_biura TEXT,
   Segment TEXT,
@@ -39,6 +47,16 @@ CREATE TABLE IF NOT EXISTS projekty (
   Stawka_godzinowa_srednia REAL,
   Lokalizacja_Adres TEXT,
   Miasto TEXT,
+  -- Lokalizacja urzedowa (Faza 2, A7) - OSOBNA od Lokalizacja_Adres/Miasto powyzej (te zostaja
+  -- nietkniete, adres "roboczy") i od adresu inwestora - pola potrzebne do wnioskow/pism
+  -- urzedowych (np. PB), nie do korespondencji.
+  Kraj TEXT,
+  Wojewodztwo TEXT,
+  Powiat TEXT,
+  Gmina TEXT,
+  Miejscowosc TEXT,
+  Ulica TEXT,
+  Kod_pocztowy TEXT,
   Powierzchnia_m2 REAL,
   Liczba_jednostek INTEGER,
   Inwestor_Klient TEXT,
@@ -245,6 +263,17 @@ CREATE TABLE IF NOT EXISTS kamienie_milowe (
   Status TEXT,
   ID_Osoby_odpowiedzialnej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL
 );
+
+-- dzialki: lista dzialek ewidencyjnych projektu (Faza 2, A7) - osobna tabela (nie kolumny na
+-- projekty), bo jeden projekt moze miec 1-10 dzialek naraz.
+CREATE TABLE IF NOT EXISTS dzialki (
+  ID_Dzialki TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  Numer_dzialki TEXT,
+  Obreb TEXT,
+  Identyfikator_dzialki TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dzialki_projekt ON dzialki(ID_Projektu);
 
 CREATE TABLE IF NOT EXISTS ryzyka_i_problemy (
   ID TEXT PRIMARY KEY NOT NULL,

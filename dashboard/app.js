@@ -6,7 +6,7 @@
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
-  clients: [], clientContacts: [], checklists: [], notifications: [], taskStages: [],
+  clients: [], clientContacts: [], checklists: [], notifications: [], taskStages: [], parcels: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(), clientById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -26,10 +26,16 @@ const FULL_ACCESS_ROLES = ["COO", "Admin"];
 // "Pracownik biurowy" ma dokladnie te same uprawnienia co "Architekt" (Specjalista) - mirror
 // SPECJALISTA_ROLES w server.py, patrz komentarz tam.
 const SPECJALISTA_ROLES = ["Specjalista", "Pracownik_biurowy"];
-// Szerszy zbior niz SPECJALISTA_ROLES - Architekt_PM zachowuje portfolio-wide odczyt (nie jest
-// zawezony do wlasnych projektow), ale rowniez ma pola finansowe zredagowane na odczycie -
-// mirror FINANCIAL_RESTRICTED_ROLES w server.py (SPECJALISTA_ROLES | {"Architekt_PM"}).
+// Architekt_PM ma rowniez pola finansowe zredagowane na odczycie - mirror
+// FINANCIAL_RESTRICTED_ROLES w server.py (SPECJALISTA_ROLES | {"Architekt_PM"}).
 const FINANCIAL_RESTRICTED_ROLES = [...SPECJALISTA_ROLES, "Architekt_PM"];
+// Faza 2 (A15): Architekt_PM dolaczony tutaj rowniez - odwraca wczesniejsza decyzje
+// "portfolio-wide odczyt dla Architekt_PM", na wprost zyczenie zespolu (opoznienia/ryzyka
+// innych projektow tez maja byc niewidoczne, nie tylko finanse). Mirror PORTFOLIO_RESTRICTED_
+// ROLES w server.py - uzywane tu WYLACZNIE do etykiet/podpowiedzi UI ("Twoje projekty" itp.),
+// bo faktyczne ograniczenie WIERSZY dzieje sie serwerowo (scoped_rows()) - STATE.projects/tasks
+// itd. juz przychodzi zawezone z /api/bootstrap, bez potrzeby dodatkowego filtrowania w JS.
+const PORTFOLIO_RESTRICTED_ROLES = [...SPECJALISTA_ROLES, "Architekt_PM"];
 
 function can(action, table, row) {
   const role = STATE.me.role;
@@ -455,7 +461,7 @@ function showDashboard() {
 }
 
 function updateFileInfo() {
-  const label = SPECJALISTA_ROLES.includes(STATE.me.role) ? "Twoich projektów" : "projektów";
+  const label = PORTFOLIO_RESTRICTED_ROLES.includes(STATE.me.role) ? "Twoich projektów" : "projektów";
   $("#fileInfo").innerHTML = `🔗 Połączono z serwerem · ${STATE.projects.length} ${label}`;
 }
 
@@ -476,6 +482,7 @@ async function loadFromApi() {
   STATE.clients = data.clients || []; STATE.clientContacts = data.clientContacts || [];
   STATE.checklists = data.checklists || [];
   STATE.taskStages = data.taskStages || [];
+  STATE.parcels = data.parcels || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
     assignedProjectIds: data.me.assignedProjectIds || [],
@@ -629,7 +636,7 @@ function showPendingScreen(me) {
 
 /* ---------------------------------------------------------------- eksport do Excela (recznie, migawka) */
 const EXPORT_HEADERS = {
-  Projekty: ["ID_Projektu", "Nazwa", "Typ_projektu", "Funkcja_biura", "Segment", "Owner", "Kierownik_projektu", "ID_Osoby_sponsora", "Status", "Faza",
+  Projekty: ["ID_Projektu", "Nazwa", "Sygnatura", "Symbol_projektu", "Nazwa_zamierzenia_budowlanego", "Typ_projektu", "Funkcja_biura", "Segment", "Owner", "Kierownik_projektu", "ID_Osoby_sponsora", "Status", "Faza",
     "Priorytet", "RAG_Status", "Tagi", "Data_rozpoczecia", "Data_zakonczenia_planowana", "Data_zakonczenia_rzeczywista",
     "Procent_postepu", "Budzet_calkowity", "Budzet_wydany", "Waluta", "Przychod_planowany", "Przychod_rzeczywisty",
     "Szacowane_roboczogodziny", "Stawka_godzinowa_srednia", "Lokalizacja_Adres", "Miasto", "Powierzchnia_m2",
@@ -684,6 +691,20 @@ function assignmentsForPerson(oid) { return STATE.assignments.filter(a => a.ID_O
 function tasksForProject(pid) { return STATE.tasks.filter(t => t.ID_Projektu === pid); }
 function milestonesForProject(pid) { return STATE.milestones.filter(m => m.ID_Projektu === pid); }
 function checklistForProject(pid) { return STATE.checklists.filter(c => c.ID_Projektu === pid); }
+function parcelsForProject(pid) { return STATE.parcels.filter(d => d.ID_Projektu === pid); }
+// Faza 2 (A7): sklada pojedyncze pola lokalizacji urzedowej w jeden czytelny wiersz do wyswietlenia
+// (formularz trzyma je jako osobne pola, ale w widoku detali jeden wiersz jest czytelniejszy).
+function formatLokalizacjaUrzedowa(p) {
+  const parts = [
+    p.Ulica,
+    [p.Kod_pocztowy, p.Miejscowosc].filter(Boolean).join(" "),
+    p.Gmina ? `gm. ${p.Gmina}` : "",
+    p.Powiat ? `pow. ${p.Powiat}` : "",
+    p.Wojewodztwo ? `woj. ${p.Wojewodztwo}` : "",
+    p.Kraj,
+  ].filter(Boolean);
+  return parts.join(", ");
+}
 function risksForProject(pid) { return STATE.risks.filter(r => r.ID_Projektu === pid); }
 function reportsForProject(pid) {
   return STATE.statusReports.filter(r => r.ID_Projektu === pid)
@@ -917,11 +938,11 @@ function renderOverview() {
   const portfolioMargin = portfolioRevenue - budSpent;
 
   const html = `
-    ${SPECJALISTA_ROLES.includes(STATE.me.role) ? `<div class="panel" style="margin-bottom:16px;padding:10px 16px"><div class="kpi-sub">${total === 0
-        ? "Nie masz jeszcze przypisanych projektów — poniższy widok będzie pusty, dopóki COO/Admin/Architekt Prowadzący nie przypisze Cię do projektu (przez „Zespół projektu” na karcie projektu)."
+    ${PORTFOLIO_RESTRICTED_ROLES.includes(STATE.me.role) ? `<div class="panel" style="margin-bottom:16px;padding:10px 16px"><div class="kpi-sub">${total === 0
+        ? "Nie masz jeszcze przypisanych projektów — poniższy widok będzie pusty, dopóki COO/Admin nie przypisze Cię do projektu (przez „Zespół projektu” na karcie projektu) albo sam/a nie założysz nowego."
         : "Widoczne wyłącznie projekty, do których jesteś przypisany/a — poniższe liczby (i cały ten widok) dotyczą tylko ich, nie całej firmy."}</div></div>` : ""}
     <div class="kpi-grid">
-      <div class="kpi-tile"><div class="kpi-label">${SPECJALISTA_ROLES.includes(STATE.me.role) ? "Twoje projekty" : "Projekty ogółem"}</div><div class="kpi-value">${total}</div></div>
+      <div class="kpi-tile"><div class="kpi-label">${PORTFOLIO_RESTRICTED_ROLES.includes(STATE.me.role) ? "Twoje projekty" : "Projekty ogółem"}</div><div class="kpi-value">${total}</div></div>
       <div class="kpi-tile"><div class="kpi-label">W realizacji</div><div class="kpi-value">${byStatus("W realizacji")}</div></div>
       <div class="kpi-tile accent-critical"><div class="kpi-label">Wstrzymane</div><div class="kpi-value">${byStatus("Wstrzymany")}</div></div>
       <div class="kpi-tile accent-good"><div class="kpi-label">Zakończone</div><div class="kpi-value">${byStatus("Zakonczony")}</div></div>
@@ -1348,7 +1369,7 @@ function renderTeam() {
         ${can("create", "zespol") ? `<button data-add-team="1">+ Dodaj osobę</button>` : ""}
       </div>
     </div>
-    ${SPECJALISTA_ROLES.includes(STATE.me.role) ? `<div class="empty-hint" style="margin-bottom:12px">Obciążenie i lista projektów uwzględniają tylko projekty, do których i Ty jesteś przypisany/a — mogą nie odzwierciedlać pełnego obciążenia danej osoby.</div>` : ""}
+    ${PORTFOLIO_RESTRICTED_ROLES.includes(STATE.me.role) ? `<div class="empty-hint" style="margin-bottom:12px">Obciążenie i lista projektów uwzględniają tylko projekty, do których i Ty jesteś przypisany/a — mogą nie odzwierciedlać pełnego obciążenia danej osoby.</div>` : ""}
     ${body}
   `;
 }
@@ -1386,7 +1407,7 @@ function renderSubcontractors() {
       <select id="fSubStatus"><option value="">Wszystkie statusy</option>${STATUSY_PODWYKONAWCOW.map(s => `<option ${subFilters.status === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
       <span class="count">${list.length} / ${STATE.subcontractors.length} podwykonawców</span>
     </div>
-    ${SPECJALISTA_ROLES.includes(STATE.me.role) ? `<div class="empty-hint" style="margin-bottom:12px">Liczba aktywnych/planowanych projektów uwzględnia tylko projekty, do których i Ty jesteś przypisany/a.</div>` : ""}
+    ${PORTFOLIO_RESTRICTED_ROLES.includes(STATE.me.role) ? `<div class="empty-hint" style="margin-bottom:12px">Liczba aktywnych/planowanych projektów uwzględnia tylko projekty, do których i Ty jesteś przypisany/a.</div>` : ""}
     <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak podwykonawców w bibliotece — kliknij „+ Dodaj podwykonawcę”.</div>`}</div>
   `;
   $("#fSubBranza").addEventListener("change", e => { subFilters.branza = e.target.value; renderSubcontractors(); });
@@ -2151,6 +2172,9 @@ function openProjectForm(pid = null) {
   const body = `
     <div class="form-section-title">Dane podstawowe</div>
     ${fInput("Nazwa projektu *", "Nazwa", p.Nazwa, "text", "required")}
+    ${fInput("Sygnatura (numer)", "Sygnatura", p.Sygnatura)}
+    ${fInput("Symbol projektu", "Symbol_projektu", p.Symbol_projektu)}
+    ${fTextarea("Nazwa zamierzenia budowlanego (oficjalny tytuł z PFU)", "Nazwa_zamierzenia_budowlanego", p.Nazwa_zamierzenia_budowlanego)}
     ${fSelect("Funkcja biura", "Funkcja_biura", pairs(FUNKCJE_BIURA), p.Funkcja_biura)}
     ${fSelect("Segment", "Segment", pairs(SEGMENTS), p.Segment)}
     ${fSelect("Owner *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
@@ -2185,6 +2209,15 @@ function openProjectForm(pid = null) {
     ${fInput("Inwestor / Klient (opis, jeśli brak w rejestrze)", "Inwestor_Klient", p.Inwestor_Klient)}
     ${fSelect("Klient (z rejestru)", "ID_Klienta", clientOptionsPairs(), p.ID_Klienta)}
 
+    <div class="form-section-title">Lokalizacja urzędowa (do wniosków/pism)</div>
+    ${fInput("Kraj", "Kraj", p.Kraj)}
+    ${fInput("Województwo", "Wojewodztwo", p.Wojewodztwo)}
+    ${fInput("Powiat", "Powiat", p.Powiat)}
+    ${fInput("Gmina", "Gmina", p.Gmina)}
+    ${fInput("Miejscowość", "Miejscowosc", p.Miejscowosc)}
+    ${fInput("Ulica", "Ulica", p.Ulica)}
+    ${fInput("Kod pocztowy", "Kod_pocztowy", p.Kod_pocztowy)}
+
     <div class="form-section-title">Zakres projektu (karta projektowa)</div>
     ${fTextarea("Opis / zakres", "Opis", p.Opis)}
     ${fTextarea("Komentarz PMO", "Komentarz", p.Komentarz)}
@@ -2218,6 +2251,8 @@ async function saveProjectFromForm(data, pid) {
   if (!requireExisting(existing, "projekt")) return;
   const fields = {
     Nazwa: data.Nazwa, Funkcja_biura: data.Funkcja_biura, Segment: data.Segment,
+    Sygnatura: data.Sygnatura, Symbol_projektu: data.Symbol_projektu,
+    Nazwa_zamierzenia_budowlanego: data.Nazwa_zamierzenia_budowlanego,
     Owner: data.Owner, Kierownik_projektu: data.Kierownik_projektu, ID_Osoby_sponsora: data.ID_Osoby_sponsora,
     Priorytet: data.Priorytet,
     Tagi: data.Tagi,
@@ -2238,6 +2273,8 @@ async function saveProjectFromForm(data, pid) {
     Szacowane_roboczogodziny: num(data.Szacowane_roboczogodziny),
     Stawka_godzinowa_srednia: num(data.Stawka_godzinowa_srednia),
     Lokalizacja_Adres: data.Lokalizacja_Adres, Miasto: data.Miasto,
+    Kraj: data.Kraj, Wojewodztwo: data.Wojewodztwo, Powiat: data.Powiat, Gmina: data.Gmina,
+    Miejscowosc: data.Miejscowosc, Ulica: data.Ulica, Kod_pocztowy: data.Kod_pocztowy,
     Powierzchnia_m2: data.Powierzchnia_m2 ? num(data.Powierzchnia_m2) : null,
     Liczba_jednostek: data.Liczba_jednostek ? num(data.Liczba_jednostek) : null,
     Inwestor_Klient: data.Inwestor_Klient, ID_Klienta: data.ID_Klienta, Opis: data.Opis,
@@ -2269,6 +2306,42 @@ async function releaseProject(pid) {
   STATE.assignments = STATE.assignments.filter(a => !(a.ID_Projektu === pid && a.ID_Osoby === STATE.me.personId));
   closeDetail();
   renderAll();
+}
+
+// "Przypisz projekt" (Faza 2, A16, warsztat 22.07.2026) - odwrotnosc releaseProject() powyzej:
+// COO/Admin przepisuje projekt na nowa osobe (np. przy odejsciu poprzedniego prowadzacego).
+function openAssignProjectForm(pid) {
+  const p = STATE.projectById.get(pid);
+  if (!requireExisting(p, "projekt")) return;
+  const body = `
+    <div class="empty-hint full" style="grid-column:1/-1">Ustawi wskazaną osobę jako Ownera i Kierownika projektu oraz utworzy jej przypisanie (jeśli jeszcze go nie ma). Istniejące przypisanie poprzedniego prowadzącego NIE zostanie usunięte - zrób to osobno w sekcji „Zespół projektu”, jeśli potrzebne.</div>
+    ${fSelect("Nowy Owner / Kierownik projektu *", "ID_Osoby", teamOptionsPairs(), "")}
+  `;
+  openModal(`Przypisz projekt „${p.Nazwa}”`, body, {
+    submitLabel: "Przypisz",
+    onSubmit: (data) => saveAssignProjectFromForm(data, pid),
+  });
+}
+
+async function saveAssignProjectFromForm(data, pid) {
+  if (!data.ID_Osoby) { alert("Wybierz osobę."); return; }
+  const p = STATE.projectById.get(pid);
+  const personName = STATE.teamById.get(data.ID_Osoby)?.Imie_i_nazwisko || data.ID_Osoby;
+  if (!confirm(`Przypisać projekt „${p.Nazwa}” do „${personName}”? Ustawi ją jako Ownera i Kierownika projektu.`)) return;
+  let saved;
+  try {
+    saved = await apiPost(`/api/projekty/${pid}/przypisz`, { ID_Osoby: data.ID_Osoby });
+  } catch (e) {
+    alert("Nie udało się przypisać projektu: " + e.message);
+    return;
+  }
+  Object.assign(p, saved);
+  closeModal();
+  // Serwer moglo dodac nowy wiersz przypisania (jesli osoba jeszcze nie byla przypisana) -
+  // pelny reload jest tu prostszy niz zgadywanie, czy INSERT faktycznie sie wykonal.
+  await loadFromApi();
+  renderAll();
+  openProjectDetail(pid);
 }
 
 // "Polacz projekty" (Faza 1, A3, warsztat 22.07.2026) - narzedzie administracyjne dla COO/Admin
@@ -3004,6 +3077,44 @@ async function toggleChecklistItem(id, pid) {
   openProjectDetail(pid);
 }
 
+/* ---------- Formularz: Działka ewidencyjna (Faza 2, A7) ---------- */
+function openParcelForm(pid, id = null) {
+  const d = id ? STATE.parcels.find(x => x.ID_Dzialki === id) : {};
+  if (!requireExisting(d, "działka")) return;
+  const body = `
+    ${fInput("Numer działki *", "Numer_dzialki", d.Numer_dzialki, "text", "required")}
+    ${fInput("Obręb", "Obreb", d.Obreb)}
+    ${fInput("Identyfikator działki", "Identyfikator_dzialki", d.Identyfikator_dzialki)}
+  `;
+  openModal(id ? "Edytuj działkę" : "Nowa działka", body, {
+    submitLabel: "Zapisz",
+    onSubmit: (data) => saveParcelFromForm(data, pid, id),
+  });
+}
+
+async function saveParcelFromForm(data, pid, id) {
+  if (!data.Numer_dzialki) { alert("Podaj numer działki."); return; }
+  const isNew = !id;
+  const existing = isNew ? {} : STATE.parcels.find(x => x.ID_Dzialki === id);
+  if (!requireExisting(existing, "działka")) return;
+  const fields = { ID_Projektu: pid, Numer_dzialki: data.Numer_dzialki, Obreb: data.Obreb, Identyfikator_dzialki: data.Identyfikator_dzialki };
+  const saved = await persistEntity({ isNew, endpoint: "/api/dzialki", id, fields, errorLabel: "działki" });
+  if (!saved) return;
+  if (isNew) STATE.parcels.push(saved);
+  else Object.assign(existing, saved);
+  closeModal();
+  renderAll();
+  openProjectDetail(pid);
+}
+
+async function deleteParcel(id, pid) {
+  if (!confirm("Usunąć tę działkę?")) return;
+  if (!await deleteEntity(`/api/dzialki/${id}`, "działki")) return;
+  STATE.parcels = STATE.parcels.filter(d => d.ID_Dzialki !== id);
+  renderAll();
+  openProjectDetail(pid);
+}
+
 /* ---------- Formularz: Podwykonawca (biblioteka) ---------- */
 function openSubcontractorForm(sid = null) {
   const s = sid ? STATE.subcontractorById.get(sid) : {};
@@ -3547,6 +3658,8 @@ function openProjectDetail(pid) {
         ${(STATE.me.role === "Architekt_PM" && p.Owner === STATE.me.name) || FULL_ACCESS_ROLES.includes(STATE.me.role)
           ? `<button class="icon-btn" data-release-project="${esc(pid)}" title="Usuwa Ciebie jako Ownera/Kierownika i zdejmuje Twoje przypisanie - projekt wraca do stanu nieprzypisanego">Zwolnij projekt</button>` : ""}
         ${FULL_ACCESS_ROLES.includes(STATE.me.role)
+          ? `<button class="icon-btn" data-assign-project="${esc(pid)}" title="Ustawia wskazaną osobę jako Ownera/Kierownika i tworzy jej przypisanie do projektu - np. przy odejściu poprzedniego prowadzącego">Przypisz projekt →</button>` : ""}
+        ${FULL_ACCESS_ROLES.includes(STATE.me.role)
           ? `<button class="icon-btn" data-merge-projects="${esc(pid)}" title="Przenosi wszystkie sub-projekty/zadania/przypisania innych projektów pod ten (master) i usuwa opróżnione wiersze źródłowe - nieodwracalne">Połącz projekty →</button>` : ""}
         ${can("delete", "projekty", p) ? `<button class="icon-btn danger" data-delete-project="${esc(pid)}">Usuń</button>` : ""}
       </div>
@@ -3598,6 +3711,9 @@ function openProjectDetail(pid) {
     <div class="dp-section">
       <h4>Dane podstawowe</h4>
       <div class="dp-grid">
+        ${p.Sygnatura ? `<div><div class="k">Sygnatura</div><div class="v">${esc(p.Sygnatura)}</div></div>` : ""}
+        ${p.Symbol_projektu ? `<div><div class="k">Symbol projektu</div><div class="v">${esc(p.Symbol_projektu)}</div></div>` : ""}
+        ${p.Nazwa_zamierzenia_budowlanego ? `<div style="grid-column:1/-1"><div class="k">Nazwa zamierzenia budowlanego</div><div class="v">${esc(p.Nazwa_zamierzenia_budowlanego)}</div></div>` : ""}
         <div><div class="k">Funkcja biura</div><div class="v">${p.Funkcja_biura ? esc(p.Funkcja_biura) : "—"}</div></div>
         <div><div class="k">Owner</div><div class="v">${esc(p.Owner)}</div></div>
         <div><div class="k">Kierownik projektu</div><div class="v">${esc(p.Kierownik_projektu)}</div></div>
@@ -3609,7 +3725,21 @@ function openProjectDetail(pid) {
         <div><div class="k">Klient</div><div class="v">${p.ID_Klienta && STATE.clientById.get(p.ID_Klienta) ? `<span class="clickable" data-open-client="${esc(p.ID_Klienta)}" style="cursor:pointer;text-decoration:underline">${esc(STATE.clientById.get(p.ID_Klienta).Nazwa)}</span>` : esc(p.Inwestor_Klient) || "—"}</div></div>
         <div><div class="k">Powierzchnia</div><div class="v">${p.Powierzchnia_m2 != null ? p.Powierzchnia_m2.toLocaleString("pl-PL") + " m²" : "—"}</div></div>
         <div><div class="k">Liczba jednostek</div><div class="v">${p.Liczba_jednostek ?? "—"}</div></div>
+        ${formatLokalizacjaUrzedowa(p) ? `<div style="grid-column:1/-1"><div class="k">Lokalizacja urzędowa</div><div class="v">${esc(formatLokalizacjaUrzedowa(p))}</div></div>` : ""}
       </div>
+    </div>
+
+    <div class="dp-section">
+      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Działki ewidencyjne (${parcelsForProject(pid).length})</h4>
+        ${can("create", "dzialki", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-parcel="${esc(pid)}">+ Dodaj działkę</button>` : ""}</div>
+      ${parcelsForProject(pid).map(d => `
+        <div class="dp-list-item" ${can("update", "dzialki", d) ? `data-edit-parcel="${esc(d.ID_Dzialki)}" data-project="${esc(pid)}" style="cursor:pointer"` : ""}>
+          <div class="item-actions">
+            ${can("delete", "dzialki", d) ? `<button class="icon-btn danger" data-delete-parcel="${esc(d.ID_Dzialki)}" data-project="${esc(pid)}">Usuń</button>` : ""}
+          </div>
+          <div class="title">Działka nr ${esc(d.Numer_dzialki)}</div>
+          <div class="meta">${d.Obreb ? "obręb: " + esc(d.Obreb) : ""}${d.Obreb && d.Identyfikator_dzialki ? " · " : ""}${d.Identyfikator_dzialki ? "ID: " + esc(d.Identyfikator_dzialki) : ""}</div>
+        </div>`).join("") || `<div class="empty-hint">Brak zarejestrowanych działek — kliknij „+ Dodaj działkę”.</div>`}
     </div>
 
     ${projectTags(p).length ? `<div class="tag-chips" style="margin-bottom:4px">${projectTags(p).map(t => `<span class="tag-chip">${esc(t)}</span>`).join("")}</div>` : ""}
@@ -4130,6 +4260,8 @@ document.addEventListener("click", (e) => {
   if (editProject) { openProjectForm(editProject.getAttribute("data-edit-project")); return; }
   const releaseProjectBtn = e.target.closest("[data-release-project]");
   if (releaseProjectBtn) { releaseProject(releaseProjectBtn.getAttribute("data-release-project")); return; }
+  const assignProjectBtn = e.target.closest("[data-assign-project]");
+  if (assignProjectBtn) { openAssignProjectForm(assignProjectBtn.getAttribute("data-assign-project")); return; }
   const mergeProjectsBtn = e.target.closest("[data-merge-projects]");
   if (mergeProjectsBtn) { openMergeProjectsForm(mergeProjectsBtn.getAttribute("data-merge-projects")); return; }
   const deleteProjectBtn = e.target.closest("[data-delete-project]");
@@ -4198,6 +4330,12 @@ document.addEventListener("click", (e) => {
   if (deleteChecklistBtn) { deleteChecklistItem(deleteChecklistBtn.getAttribute("data-delete-checklist"), deleteChecklistBtn.getAttribute("data-project")); return; }
   const editChecklist = e.target.closest("[data-edit-checklist]");
   if (editChecklist) { openChecklistItemForm(editChecklist.getAttribute("data-project"), editChecklist.getAttribute("data-edit-checklist")); return; }
+  const addParcel = e.target.closest("[data-add-parcel]");
+  if (addParcel) { openParcelForm(addParcel.getAttribute("data-add-parcel")); return; }
+  const editParcel = e.target.closest("[data-edit-parcel]");
+  if (editParcel) { openParcelForm(editParcel.getAttribute("data-project"), editParcel.getAttribute("data-edit-parcel")); return; }
+  const deleteParcelBtn = e.target.closest("[data-delete-parcel]");
+  if (deleteParcelBtn) { deleteParcel(deleteParcelBtn.getAttribute("data-delete-parcel"), deleteParcelBtn.getAttribute("data-project")); return; }
 
   const addSub = e.target.closest("[data-add-subcontractor]");
   if (addSub) { openSubcontractorForm(); return; }
