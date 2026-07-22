@@ -39,6 +39,8 @@ from baza_danych.schema_migrate import (
     ensure_ideapool_table, ensure_klienci_tables, ensure_project_klient_column, ensure_checklist_table,
     ensure_client_krs_column, ensure_project_golive_column, ensure_notifications_table,
     ensure_person_photo_column, ensure_subcontractor_assignment_actual_end_column,
+    ensure_harmonogram_subproject_columns, ensure_zadania_etapy_table,
+    ensure_default_subproject_for_legacy_projects,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -106,6 +108,9 @@ ensure_project_golive_column(DB_PATH)  # jw. - nowa nullable kolumna
 ensure_notifications_table(DB_PATH)  # jw. - nowa tabela, wzmianki @Imie Nazwisko w komentarzach
 ensure_person_photo_column(DB_PATH)  # jw. - nowa nullable kolumna, zdjecie profilowe
 ensure_subcontractor_assignment_actual_end_column(DB_PATH)  # jw. - nowa nullable kolumna, termin rzeczywisty
+ensure_harmonogram_subproject_columns(DB_PATH)  # jw. - Typ_etapu + RAG_Status, harmonogram->sub-projekt (Faza 1)
+ensure_zadania_etapy_table(DB_PATH)  # jw. - nowa tabela n:n zadania_tickety<->harmonogram (Faza 1)
+ensure_default_subproject_for_legacy_projects(DB_PATH)  # jw. - musi biec PO dwoch powyzszych (potrzebuje kolumn/tabeli)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -198,13 +203,19 @@ TABLES = {
 }
 
 # tabela SQL -> klucz w odpowiedzi /api/bootstrap (nazwy pol STATE.* w dashboard/app.js)
+# zadania_etapy CELOWO nie ma wpisu w TABLES powyzej - odczyt tylko przez bootstrap (klient
+# robi wlasny join, mirror wzorca przypisania/STATE.assignments), zapis WYLACZNIE przez
+# _sync_ticket_stages() przy tworzeniu/edycji ticketu (TABLE_CREATE_SIDE_EFFECTS/
+# TABLE_UPDATE_SIDE_EFFECTS) - brak wpisu w TABLES oznacza, ze generyczny /api/zadania_etapy
+# (POST/PUT/DELETE) w ogole nie istnieje (404), wiec nie trzeba dla niego osobno rozwiazywac
+# can_write()/TABLE_SCOPE (nie ma wlasnej kolumny ID_Projektu do scoped_rows() i tak).
 BOOTSTRAP_KEYS = {
     "projekty": "projects", "zespol": "team", "przypisania": "assignments",
     "harmonogram": "tasks", "zadania_tickety": "tickets", "kamienie_milowe": "milestones",
     "ryzyka_i_problemy": "risks", "raporty_statusowe": "statusReports",
     "podwykonawcy": "subcontractors", "przypisania_podwykonawcow": "subcontractorAssignments",
     "ideapool": "ideapool", "klienci": "clients", "kontakty_klienta": "clientContacts",
-    "checklisty_projektow": "checklists",
+    "checklisty_projektow": "checklists", "zadania_etapy": "taskStages",
 }
 
 
@@ -486,6 +497,22 @@ def strip_financial_fields_for_restricted_role(user, table, data):
     return data
 
 
+# projekty.Status/RAG_Status sa teraz WYLICZANE z sub-projektow (Faza 1, patrz
+# apply_project_rollups() nizej) - nikt (zadna rola) juz nie ustawia ich wprost, wiec pomijamy
+# bezwarunkowo z kazdego payloadu, nie tylko dla rol z ograniczeniami finansowymi. Bez tego
+# klient moglby zapisac wartosc, ktora i tak zniknie/zostanie nadpisana na najblizszym odczycie -
+# mylace, wyglada jakby "dzialalo".
+COMPUTED_FIELDS = {
+    "projekty": ["Status", "RAG_Status"],
+}
+
+
+def strip_computed_fields(table, data):
+    for field in COMPUTED_FIELDS.get(table, ()):
+        data.pop(field, None)
+    return data
+
+
 def redact_row(user, table, row):
     if row is None:
         return None
@@ -496,6 +523,80 @@ def redact_row(user, table, row):
             if field in row:
                 row[field] = None
     return row
+
+
+# ------------------------------------------------------- master-projekt / sub-projekt (Faza 1)
+#
+# Status i RAG_Status na projekty (master) sa dzis WYLICZANE z jego sub-projektow (harmonogram),
+# nie ustawiane wprost - warsztat 22.07.2026 (A9): "Status dotyczy sub-projektow. Master = folder
+# z logika zbiorcza: dowolny sub w realizacji -> master w realizacji; wszystkie zakonczone ->
+# master zakonczony." Kolumny projekty.Status/RAG_Status ZOSTAJA w schemacie (addytywna migracja,
+# stare wiersze nie tracą danych), ale kazdy odczyt nadpisuje je swiezo wyliczona wartoscia -
+# jedno miejsce prawdy zamiast dwoch pol, ktore moglyby sie rozjechac.
+#
+# UWAGA: harmonogram.Status i projekty.Status to DWA ROZNE slowniki (nie te same stringi) -
+# harmonogram: "Nie rozpoczete"/"W trakcie"/"Wstrzymany"/"Zakonczone"/"Opoznione"/"Przeglad",
+# projekty: "Planowanie"/"W realizacji"/"Wstrzymany"/"Przeglad"/"Zakonczony"/"Anulowany" (inna
+# forma gramatyczna, np. "Zakonczone" vs "Zakonczony"). compute_master_status() tlumaczy
+# jawnie miedzy nimi - NIE porownuje stringow 1:1, bo nigdy by sie nie zgodzily.
+def compute_master_status(sub_statuses):
+    statuses = [s for s in sub_statuses if s]
+    if not statuses:
+        return "Planowanie"
+    if "W trakcie" in statuses or "Opoznione" in statuses:
+        return "W realizacji"
+    if "Wstrzymany" in statuses:
+        return "Wstrzymany"
+    if all(s == "Anulowany" for s in statuses):
+        return "Anulowany"
+    if all(s in ("Zakonczone", "Anulowany") for s in statuses):
+        return "Zakonczony"
+    if "Przeglad" in statuses:
+        return "Przeglad"
+    return "Planowanie"
+
+
+RAG_ROLLUP_PRIORITY = ["Czerwony", "Zolty", "Zielony"]
+
+
+def compute_master_rag(sub_rags):
+    rags = [r for r in sub_rags if r]
+    for level in RAG_ROLLUP_PRIORITY:
+        if level in rags:
+            return level
+    return None
+
+
+def apply_project_rollups(conn, row):
+    """Nadpisuje Status/RAG_Status wiersza projekty wyliczona wartoscia z jego sub-projektow
+    (harmonogram) - patrz komentarz wyzej. Wolane PRZED redact_row() (rollup nie jest polem
+    finansowym, wiec kolejnosc wzgledem redakcji nie ma znaczenia, ale koncepcyjnie "wylicz
+    dane, potem zredaguj" jest czytelniejsze)."""
+    subs = conn.execute("SELECT Status, RAG_Status FROM harmonogram WHERE ID_Projektu = ?", (row["ID_Projektu"],)).fetchall()
+    row["Status"] = compute_master_status([s["Status"] for s in subs])
+    row["RAG_Status"] = compute_master_rag([s["RAG_Status"] for s in subs])
+    return row
+
+
+# Rejestr efektow "po odczycie, przed redakcja" per tabela - dzis tylko projekty (rollup z
+# sub-projektow), ale jeden rejestr zamiast "if table == 'projekty'" rozrzuconego w kazdym
+# miejscu, ktore zwraca wiersz klientowi (mirror TABLE_CREATE_SIDE_EFFECTS/TABLE_VALIDATORS
+# nizej - ten sam, juz ustalony w tym pliku wzorzec).
+TABLE_ROW_TRANSFORMS = {
+    "projekty": apply_project_rollups,
+}
+
+
+def prepare_row_for_response(conn, user, table, row):
+    """Jedyne miejsce, przez ktore KAZDY wiersz zwracany klientowi powinien przejsc: najpierw
+    ewentualny wyliczany rollup (TABLE_ROW_TRANSFORMS), potem redakcja pol wg roli
+    (redact_row()). Zastepuje bezposrednie wywolania redact_row() we wszystkich routach."""
+    if row is None:
+        return None
+    transform = TABLE_ROW_TRANSFORMS.get(table)
+    if transform:
+        row = transform(conn, row)
+    return redact_row(user, table, row)
 
 
 # Komunikaty dla konkretnych "table.kolumna" z UNIQUE constraint - dopasowywane przez
@@ -591,6 +692,68 @@ def _assign_architekt_to_own_project(conn, new_row, user):
     conn.commit()
 
 
+def _create_subprojects_for_selected_types(conn, new_row, user):
+    # Faza 1 (A2, warsztat 22.07.2026): "Typ projektu: multiselect zamiast pojedynczego wyboru -
+    # zaznaczenie kilku typow tworzy sub-projekty." "Typy_etapow" NIE jest kolumna projekty, wiec
+    # parse_payload() juz je odfiltrowal z `data` zanim tu dotarlismy - czytamy surowy JSON
+    # requestu jeszcze raz (ten sam request/kontekst, tylko odczyt). Brak pola/pusta lista =
+    # projekt bez sub-projektow na starcie (moga zostac dodane pozniej z karty projektu) -
+    # celowo NIE wymuszamy przynajmniej jednego, np. COO/Admin moze chciec zalozyc "pusty"
+    # projekt-kontener na razie.
+    payload = request.get_json(force=True, silent=True) or {}
+    typy = payload.get("Typy_etapow")
+    if not isinstance(typy, list):
+        return
+    valid_typy = ENUM_FIELDS.get("harmonogram", {}).get("Typ_etapu", set())
+    for typ in typy:
+        if typ not in valid_typy:
+            continue  # cichy pomin nieprawidlowej wartosci - nie wywala calego utworzenia projektu
+        zid = next_id(conn, "harmonogram", "ID_Zadania", "ZAD", 3)
+        conn.execute(
+            "INSERT INTO harmonogram (ID_Zadania, ID_Projektu, Nazwa_zadania, Typ_etapu, Status) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (zid, new_row["ID_Projektu"], typ, typ, "Nie rozpoczete"),
+        )
+    conn.commit()
+
+
+def _projekty_create_side_effects(conn, new_row, user):
+    # Kazdy z dwoch efektow osobno w try/except - ten sam powod co try/except wokol calego
+    # wywolania w collection() (rzadka kolizja next_id() bez blokady, patrz jego docstring):
+    # awaria jednego (np. przypisania architekta) nie powinna ukrasc drugiego (utworzenia
+    # sub-projektow z multiselect) - inaczej jeden zawaliby oba, mimo ze sa niezalezne.
+    try:
+        _assign_architekt_to_own_project(conn, new_row, user)
+    except Exception as e:
+        print(f"_assign_architekt_to_own_project blad: {e}")
+    try:
+        _create_subprojects_for_selected_types(conn, new_row, user)
+    except Exception as e:
+        print(f"_create_subprojects_for_selected_types blad: {e}")
+
+
+def _sync_ticket_stages(conn, row, user):
+    # Faza 1 (B5, warsztat 22.07.2026): "jedno zadanie moze byc przypiete do kilku etapow
+    # naraz." Frontend wysyla PELNA, docelowa liste ID_Zadania (etapow) w polu "Etapy" (nie
+    # kolumna zadania_tickety, wiec parse_payload() go juz odfiltrowal - czytamy surowy JSON
+    # requestu ponownie). Brak pola w payloadzie = nie dotykaj istniejacych powiazan (odrozniamy
+    # "nie przyszlo" od "przyszla pusta lista = wyczysc wszystko").
+    payload = request.get_json(force=True, silent=True) or {}
+    if "Etapy" not in payload:
+        return
+    etapy = payload.get("Etapy")
+    if not isinstance(etapy, list):
+        return
+    conn.execute("DELETE FROM zadania_etapy WHERE ID_Tickietu = ?", (row["ID_Tickietu"],))
+    for eid in etapy:
+        if eid:
+            conn.execute(
+                "INSERT OR IGNORE INTO zadania_etapy (ID_Tickietu, ID_Zadania) VALUES (?, ?)",
+                (row["ID_Tickietu"], eid),
+            )
+    conn.commit()
+
+
 TABLE_VALIDATORS = {
     "users": validate_user_payload,
 }
@@ -608,10 +771,16 @@ TABLE_CREATE_DEFAULTS = {
 }
 # Trzeci, mniejszy rejestr - zaczepy PO udanym zapisie (potrzebuja prawdziwego pk_val nowego
 # wiersza, wiec nie mogly by czyms takim jak TABLE_CREATE_DEFAULTS, ktory dziala na payloadzie
-# PRZED insertem tej samej tabeli). Dzis tylko projekty (patrz _assign_architekt_to_own_project),
-# ale ten sam wzorzec rejestru co powyzej, nie nowa galaz "if table == X" w collection().
+# PRZED insertem tej samej tabeli). Ten sam wzorzec rejestru co powyzej, nie nowa galaz
+# "if table == X" w collection().
 TABLE_CREATE_SIDE_EFFECTS = {
-    "projekty": _assign_architekt_to_own_project,
+    "projekty": _projekty_create_side_effects,
+    "zadania_tickety": _sync_ticket_stages,
+}
+# Czwarty rejestr - zaczepy PO udanym UPDATE (item(), nie collection()) - dzis tylko
+# synchronizacja zadania_etapy przy edycji ticketu, ten sam wzorzec co powyzsze.
+TABLE_UPDATE_SIDE_EFFECTS = {
+    "zadania_tickety": _sync_ticket_stages,
 }
 
 
@@ -677,7 +846,19 @@ ENUM_FIELDS = {
         "Kategoria": {"Koncepcja", "Konsultacje", "Projektowanie", "Rysunki wykonawcze",
                        "Dokumentacja przetargowa", "Pozwolenia/Uzgodnienia", "Nadzor autorski",
                        "Koordynacja branzowa", "Wizja lokalna/Spotkanie", "Prezentacja", "Administracja/Inne"},
-        "Status": {"Nie rozpoczete", "W trakcie", "Zakonczone", "Opoznione"},
+        # Typ_etapu = ktora faza procesu ten sub-projekt reprezentuje (Faza 1, warsztat
+        # 22.07.2026) - OSOBNA os klasyfikacji od Kategoria (rodzaj pracy), patrz komentarz
+        # przy CREATE TABLE w schema.sql. Startowa lista wg kolejnosci procesu podanej wprost
+        # przez zespol (A12) - do potwierdzenia/edycji pozniej przez A13 (edytowalne etykiety),
+        # nie zaszyta na stale.
+        "Typ_etapu": {"Konkurs", "Analiza urbanistyczna/chlonnosci", "Projekt koncepcyjny",
+                       "Projekt budowlany (PB)", "Projekt techniczny (PT)", "Projekt wykonawczy (PW)",
+                       "Nadzor autorski", "Przetarg", "Budowa", "Zakonczenie", "Inne"},
+        # Wstrzymany/Przeglad dopisane w Faza 1 - Status przenosi sie z projekty (gdzie te
+        # wartosci juz istnialy) na poziom sub-projektu (A9), wiec sub-projekt musi umiec
+        # reprezentowac te same stany, inaczej master nigdy by ich nie osiagnal przez rollup.
+        "Status": {"Nie rozpoczete", "W trakcie", "Wstrzymany", "Zakonczone", "Opoznione", "Przeglad", "Anulowany"},
+        "RAG_Status": {"Zielony", "Zolty", "Czerwony"},
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
         "Kamien_milowy": {"Tak", "Nie"},
     },
@@ -1078,7 +1259,7 @@ def bootstrap():
     for table, key in BOOTSTRAP_KEYS.items():
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
         rows = scoped_rows(conn, g.user, table, rows, allowed=allowed_projects)
-        result[key] = [redact_row(g.user, table, dict(r)) for r in rows]
+        result[key] = [prepare_row_for_response(conn, g.user, table, dict(r)) for r in rows]
     result["me"] = public_user(g.user)
     result["me"]["assignedProjectIds"] = sorted(allowed_projects)
     return jsonify(result)
@@ -1096,10 +1277,11 @@ def collection(table):
             abort(403)
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
         rows = scoped_rows(conn, g.user, table, rows)
-        return jsonify([redact_row(g.user, table, dict(r)) for r in rows])
+        return jsonify([prepare_row_for_response(conn, g.user, table, dict(r)) for r in rows])
 
     data = parse_payload(conn, table)
     data = strip_financial_fields_for_restricted_role(g.user, table, data)
+    data = strip_computed_fields(table, data)
     if not can_write(conn, g.user, "create", table, data):
         abort(403)
     error = validate_field_types_and_ranges(conn, table, data)
@@ -1143,7 +1325,7 @@ def collection(table):
             # "117_ZGN Komorska TEST" (audyt produkcji 2026-07-17: projekt mial poprawny Owner/
             # Kierownik_projektu, ale brakujace przypisanie - reczna korekta + ten fix).
             print(f"TABLE_CREATE_SIDE_EFFECTS blad ({table}): {e}")
-    return jsonify(redact_row(g.user, table, new_row)), 201
+    return jsonify(prepare_row_for_response(conn, g.user, table, new_row)), 201
 
 
 @app.route("/api/<table>/<path:item_id>", methods=["PUT", "DELETE"])
@@ -1187,6 +1369,7 @@ def item(table, item_id):
         abort(403)
     data = parse_payload(conn, table, exclude={pk})
     data = strip_financial_fields_for_restricted_role(g.user, table, data)
+    data = strip_computed_fields(table, data)
     if not data:
         return jsonify({"error": "Brak pól do aktualizacji"}), 400
     # Sprawdz uprawnienia TEZ na obrazie PO zmianie, nie tylko przed - inaczej dawaloby sie
@@ -1217,10 +1400,20 @@ def item(table, item_id):
         return jsonify({"error": integrity_error_message(e, table)}), 409
     if cur.rowcount == 0:
         abort(404)
+    new_row = {**existing, **data}
+    update_side_effect = TABLE_UPDATE_SIDE_EFFECTS.get(table)
+    if update_side_effect:
+        try:
+            update_side_effect(conn, new_row, g.user)
+        except Exception as e:
+            # Ten sam powod co przy TABLE_CREATE_SIDE_EFFECTS w collection() - glowny rekord
+            # juz jest bezpiecznie zapisany (commit powyzej), efekt uboczny (sync etapow
+            # ticketu) nie moze zawalic calej odpowiedzi o udanej edycji.
+            print(f"TABLE_UPDATE_SIDE_EFFECTS blad ({table}): {e}")
     # {**existing, **data} = dokladnie to, co przed chwila trafilo do bazy (stary wiersz z
     # nadpisanymi zmienionymi polami) - ten sam merge juz raz policzony wyzej do re-checku
     # can_write(); fetch_row() tutaj bylby zbednym SELECT-em na dane juz posiadane w pamieci.
-    return jsonify(redact_row(g.user, table, {**existing, **data}))
+    return jsonify(prepare_row_for_response(conn, g.user, table, new_row))
 
 
 @app.route("/api/projekty/<item_id>/zwolnij", methods=["POST"])
@@ -1251,7 +1444,47 @@ def release_project(item_id):
     # patrz projectById), pokazujac realne kwoty na zywo bez przeladowania strony. Audyt
     # 2026-07-22 potwierdzil to jako mechanizm zgloszonego wycieku ("Daniel widzial budzet
     # Grzegorza") - jedyny route w tym pliku, ktory pomijal redakcje.
-    return jsonify(redact_row(g.user, "projekty", fetch_row(conn, "projekty", "ID_Projektu", item_id)))
+    return jsonify(prepare_row_for_response(conn, g.user, "projekty", fetch_row(conn, "projekty", "ID_Projektu", item_id)))
+
+
+# Tabele z FK ID_Projektu, ktore trzeba przepiac przy laczeniu projektow (patrz merge_projects
+# nizej) - jedna lista, zamiast zgadywac przy kazdej nowej project_scoped/root_project tabeli.
+MERGE_CHILD_TABLES = ["harmonogram", "zadania_tickety", "przypisania", "kamienie_milowe",
+                       "ryzyka_i_problemy", "raporty_statusowe", "przypisania_podwykonawcow",
+                       "checklisty_projektow"]
+
+
+@app.route("/api/projekty/<master_id>/polacz", methods=["POST"])
+def merge_projects(master_id):
+    # "Polacz projekty" (Faza 1, A3, warsztat 22.07.2026): dzis rozne etapy tego samego tematu
+    # (konkurs/analiza/projekt) czasem zyja jako OSOBNE wiersze projekty z rozjechana numeracja
+    # (przyklad z warsztatu: "konkurs 97 = projekt Wieliszew"). To narzedzie administracyjne
+    # (NIE automatyczna migracja - wymaga wiedzy domenowej ktore wiersze sa naprawde tym samym
+    # tematem, wiec swiadomie reczne, nie zgadywane po podobienstwie nazwy) przepina WSZYSTKIE
+    # dzieci zrodlowych projektow (MERGE_CHILD_TABLES, w tym harmonogram - staja sie
+    # sub-projektami mastera) pod master, potem usuwa oproznione zrodlowe wiersze projekty.
+    # COO/Admin only - nieodwracalne, stad wymog jawnego potwierdzenia po stronie frontendu.
+    if g.user["Rola"] not in FULL_ACCESS_ROLES:
+        abort(403)
+    conn = get_db()
+    master = fetch_row(conn, "projekty", "ID_Projektu", master_id)
+    if master is None:
+        abort(404)
+    payload = request.get_json(force=True, silent=True) or {}
+    source_ids = payload.get("zrodlowe")
+    if not isinstance(source_ids, list) or not source_ids:
+        return jsonify({"error": "Wskaż przynajmniej jeden projekt źródłowy do połączenia."}), 400
+    if master_id in source_ids:
+        return jsonify({"error": "Projekt docelowy nie może być jednocześnie źródłem."}), 400
+    for sid in source_ids:
+        source = fetch_row(conn, "projekty", "ID_Projektu", sid)
+        if source is None:
+            continue  # nieistniejace/bledne ID - pomijamy, nie wywalamy calej operacji
+        for table in MERGE_CHILD_TABLES:
+            conn.execute(f"UPDATE {table} SET ID_Projektu = ? WHERE ID_Projektu = ?", (master_id, sid))
+        conn.execute("DELETE FROM projekty WHERE ID_Projektu = ?", (sid,))
+    conn.commit()
+    return jsonify(prepare_row_for_response(conn, g.user, "projekty", fetch_row(conn, "projekty", "ID_Projektu", master_id)))
 
 
 @app.route("/api/zadania_tickety/<ticket_id>/komentarze", methods=["GET", "POST"])

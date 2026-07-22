@@ -6,7 +6,7 @@
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
-  clients: [], clientContacts: [], checklists: [], notifications: [],
+  clients: [], clientContacts: [], checklists: [], notifications: [], taskStages: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(), clientById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -110,7 +110,15 @@ const FAZY = ["Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs -
 const PRIORYTETY = ["Wysoki", "Sredni", "Niski"];
 const DZIALY = ["Architekci", "Specjalisci", "Kierownictwo projektow", "PMO", "Prawny", "Finansowy", "Marketing/Sprzedaz", "Zarzad"];
 const ROLE_W_PROJEKCIE = ["Sponsor", "Owner", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"];
-const TASK_STATUSES = ["Nie rozpoczete", "W trakcie", "Zakonczone", "Opoznione"];
+// Wstrzymany/Przeglad dopisane w Faza 1 - Status przenosi sie z projekty na sub-projekt (A9),
+// wiec sub-projekt musi umiec reprezentowac te same stany co dawny projekty.Status (STATUSES).
+const TASK_STATUSES = ["Nie rozpoczete", "W trakcie", "Wstrzymany", "Zakonczone", "Opoznione", "Przeglad", "Anulowany"];
+// Typ_etapu = ktora faza procesu ten sub-projekt reprezentuje (Faza 1, warsztat 22.07.2026) -
+// mirror ENUM_FIELDS["harmonogram"]["Typ_etapu"] w server.py, startowa lista wg kolejnosci
+// procesu (A12), do potwierdzenia/edycji pozniej przez A13 (edytowalne etykiety).
+const TYP_ETAPU = ["Konkurs", "Analiza urbanistyczna/chlonnosci", "Projekt koncepcyjny",
+  "Projekt budowlany (PB)", "Projekt techniczny (PT)", "Projekt wykonawczy (PW)",
+  "Nadzor autorski", "Przetarg", "Budowa", "Zakonczenie", "Inne"];
 const KATEGORIE_ZADAN = ["Koncepcja", "Konsultacje", "Projektowanie", "Rysunki wykonawcze",
   "Dokumentacja przetargowa", "Pozwolenia/Uzgodnienia", "Nadzor autorski", "Koordynacja branzowa",
   "Wizja lokalna/Spotkanie", "Prezentacja", "Administracja/Inne"];
@@ -309,6 +317,16 @@ function fazaTag(faza) {
   const slot = FAZA_COLORS[faza] || "cat-3";
   return `<span class="type-tag"><span class="dot" style="background:var(--${slot})"></span>${esc(faza || "—")}</span>`;
 }
+// Faza 1 (A2/A9): nowe projekty nie ustawiaja juz Typ_projektu wprost - "typ" to teraz zbior
+// Typ_etapu jego sub-projektow (harmonogram). Dla jednego reprezentatywnego tagu na karcie/
+// tabeli/kanbanie uzywamy pierwszego sub-projektu; projekty sprzed migracji bez zadnego
+// sub-projektu (nie powinno sie zdarzac po migracji startowej, ale na wszelki wypadek) spadaja
+// na stary Typ_projektu.
+function projectPrimaryType(p) {
+  const stages = tasksForProject(p.ID_Projektu);
+  if (stages.length) return stages[0].Typ_etapu || stages[0].Nazwa_zadania;
+  return p.Typ_projektu;
+}
 function initials(name) {
   const parts = (name || "").trim().split(/\s+/).filter(Boolean);
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "?";
@@ -457,6 +475,7 @@ async function loadFromApi() {
   STATE.ideapool = data.ideapool || [];
   STATE.clients = data.clients || []; STATE.clientContacts = data.clientContacts || [];
   STATE.checklists = data.checklists || [];
+  STATE.taskStages = data.taskStages || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
     assignedProjectIds: data.me.assignedProjectIds || [],
@@ -675,6 +694,11 @@ function projectName(pid) { return STATE.projectById.get(pid)?.Nazwa || pid || "
 function subcontractorAssignmentsForProject(pid) { return STATE.subcontractorAssignments.filter(a => a.ID_Projektu === pid); }
 function subcontractorAssignmentsForSubcontractor(sid) { return STATE.subcontractorAssignments.filter(a => a.ID_Podwykonawcy === sid); }
 function subcontractorName(sid) { return STATE.subcontractorById.get(sid)?.Nazwa || sid || "—"; }
+// Faza 1 (B5): zadania_etapy to n:n zadanie<->etap - mirror wzorca STATE.assignments (klient
+// robi wlasny join zamiast trzymac zagniezdzona strukture w STATE.tickets/tasks).
+function stageIdsForTicket(tid) { return STATE.taskStages.filter(e => e.ID_Tickietu === tid).map(e => e.ID_Zadania); }
+function ticketIdsForStage(sid) { return STATE.taskStages.filter(e => e.ID_Zadania === sid).map(e => e.ID_Tickietu); }
+function stageName(sid) { return STATE.tasks.find(t => t.ID_Zadania === sid)?.Nazwa_zadania || sid || "—"; }
 
 /* ---------------------------------------------------------------- tickety, terminowosc, koszt realny, marza */
 function ticketsForProject(pid) { return STATE.tickets.filter(t => t.ID_Projektu === pid); }
@@ -721,8 +745,12 @@ function deriveTicketCompletionDate(newStatus, currentDate) {
 function isOverdueTicket(t) {
   return t.Termin instanceof Date && t.Termin < today0() && !DONE_TICKET_STATUSES.includes(t.Status);
 }
+const NON_OVERDUE_STAGE_STATUSES = ["Zakonczone", "Wstrzymany", "Anulowany"];
 function isOverdueStage(t) {
-  return t.Data_koniec_plan instanceof Date && t.Data_koniec_plan < today0() && t.Status !== "Zakonczone";
+  // Wstrzymany/Anulowany dopisane w Faza 1 (Status przenosi sie z projekty na sub-projekt, A9) -
+  // wstrzymany/anulowany etap swiadomie nie posuwa sie naprzod, wiec nie jest "opozniony"
+  // w sensie wymagajacym uwagi, tak jak zwykly "W trakcie"/"Nie rozpoczete" po terminie.
+  return t.Data_koniec_plan instanceof Date && t.Data_koniec_plan < today0() && !NON_OVERDUE_STAGE_STATUSES.includes(t.Status);
 }
 function ticketEffectiveStatus(t) { return isOverdueTicket(t) ? "Opoznione" : t.Status; }
 function ticketStatusBadge(status) {
@@ -1051,20 +1079,21 @@ function projectCardHtml(p) {
   const spent = num(p.Budzet_wydany), tot = num(p.Budzet_calkowity);
   const budPct = tot ? Math.min(100, spent / tot * 100) : 0;
   const over = tot && spent > tot;
-  const slot = TYPE_COLORS[p.Typ_projektu] || "cat-3";
+  const primaryType = projectPrimaryType(p);
+  const slot = TYPE_COLORS[primaryType] || "cat-3";
   return `
     <div class="project-card" style="border-left-color:var(--${slot})" data-open-project="${esc(p.ID_Projektu)}">
       <div class="pc-top">
         <div>
           <div class="pc-name">${esc(p.Nazwa)}</div>
-          <div class="pc-meta">${typeTag(p.Typ_projektu)} · ${esc(p.Miasto || "")}</div>
+          <div class="pc-meta">${typeTag(primaryType)} · ${esc(p.Miasto || "")}</div>
         </div>
         ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
       </div>
       <div class="pc-row"><span>Owner</span><b>${ownerTagHtml(p.Owner)}</b></div>
       <div class="pc-row"><span>Kierownik projektu</span><b>${esc(p.Kierownik_projektu)}</b></div>
       ${p.ID_Osoby_sponsora ? `<div class="pc-row"><span>Sponsor</span><b>${esc(personName(p.ID_Osoby_sponsora))}</b></div>` : ""}
-      <div class="pc-row"><span>Status</span><b>${esc(p.Status)} · ${esc(p.Faza)}</b></div>
+      <div class="pc-row"><span>Status</span><b>${esc(p.Status)}</b></div>
       <div class="pc-row"><span>Termin (plan)</span><b>${fmtDate(p.Data_zakonczenia_planowana)}</b></div>
       <div class="pc-row"><span>Postęp</span><b>${fmtPctFraction(p.Procent_postepu)}</b></div>
       <div class="progress-track"><div class="progress-fill" style="width:${num(p.Procent_postepu) * 100}%"></div></div>
@@ -1090,16 +1119,15 @@ function renderProjectsTable(list) {
         <div class="panel" style="overflow-x:auto">
           <table class="data-table">
             <thead><tr>
-              <th>Nazwa</th><th>Owner</th><th>Typ</th><th>Status</th><th>Faza</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
+              <th>Nazwa</th><th>Owner</th><th>Typ</th><th>Status</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
             </tr></thead>
             <tbody>
               ${rows.map(p => `
                 <tr class="clickable" data-open-project="${esc(p.ID_Projektu)}">
                   <td>${esc(p.Nazwa)}</td>
                   <td>${ownerTagHtml(p.Owner)}</td>
-                  <td>${typeTag(p.Typ_projektu)}</td>
+                  <td>${typeTag(projectPrimaryType(p))}</td>
                   <td>${badge(p.Status || "—", projectStatusClass(p.Status))}</td>
-                  <td>${fazaTag(p.Faza)}</td>
                   <td>${badge(p.Priorytet || "—", priorityBadgeClass(p.Priorytet))}</td>
                   <td>${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}</td>
                   <td>${fmtDate(p.Data_zakonczenia_planowana)}</td>
@@ -1152,11 +1180,13 @@ function renderProjects() {
 }
 
 function projectKanbanCardHtml(p) {
-  const editable = can("update", "projekty", p);
+  // Faza 1 (A9): Status jest teraz WYLICZANY z sub-projektow, nie przeciagany recznie - karta
+  // wiec juz nie jest draggable (byla dawniej, patrz usunieta moveProjectToStatus/KANBAN_MOVE_
+  // HANDLERS["project"] - zmiana statusu odbywa sie teraz przez edycje sub-projektow).
   return `
-    <div class="kanban-card" draggable="${editable}" data-drag-kind="project" data-drag-id="${esc(p.ID_Projektu)}" data-open-project="${esc(p.ID_Projektu)}">
+    <div class="kanban-card" data-open-project="${esc(p.ID_Projektu)}">
       <div class="kc-title">${esc(p.Nazwa)}</div>
-      <div class="kc-meta">${typeTag(p.Typ_projektu)} · ${esc(p.Kierownik_projektu || "—")}</div>
+      <div class="kc-meta">${typeTag(projectPrimaryType(p))} · ${esc(p.Kierownik_projektu || "—")}</div>
       <div class="kc-meta">Owner: ${ownerTagHtml(p.Owner)}</div>
       <div class="kc-meta">Termin: ${fmtDate(p.Data_zakonczenia_planowana)} · ${fmtPctFraction(p.Procent_postepu)}</div>
       ${p.Data_go_live instanceof Date ? `<div class="kc-meta">Go Live: ${fmtDate(p.Data_go_live)}</div>` : ""}
@@ -1178,31 +1208,6 @@ function renderProjectsKanban(list) {
         </div>
       </div>`;
   }).join("")}</div>`;
-}
-
-const projectMoveSeq = new Map(); // ID_Projektu -> numer najnowszego w locie zadania PUT (mirror ticketMoveSeq)
-
-async function moveProjectToStatus(pid, newStatus) {
-  const p = STATE.projectById.get(pid);
-  if (!p || p.Status === newStatus || !STATUSES.includes(newStatus)) return;
-  if (!can("update", "projekty", p)) return; // unika bezuzytecznego 403 z proba optymistycznej zmiany
-  const prevStatus = p.Status;
-  p.Status = newStatus;
-  renderProjects();
-  const seq = (projectMoveSeq.get(pid) || 0) + 1;
-  projectMoveSeq.set(pid, seq);
-  try {
-    const payload = serializeForApi({ Status: p.Status }, []);
-    const saved = await apiPut(`/api/projekty/${pid}`, payload);
-    if (projectMoveSeq.get(pid) !== seq) return; // nowsze przeciagniecie juz w toku
-    reviveDates([saved], DATE_FIELDS.projects);
-    Object.assign(p, saved);
-  } catch (e) {
-    if (projectMoveSeq.get(pid) !== seq) return;
-    p.Status = prevStatus;
-    alert("Nie udało się zmienić statusu projektu: " + e.message);
-  }
-  renderProjects();
 }
 
 /* ================================================================== VIEW: ZESPOL */
@@ -1519,7 +1524,9 @@ async function moveTicketToStatus(tid, newStatus) {
 // {kind: moveFn} zamiast twardego wywolania moveTicketToStatus - drop dispatch'uje przez
 // niego, wiec dodanie kolejnego przeciaganego typu (np. ideapool) to jeden nowy wpis, nie
 // kopiowanie piatego zestawu listenerow.
-const KANBAN_MOVE_HANDLERS = { ticket: moveTicketToStatus, project: moveProjectToStatus };
+// "project" usuniety z tego rejestru w Faza 1 - Status projektu (master) jest teraz wyliczany
+// z sub-projektow, wiec przeciaganie karty projektu miedzy kolumnami statusu juz nic nie zapisuje.
+const KANBAN_MOVE_HANDLERS = { ticket: moveTicketToStatus };
 document.addEventListener("dragstart", (e) => {
   const card = e.target.closest("[data-drag-kind]");
   if (!card) return;
@@ -2040,6 +2047,13 @@ $("#modalForm").addEventListener("submit", async (e) => {
 $("#modalCancel").addEventListener("click", closeModal);
 $("#modalClose").addEventListener("click", closeModal);
 $("#modalOverlay").addEventListener("click", closeModal);
+$("#modalForm").addEventListener("change", (e) => {
+  const group = e.target.closest("[data-checkbox-group]");
+  if (!group) return;
+  const checked = $all("input[type=checkbox]:checked", group).map(cb => cb.value);
+  const hidden = group.querySelector("input[type=hidden]");
+  if (hidden) hidden.value = JSON.stringify(checked);
+});
 
 function fInput(label, name, value, type = "text", extra = "") {
   if (type === "date") {
@@ -2075,6 +2089,22 @@ function fTagsInput(label, name, valueCsv, suggestions = []) {
     <input type="hidden" name="${name}" value="${esc(tags.join(","))}">
   </label>`;
 }
+// Multiselect checkboxow (Faza 1, A2: "Typ projektu: multiselect zamiast pojedynczego wyboru") -
+// hidden input trzyma JSON-owa liste zaznaczonych wartosci (mirror wzorca fTagsInput powyzej,
+// tylko zamknieta lista opcji zamiast dowolnego tekstu), synchronizowany przez delegowany
+// listener "change" na #modalForm (patrz nizej) - FormData/saveProjectFromForm czytaja go
+// jak zwykle pole tekstowe, potem JSON.parse() na liste przed wyslaniem do API.
+// `options` = [value, label] pary (mirror fSelect/optionsHtml) - value bywa nieczytelnym ID
+// (np. ID_Zadania etapu "ZAD005"), wiec potrzebny osobny label, nie sama wartosc jak na starcie.
+function fCheckboxGroup(label, name, options, selectedValues = []) {
+  const selected = new Set(selectedValues);
+  return `<label class="f-label full" data-checkbox-group="${name}">${esc(label)}
+    <div class="checkbox-group">
+      ${options.map(([v, l]) => `<label class="checkbox-chip"><input type="checkbox" value="${esc(v)}" ${selected.has(v) ? "checked" : ""}> ${esc(l)}</label>`).join("") || `<span class="empty-hint">Brak dostępnych opcji.</span>`}
+    </div>
+    <input type="hidden" name="${name}" value='${esc(JSON.stringify([...selected]))}'>
+  </label>`;
+}
 function pairs(arr) { return arr.map(x => [x, x]); }
 function teamOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.map(t => [t.ID_Osoby, t.Imie_i_nazwisko])]; }
 // Sponsor projektu = czlonek zarzadu odpowiedzialny za finansowanie - zawezone do
@@ -2107,20 +2137,29 @@ function openProjectForm(pid = null) {
   // domyslne zaznaczenie tutaj to tylko odzwierciedlenie tego z gory, zeby formularz od razu
   // pokazywal prawdziwy wynik, a nie mylaco sugerowal wybor, ktory i tak zostanie nadpisany.
   const architektDefaultOwner = !pid && STATE.me.role === "Architekt_PM" ? STATE.me.name : null;
+  // Faza 1 (A9, warsztat 22.07.2026): Status/RAG_Status projektu (master) sa dzis WYLICZANE z
+  // jego sub-projektow (harmonogram) - nie ma juz tu edytowalnych pol, tylko odczyt. Edycja
+  // Statusu/RAG-a per sub-projekt zyje w formularzu etapu (openTaskForm), nie tutaj. Typ_projektu/
+  // Faza tez znikaja z tego formularza - "typ" nowego projektu to teraz multiselect Typow_etapow
+  // ponizej (A2), tworzacy sub-projekty; Faza usunieta jako duplikat Typ_projektu (A10).
+  const statusRagInfo = pid ? `
+    <div class="form-section-title">Status i RAG (wyliczane z sub-projektów)</div>
+    <div style="grid-column:1/-1;display:flex;gap:8px;margin-bottom:4px">
+      ${badge(p.Status || "Planowanie", projectStatusClass(p.Status))}
+      ${p.RAG_Status ? badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status)) : badge("Brak sub-projektów", "muted")}
+    </div>` : "";
   const body = `
     <div class="form-section-title">Dane podstawowe</div>
     ${fInput("Nazwa projektu *", "Nazwa", p.Nazwa, "text", "required")}
-    ${fSelect("Typ projektu *", "Typ_projektu", pairs(TYPE_ORDER), p.Typ_projektu)}
     ${fSelect("Funkcja biura", "Funkcja_biura", pairs(FUNKCJE_BIURA), p.Funkcja_biura)}
     ${fSelect("Segment", "Segment", pairs(SEGMENTS), p.Segment)}
     ${fSelect("Owner *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
     ${fSelect("Kierownik projektu", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu || architektDefaultOwner)}
     ${fSelect("Sponsor (zarząd)", "ID_Osoby_sponsora", boardMemberOptionsPairs(), p.ID_Osoby_sponsora)}
-    ${fSelect("Status", "Status", pairs(STATUSES), p.Status || "Planowanie")}
-    ${fSelect("Faza", "Faza", pairs(FAZY), p.Faza || "Koncepcja")}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), p.Priorytet || "Sredni")}
-    ${fSelect("RAG status", "RAG_Status", [["Zielony", "Zielony"], ["Zolty", "Żółty"], ["Czerwony", "Czerwony"]], p.RAG_Status || "Zielony")}
     ${fTagsInput("Tagi", "Tagi", p.Tagi, allProjectTags())}
+    ${statusRagInfo}
+    ${!pid ? fCheckboxGroup("Etapy / sub-projekty (wybierz typy)", "Typy_etapow", pairs(TYP_ETAPU), []) : ""}
 
     <div class="form-section-title">Terminy i postęp</div>
     ${fInput("Data rozpoczęcia", "Data_rozpoczecia", p.Data_rozpoczecia, "date")}
@@ -2178,10 +2217,15 @@ async function saveProjectFromForm(data, pid) {
   const existing = isNew ? {} : STATE.projectById.get(pid);
   if (!requireExisting(existing, "projekt")) return;
   const fields = {
-    Nazwa: data.Nazwa, Typ_projektu: data.Typ_projektu, Funkcja_biura: data.Funkcja_biura, Segment: data.Segment,
+    Nazwa: data.Nazwa, Funkcja_biura: data.Funkcja_biura, Segment: data.Segment,
     Owner: data.Owner, Kierownik_projektu: data.Kierownik_projektu, ID_Osoby_sponsora: data.ID_Osoby_sponsora,
-    Status: data.Status, Faza: data.Faza, Priorytet: data.Priorytet, RAG_Status: data.RAG_Status,
+    Priorytet: data.Priorytet,
     Tagi: data.Tagi,
+    // Typ_projektu/Status/Faza/RAG_Status celowo pominiete (Faza 1, A9/A10) - Status/RAG sa
+    // teraz wyliczane z sub-projektow (serwer i tak by je zignorowal, patrz strip_computed_
+    // fields()), a Typ_projektu/Faza zastapione przez multiselect Typy_etapow ponizej (tylko
+    // przy tworzeniu - istniejacy projekt zarzadza sub-projektami z karty projektu).
+    ...(isNew ? { Typy_etapow: JSON.parse(data.Typy_etapow || "[]") } : {}),
     Data_rozpoczecia: parseDateInput(data.Data_rozpoczecia),
     Data_zakonczenia_planowana: parseDateInput(data.Data_zakonczenia_planowana),
     Data_zakonczenia_rzeczywista: parseDateInput(data.Data_zakonczenia_rzeczywista),
@@ -2225,6 +2269,50 @@ async function releaseProject(pid) {
   STATE.assignments = STATE.assignments.filter(a => !(a.ID_Projektu === pid && a.ID_Osoby === STATE.me.personId));
   closeDetail();
   renderAll();
+}
+
+// "Polacz projekty" (Faza 1, A3, warsztat 22.07.2026) - narzedzie administracyjne dla COO/Admin
+// do reczengo scalania dzis rozjechanych wierszy tego samego tematu (np. "konkurs 97 = projekt
+// Wieliszew") pod jeden master. Nieodwracalne (usuwa oprozniowe zrodlowe wiersze projekty po
+// stronie serwera), stad podwojne potwierdzenie (etykieta submitu + confirm()).
+function openMergeProjectsForm(masterPid) {
+  const master = STATE.projectById.get(masterPid);
+  if (!requireExisting(master, "projekt")) return;
+  const others = STATE.projects.filter(p => p.ID_Projektu !== masterPid);
+  const body = `
+    <div class="empty-hint full" style="grid-column:1/-1">
+      Wybrane projekty zostaną scalone w <b>${esc(master.Nazwa)}</b> (${esc(masterPid)}): ich
+      sub-projekty/zadania/przypisania/ryzyka/raporty/podwykonawcy/checklisty przejdą pod ten
+      projekt, a opróżnione wiersze źródłowe zostaną <b>trwale usunięte</b>. Operacja jest
+      nieodwracalna.
+    </div>
+    ${fCheckboxGroup("Projekty źródłowe do połączenia", "zrodlowe", others.map(p => [p.ID_Projektu, `${p.Nazwa} (${p.ID_Projektu})`]), [])}
+  `;
+  openModal(`Połącz projekty w „${master.Nazwa}”`, body, {
+    submitLabel: "Połącz (nieodwracalne)",
+    onSubmit: (data) => saveMergeProjectsFromForm(data, masterPid),
+  });
+}
+
+async function saveMergeProjectsFromForm(data, masterPid) {
+  const zrodlowe = JSON.parse(data.zrodlowe || "[]");
+  if (!zrodlowe.length) { alert("Wybierz przynajmniej jeden projekt źródłowy."); return; }
+  const master = STATE.projectById.get(masterPid);
+  const names = zrodlowe.map(id => STATE.projectById.get(id)?.Nazwa || id).join(", ");
+  if (!confirm(`Na pewno połączyć [${names}] w „${master.Nazwa}”? Źródłowe wiersze projektów zostaną trwale usunięte (ich dane przejdą pod ten projekt). Tej operacji NIE można cofnąć.`)) return;
+  try {
+    await apiPost(`/api/projekty/${masterPid}/polacz`, { zrodlowe });
+  } catch (e) {
+    alert("Nie udało się połączyć projektów: " + e.message);
+    return;
+  }
+  closeModal();
+  // Scalanie dotyka zbyt wielu tabel naraz (harmonogram/tickety/przypisania/ryzyka/raporty/
+  // podwykonawcy/checklisty), zeby recznie rekoncyliowac kazda z osobna w STATE - pelny
+  // reload z /api/bootstrap jest tu prostszy i bezpieczniejszy niz osiem osobnych patchy.
+  await loadFromApi();
+  renderAll();
+  openProjectDetail(masterPid);
 }
 
 async function deleteProject(pid) {
@@ -2411,12 +2499,14 @@ function openTaskForm(pid, tid = null) {
         ...STATE.projects.filter(p => can("create", "harmonogram", { ID_Projektu: p.ID_Projektu })).map(p => [p.ID_Projektu, p.Nazwa])],
         currentPid) : ""}
     ${fInput("Nazwa etapu *", "Nazwa_zadania", t.Nazwa_zadania, "text", "required")}
+    ${fSelect("Typ etapu (sub-projektu)", "Typ_etapu", [["", "— brak —"], ...pairs(TYP_ETAPU)], t.Typ_etapu)}
     ${fSelect("Kategoria", "Kategoria", [["", "— wybierz —"], ...pairs(KATEGORIE_ZADAN)], t.Kategoria)}
     ${fSelect("Odpowiedzialny", "ID_Osoby_odpowiedzialnej", teamOptionsPairs(), t.ID_Osoby_odpowiedzialnej)}
     ${fInput("Start (plan) *", "Data_start_plan", t.Data_start_plan, "date", "required")}
     ${fInput("Koniec (plan) *", "Data_koniec_plan", t.Data_koniec_plan, "date", "required")}
     ${fInput("% ukończenia", "Procent_ukonczenia_pct", t.Procent_ukonczenia != null ? Math.round(t.Procent_ukonczenia * 100) : 0, "number", "min=0 max=100")}
     ${fSelect("Status", "Status", pairs(TASK_STATUSES), t.Status || "Nie rozpoczete")}
+    ${fSelect("RAG status", "RAG_Status", [["", "— brak —"], ["Zielony", "Zielony"], ["Zolty", "Żółty"], ["Czerwony", "Czerwony"]], t.RAG_Status)}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), t.Priorytet || "Sredni")}
     ${fSelect("Kamień milowy", "Kamien_milowy", [["Nie", "Nie"], ["Tak", "Tak"]], t.Kamien_milowy || "Nie")}
     ${fTextarea("Uwagi", "Uwagi", t.Uwagi)}
@@ -2439,12 +2529,14 @@ async function saveTaskFromForm(data, pid, tid) {
   if (!requireExisting(existing, "etap")) return;
   const fields = {
     ID_Projektu: finalPid, Nazwa_zadania: data.Nazwa_zadania, Kategoria: data.Kategoria,
+    Typ_etapu: data.Typ_etapu || null,
     ID_Osoby_odpowiedzialnej: data.ID_Osoby_odpowiedzialnej || null,
     Data_start_plan: parseDateInput(data.Data_start_plan), Data_koniec_plan: parseDateInput(data.Data_koniec_plan),
     Data_start_rzeczywista: existing.Data_start_rzeczywista || null, Data_koniec_rzeczywista: existing.Data_koniec_rzeczywista || null,
     Procent_ukonczenia: num(data.Procent_ukonczenia_pct) / 100,
     ID_Zadania_poprzedzajacego: existing.ID_Zadania_poprzedzajacego || null,
-    Kamien_milowy: data.Kamien_milowy, Status: data.Status, Priorytet: data.Priorytet, Uwagi: data.Uwagi,
+    Kamien_milowy: data.Kamien_milowy, Status: data.Status, RAG_Status: data.RAG_Status || null,
+    Priorytet: data.Priorytet, Uwagi: data.Uwagi,
   };
   const saved = await persistEntity({ isNew, endpoint: "/api/harmonogram", id: tid, fields, dateFields: DATE_FIELDS.tasks, errorLabel: "etap" });
   if (!saved) return;
@@ -2460,13 +2552,16 @@ async function deleteTask(tid, pid) {
   if (!await deleteEntity(`/api/harmonogram/${tid}`, "etap")) return;
   STATE.tasks = STATE.tasks.filter(t => t.ID_Zadania !== tid);
   STATE.tickets.forEach(t => { if (t.ID_Etapu === tid) t.ID_Etapu = null; });
+  STATE.taskStages = STATE.taskStages.filter(e => e.ID_Zadania !== tid); // mirror ON DELETE CASCADE w schema.sql
   renderAll();
   openProjectDetail(pid);
 }
 
 /* ---------- Formularz: Zadanie (ticket) przypisane do osoby ---------- */
-function stageOptionsPairs(pid) {
-  return [["", "— brak (samodzielny ticket) —"], ...tasksForProject(pid).map(t => [t.ID_Zadania, t.Nazwa_zadania])];
+// Faza 1 (B5): jeden ticket moze byc przypiety do kilku etapow naraz (zadania_etapy, n:n) -
+// zastepuje dawny pojedynczy <select> ID_Etapu (mirror fCheckboxGroup, patrz openTicketForm).
+function stageCheckboxPairs(pid) {
+  return tasksForProject(pid).map(t => [t.ID_Zadania, t.Nazwa_zadania]);
 }
 
 function renderCommentText(tresc) {
@@ -2650,7 +2745,7 @@ function openTicketForm(pid, tid = null, seed = null) {
     ${fSelect("Podwykonawca (jeśli zlecone branżyście)", "ID_Podwykonawcy", subcontractorOptionsPairs(), t.ID_Podwykonawcy)}
     ${fInput("Wycena podwykonawcy", "Wycena_podwykonawcy", t.Wycena_podwykonawcy, "number", "min=0 step=0.01")}
     ${fInput("Termin *", "Termin", t.Termin, "date", "required")}
-    ${fSelect("Powiązany etap harmonogramu", "ID_Etapu", stageOptionsPairs(currentPid), t.ID_Etapu)}
+    ${fCheckboxGroup("Powiązane etapy / sub-projekty", "Etapy", stageCheckboxPairs(currentPid), tid ? stageIdsForTicket(tid) : (seed?._seedStageIds || []))}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), t.Priorytet || "Sredni")}
     ${fSelect("Status", "Status", pairs(STATUSY_TICKIETOW), t.Status || "Backlog")}
     ${fInput("Szacowane roboczogodziny", "Szacowane_roboczogodziny", t.Szacowane_roboczogodziny, "number", "min=0 step=0.5")}
@@ -2675,10 +2770,12 @@ function openTicketForm(pid, tid = null, seed = null) {
       const chosenPid = e.target.value;
       const osobaSelect = $('#modalForm [name="ID_Osoby_przypisanej"]');
       const wspomagajacySelect = $('#modalForm [name="ID_Osoby_wspomagajacej"]');
-      const etapSelect = $('#modalForm [name="ID_Etapu"]');
+      const etapGroup = $('#modalForm [data-checkbox-group="Etapy"]');
       osobaSelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid, osobaSelect.value), osobaSelect.value);
       wspomagajacySelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid, wspomagajacySelect.value), wspomagajacySelect.value);
-      etapSelect.innerHTML = optionsHtml(stageOptionsPairs(chosenPid), etapSelect.value);
+      // Zaznaczone etapy naleza do POPRZEDNIEGO projektu - reset do pustego zaznaczenia zamiast
+      // proby zachowania (innego projektu ID_Zadania i tak by tu nie pasowaly).
+      if (etapGroup) etapGroup.outerHTML = fCheckboxGroup("Powiązane etapy / sub-projekty", "Etapy", stageCheckboxPairs(chosenPid), []);
     });
   }
 }
@@ -2693,7 +2790,9 @@ async function saveTicketFromForm(data, pid, tid) {
   const existing = isNew ? {} : STATE.tickets.find(x => x.ID_Tickietu === tid);
   if (!requireExisting(existing, "ticket")) return;
   const fields = {
-    ID_Projektu: finalPid, ID_Etapu: data.ID_Etapu || null,
+    ID_Projektu: finalPid,
+    // ID_Etapu porzucony w Faza 1 (B5) - zastapiony przez zadania_etapy (n:n), patrz "Etapy"
+    // nizej. Kolumna zostaje w schemacie (deprecated), ale nowy kod jej juz nie ustawia.
     Tytul: data.Tytul, Opis: data.Opis, ID_Osoby_przypisanej: data.ID_Osoby_przypisanej || null,
     ID_Osoby_zglaszajacej: data.ID_Osoby_zglaszajacej || null,
     ID_Osoby_wspomagajacej: data.ID_Osoby_wspomagajacej || null,
@@ -2705,9 +2804,15 @@ async function saveTicketFromForm(data, pid, tid) {
     Rzeczywiste_roboczogodziny: num(data.Rzeczywiste_roboczogodziny),
     Priorytet: data.Priorytet, Status: data.Status,
     Data_zakonczenia: deriveTicketCompletionDate(data.Status, existing.Data_zakonczenia),
+    Etapy: JSON.parse(data.Etapy || "[]"),
   };
   const saved = await persistEntity({ isNew, endpoint: "/api/zadania_tickety", id: tid, fields, dateFields: DATE_FIELDS.tickets, errorLabel: "zadanie" });
   if (!saved) return;
+  // Odswiez lokalny STATE.taskStages tak samo jak serwer (DELETE stare + INSERT nowe dla tego
+  // ticketu) - inaczej multiselect etapow pokazywalby stan sprzed zapisu az do nastepnego
+  // pelnego przeladowania (/api/bootstrap).
+  STATE.taskStages = STATE.taskStages.filter(e => e.ID_Tickietu !== saved.ID_Tickietu);
+  STATE.taskStages.push(...fields.Etapy.map(eid => ({ ID_Tickietu: saved.ID_Tickietu, ID_Zadania: eid })));
   if (isNew) STATE.tickets.push(saved);
   else Object.assign(existing, saved);
   closeModal();
@@ -2719,6 +2824,7 @@ async function deleteTicket(tid, pid) {
   if (!confirm("Usunąć to zadanie (ticket)?")) return;
   if (!await deleteEntity(`/api/zadania_tickety/${tid}`, "zadanie")) return;
   STATE.tickets = STATE.tickets.filter(t => t.ID_Tickietu !== tid);
+  STATE.taskStages = STATE.taskStages.filter(e => e.ID_Tickietu !== tid); // mirror ON DELETE CASCADE w schema.sql
   renderAll();
   openProjectDetail(pid);
 }
@@ -2735,6 +2841,7 @@ function duplicateTicket(tid) {
     ...t,
     Tytul: (t.Tytul || "") + " (kopia)",
     Termin: null, Status: "Backlog", Rzeczywiste_roboczogodziny: null, Data_zakonczenia: null,
+    _seedStageIds: stageIdsForTicket(tid),
   };
   closeModal();
   openTicketForm(t.ID_Projektu, null, seed);
@@ -3431,14 +3538,16 @@ function openProjectDetail(pid) {
   const onTimeP = projectOnTimeStats(pid);
 
   $("#dpContent").innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-      <div class="type-tag" style="margin-bottom:6px">${typeTag(p.Typ_projektu)} &nbsp;·&nbsp; ${esc(p.Segment || "")}</div>
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:10px;padding-right:36px">
+      <div class="type-tag" style="margin-bottom:6px">${typeTag(projectPrimaryType(p))} &nbsp;·&nbsp; ${esc(p.Segment || "")}</div>
       <div class="item-actions" style="position:static">
         <button class="icon-btn" data-goto-tasks="${esc(pid)}" title="Przejdź do zakładki Zadania, przefiltrowanej do tego projektu">Zadania →</button>
         <button class="icon-btn" data-goto-gantt="${esc(pid)}" title="Przejdź do Harmonogramu, przefiltrowanego do tego projektu">Harmonogram →</button>
         ${can("update", "projekty", p) ? `<button class="icon-btn" data-edit-project="${esc(pid)}">Edytuj</button>` : ""}
         ${(STATE.me.role === "Architekt_PM" && p.Owner === STATE.me.name) || FULL_ACCESS_ROLES.includes(STATE.me.role)
           ? `<button class="icon-btn" data-release-project="${esc(pid)}" title="Usuwa Ciebie jako Ownera/Kierownika i zdejmuje Twoje przypisanie - projekt wraca do stanu nieprzypisanego">Zwolnij projekt</button>` : ""}
+        ${FULL_ACCESS_ROLES.includes(STATE.me.role)
+          ? `<button class="icon-btn" data-merge-projects="${esc(pid)}" title="Przenosi wszystkie sub-projekty/zadania/przypisania innych projektów pod ten (master) i usuwa opróżnione wiersze źródłowe - nieodwracalne">Połącz projekty →</button>` : ""}
         ${can("delete", "projekty", p) ? `<button class="icon-btn danger" data-delete-project="${esc(pid)}">Usuń</button>` : ""}
       </div>
     </div>
@@ -3447,7 +3556,6 @@ function openProjectDetail(pid) {
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
       ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
       ${badge(p.Status, projectStatusClass(p.Status))}
-      ${p.Faza ? fazaTag(p.Faza) : ""}
       ${p.Priorytet ? badge("Priorytet: " + p.Priorytet, priorityBadgeClass(p.Priorytet)) : ""}
     </div>
 
@@ -3620,9 +3728,9 @@ function openProjectDetail(pid) {
     </div>
 
     <div class="dp-section">
-      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Harmonogram projektu (${tasks.length})</h4>
+      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Sub-projekty / etapy (${tasks.length})</h4>
         ${can("create", "harmonogram", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-task="${esc(pid)}">+ Dodaj etap</button>` : ""}</div>
-      ${tasks.length ? buildGantt(tasks, { hideGroupHeader: true }) : `<div class="empty-hint">Brak etapów — kliknij „+ Dodaj etap”, żeby zbudować harmonogram (Gantt).</div>`}
+      ${tasks.length ? buildGantt(tasks, { hideGroupHeader: true }) : `<div class="empty-hint">Brak sub-projektów/etapów — kliknij „+ Dodaj etap”, żeby zbudować harmonogram (Gantt). Status i RAG projektu wyliczają się z sub-projektów.</div>`}
     </div>
 
     ${reports.length ? `<div class="dp-section"><h4>Historia raportów statusowych</h4>${reports.map(r => `
@@ -4022,6 +4130,8 @@ document.addEventListener("click", (e) => {
   if (editProject) { openProjectForm(editProject.getAttribute("data-edit-project")); return; }
   const releaseProjectBtn = e.target.closest("[data-release-project]");
   if (releaseProjectBtn) { releaseProject(releaseProjectBtn.getAttribute("data-release-project")); return; }
+  const mergeProjectsBtn = e.target.closest("[data-merge-projects]");
+  if (mergeProjectsBtn) { openMergeProjectsForm(mergeProjectsBtn.getAttribute("data-merge-projects")); return; }
   const deleteProjectBtn = e.target.closest("[data-delete-project]");
   if (deleteProjectBtn) { deleteProject(deleteProjectBtn.getAttribute("data-delete-project")); return; }
 

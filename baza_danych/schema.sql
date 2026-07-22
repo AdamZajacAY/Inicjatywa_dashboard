@@ -74,11 +74,19 @@ CREATE TABLE IF NOT EXISTS przypisania (
   Status TEXT
 );
 
+-- harmonogram = "etap" projektu, ewoluowany na wprost do roli sub-projektu (warsztat
+-- 22.07.2026, master-projekt/sub-projekt) - Typ_etapu (koncepcja/analiza/PB/PT/PW/nadzor/
+-- konkurs/...) to NOWA, OSOBNA os klasyfikacji od Kategoria (rodzaj pracy w danym etapie,
+-- np. "Rysunki wykonawcze"/"Prezentacja") - nie remapowane jedno na drugie, bo Kategoria ma
+-- juz realne dane w 30 wierszach produkcyjnych, a remapowanie na inna taksonomie bez wiedzy
+-- domenowej zespolu byloby stratne/zgadywane. RAG_Status: ocena ryzyka etapu (mirror
+-- projekty.RAG_Status), master projektu wylicza worst-case z RAG_Status swoich etapow.
 CREATE TABLE IF NOT EXISTS harmonogram (
   ID_Zadania TEXT PRIMARY KEY NOT NULL,
   ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
   Nazwa_zadania TEXT,
   Kategoria TEXT,
+  Typ_etapu TEXT,
   ID_Osoby_odpowiedzialnej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
   Data_start_plan TEXT,
   Data_koniec_plan TEXT,
@@ -88,9 +96,22 @@ CREATE TABLE IF NOT EXISTS harmonogram (
   ID_Zadania_poprzedzajacego TEXT REFERENCES harmonogram(ID_Zadania) ON DELETE SET NULL,
   Kamien_milowy TEXT,
   Status TEXT,
+  RAG_Status TEXT,
   Priorytet TEXT,
   Uwagi TEXT
 );
+
+-- zadania_etapy: tabela laczaca zadania_tickety<->harmonogram (n:n) - zastepuje
+-- zadania_tickety.ID_Etapu (pojedynczy nullable FK, zostaje w schemacie jako deprecated/
+-- nieuzywany przez nowy kod, addytywna migracja jak wszedzie indziej w tym repo). Jedno
+-- zadanie moze byc przypiete do kilku etapow naraz (warsztat: "nie dublowac pracy").
+CREATE TABLE IF NOT EXISTS zadania_etapy (
+  ID_Tickietu TEXT NOT NULL REFERENCES zadania_tickety(ID_Tickietu) ON DELETE CASCADE,
+  ID_Zadania TEXT NOT NULL REFERENCES harmonogram(ID_Zadania) ON DELETE CASCADE,
+  PRIMARY KEY (ID_Tickietu, ID_Zadania)
+);
+CREATE INDEX IF NOT EXISTS idx_zadania_etapy_tickiet ON zadania_etapy(ID_Tickietu);
+CREATE INDEX IF NOT EXISTS idx_zadania_etapy_zadanie ON zadania_etapy(ID_Zadania);
 
 CREATE TABLE IF NOT EXISTS podwykonawcy (
   ID_Podwykonawcy TEXT PRIMARY KEY NOT NULL,

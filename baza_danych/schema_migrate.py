@@ -265,6 +265,89 @@ def ensure_subcontractor_assignment_actual_end_column(db_path):
     _ensure_columns(db_path, "przypisania_podwykonawcow", {"Data_zakonczenia_rzeczywista": "TEXT"})
 
 
+def ensure_harmonogram_subproject_columns(db_path):
+    """Dodaje Typ_etapu i RAG_Status do harmonogram w bazach powstalych przed migracja
+    master-projekt/sub-projekt (Faza 1, warsztat 22.07.2026) - harmonogram ewoluuje do roli
+    sub-projektu, patrz komentarz przy CREATE TABLE w schema.sql."""
+    _ensure_columns(db_path, "harmonogram", {"Typ_etapu": "TEXT", "RAG_Status": "TEXT"})
+
+
+def ensure_zadania_etapy_table(db_path):
+    """Dodaje tabele zadania_etapy (n:n zadania_tickety<->harmonogram) do baz powstalych przed
+    jej wprowadzeniem - zastepuje zadania_tickety.ID_Etapu (zostaje w schemacie jako
+    deprecated/nieuzywany), pozwala przypiac jedno zadanie do kilku etapow naraz."""
+    _ensure_table(db_path, "zadania_etapy")
+    conn = sqlite3.connect(db_path)
+    try:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            schema_sql = f.read()
+        for stmt in re.findall(r"CREATE INDEX IF NOT EXISTS idx_zadania_etapy_.*?;", schema_sql):
+            conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# projekty.Status i harmonogram.Status sa DWOMA ROZNYMI slownikami (nie te same stringi,
+# patrz komentarz przy compute_master_status() w server.py) - migracja NIE moze kopiowac
+# wartosci 1:1, inaczej wyliczanie rollupu (ktore porownuje do slownika harmonogram) cicho
+# nie rozpozna np. "Zakonczony" (projekty) jako rownowaznika "Zakonczone" (harmonogram) i
+# kazdy zmigrowany projekt wygladalby jak "Planowanie" niezaleznie od realnego stanu sprzed
+# migracji. Nie importowane z server.py (uniknięcie importu kolowego - server.py juz
+# importuje Z schema_migrate.py).
+_PROJECT_STATUS_TO_STAGE_STATUS = {
+    "Planowanie": "Nie rozpoczete",
+    "W realizacji": "W trakcie",
+    "Wstrzymany": "Wstrzymany",
+    "Przeglad": "Przeglad",
+    "Zakonczony": "Zakonczone",
+    "Anulowany": "Anulowany",
+}
+
+
+def ensure_default_subproject_for_legacy_projects(db_path):
+    """Migracja master-projekt/sub-projekt (Faza 1, warsztat 22.07.2026): kazdy istniejacy
+    wiersz projekty bez ANI JEDNEGO sub-projektu (harmonogram) dostaje dokladnie jeden,
+    dziedziczacy jego dotychczasowy Typ_projektu/Faza (jako Typ_etapu)/Status (przetlumaczony
+    na slownik harmonogram, patrz _PROJECT_STATUS_TO_STAGE_STATUS)/RAG_Status/daty/postep -
+    inaczej compute_master_status()/compute_master_rag() w server.py (ktore ZAWSZE wyliczaja
+    projekty.Status/RAG_Status na odczycie z sub-projektow) widzialyby kazdy istniejacy
+    projekt jako "Planowanie"/brak RAG, dopoki ktos recznie nie doda etapu.
+    Bezpieczne do wielokrotnego wywolania (idempotentne) - pomija projekty, ktore juz maja
+    >=1 sub-projekt (utworzone po migracji przez multiselect typu, albo juz raz zmigrowane).
+    NIE laczy rozjechanych dzis wierszy tego samego tematu (np. "konkurs 97 = projekt
+    Wieliszew") w jeden master - to wymaga wiedzy domenowej, patrz osobna akcja "Polacz
+    projekty" w app.js, dostepna dla COO/Admin."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        projects = conn.execute("SELECT * FROM projekty").fetchall()
+        existing_ids = {row[0] for row in conn.execute("SELECT DISTINCT ID_Projektu FROM harmonogram").fetchall()}
+        max_n = 0
+        for row in conn.execute("SELECT ID_Zadania FROM harmonogram").fetchall():
+            m = re.match(r"^ZAD(\d+)$", row[0] or "")
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        for p in projects:
+            if p["ID_Projektu"] in existing_ids:
+                continue
+            max_n += 1
+            new_id = f"ZAD{str(max_n).zfill(3)}"
+            stage_status = _PROJECT_STATUS_TO_STAGE_STATUS.get(p["Status"], "Nie rozpoczete")
+            conn.execute(
+                "INSERT INTO harmonogram (ID_Zadania, ID_Projektu, Nazwa_zadania, Typ_etapu, "
+                "Status, RAG_Status, Data_start_plan, Data_koniec_plan, Data_koniec_rzeczywista, "
+                "Procent_ukonczenia) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_id, p["ID_Projektu"], p["Typ_projektu"] or p["Nazwa"] or "Etap głowny",
+                 p["Typ_projektu"] or p["Faza"], stage_status, p["RAG_Status"],
+                 p["Data_rozpoczecia"], p["Data_zakonczenia_planowana"],
+                 p["Data_zakonczenia_rzeczywista"], p["Procent_postepu"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")
