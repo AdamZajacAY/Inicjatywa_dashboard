@@ -2623,8 +2623,8 @@ function pickMentionSuggestion(name) {
   closeMentionSuggestions();
 }
 
-function openTicketForm(pid, tid = null) {
-  const t = tid ? STATE.tickets.find(x => x.ID_Tickietu === tid) : {};
+function openTicketForm(pid, tid = null, seed = null) {
+  const t = tid ? STATE.tickets.find(x => x.ID_Tickietu === tid) : (seed || {});
   if (!requireExisting(t, "ticket")) return;
   const currentPid = pid || t.ID_Projektu || "";
   // Nowy ticket: domyslnie zglasza go zalogowana osoba (decyzja z pytania: auto-wypelnij,
@@ -2633,6 +2633,9 @@ function openTicketForm(pid, tid = null) {
   // ktora akurat teraz go otwiera.
   const zglaszajacyDefault = tid ? t.ID_Osoby_zglaszajacej : STATE.me.personId;
   const body = `
+    ${tid && can("create", "zadania_tickety", { ID_Projektu: t.ID_Projektu }) ? `<div style="grid-column:1/-1;text-align:right;margin-bottom:-8px">
+      <button type="button" class="icon-btn" data-duplicate-ticket="${esc(tid)}">📋 Duplikuj to zadanie</button>
+    </div>` : ""}
     ${!pid ? fSelect("Projekt *", "ID_Projektu", [["", "— wybierz —"],
         ...STATE.projects.filter(p => can("create", "zadania_tickety", { ID_Projektu: p.ID_Projektu })).map(p => [p.ID_Projektu, p.Nazwa])],
         currentPid) : ""}
@@ -2714,6 +2717,23 @@ async function deleteTicket(tid, pid) {
   STATE.tickets = STATE.tickets.filter(t => t.ID_Tickietu !== tid);
   renderAll();
   openProjectDetail(pid);
+}
+
+function duplicateTicket(tid) {
+  // Otwiera formularz NOWEGO ticketu wypelniony wartosciami zrodlowego - na wprost zyczenie
+  // uzytkownika ("zadania niewiele sie od siebie roznia, a trzeba wprowadzac wszystko od
+  // zera"). Termin/Status/Rzeczywiste_roboczogodziny/Data_zakonczenia celowo NIE sa kopiowane -
+  // to pola, ktore niemal zawsze roznia sie miedzy "podobnymi" zadaniami (a przekopiowanie
+  // minionego Terminu tworzyloby duplikat od razu oznaczony jako opozniony).
+  const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
+  if (!requireExisting(t, "ticket")) return;
+  const seed = {
+    ...t,
+    Tytul: (t.Tytul || "") + " (kopia)",
+    Termin: null, Status: "Backlog", Rzeczywiste_roboczogodziny: null, Data_zakonczenia: null,
+  };
+  closeModal();
+  openTicketForm(t.ID_Projektu, null, seed);
 }
 
 /* ---------- Formularz: Ryzyko / problem ---------- */
@@ -3545,6 +3565,7 @@ function openProjectDetail(pid) {
       ${tickets.length ? tickets.slice().sort((a, b) => (a.Termin?.getTime() || 0) - (b.Termin?.getTime() || 0)).map(t => `
         <div class="dp-list-item" ${can("update", "zadania_tickety", t) ? `data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:pointer"` : ""}>
           <div class="item-actions">
+            ${can("create", "zadania_tickety", t) ? `<button class="icon-btn" data-duplicate-ticket="${esc(t.ID_Tickietu)}">Duplikuj</button>` : ""}
             ${can("delete", "zadania_tickety", t) ? `<button class="icon-btn danger" data-delete-ticket="${esc(t.ID_Tickietu)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">${esc(t.ID_Tickietu)} — ${esc(t.Tytul)} ${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))}</div>
@@ -4023,6 +4044,8 @@ document.addEventListener("click", (e) => {
   if (addTicket) { openTicketForm(addTicket.getAttribute("data-add-ticket")); return; }
   const deleteTicketBtn = e.target.closest("[data-delete-ticket]");
   if (deleteTicketBtn) { deleteTicket(deleteTicketBtn.getAttribute("data-delete-ticket"), deleteTicketBtn.getAttribute("data-project")); return; }
+  const duplicateTicketBtn = e.target.closest("[data-duplicate-ticket]");
+  if (duplicateTicketBtn) { duplicateTicket(duplicateTicketBtn.getAttribute("data-duplicate-ticket")); return; }
   const addCommentBtn = e.target.closest("[data-add-comment]");
   if (addCommentBtn) { addTicketComment(addCommentBtn.getAttribute("data-add-comment")); return; }
   const tkViewBtn = e.target.closest("[data-tk-view]");
