@@ -275,6 +275,24 @@ CREATE TABLE IF NOT EXISTS dzialki (
 );
 CREATE INDEX IF NOT EXISTS idx_dzialki_projekt ON dzialki(ID_Projektu);
 
+-- etykiety_konfiguracji: edytowalny slownik etykiet (Faza 2, A13, warsztat 22.07.2026) -
+-- zastepuje hardkod TYLKO dla kategorii BEZ semantyki wplywajacej na inna logike (Typ_etapu/
+-- Segment/Funkcja_biura). SWIADOMIE NIE obejmuje Status/Priorytet/RAG_Status/Faza - Status ma
+-- twarda zaleznosc w rollupie master-projektu (compute_master_status() w server.py porownuje
+-- do konkretnych stringow), Priorytet ma kolory oznaczajace realna wage/pilnosc (swobodna
+-- zmiana kolorow zaburzylaby czytelnosc "co jest pilne"), Faza jest wycofywana (A10) - swobodna
+-- edycja ktoregokolwiek z tych trzech zepsulaby po cichu inna logike.
+CREATE TABLE IF NOT EXISTS etykiety_konfiguracji (
+  ID_Etykiety TEXT PRIMARY KEY NOT NULL,
+  Kategoria TEXT NOT NULL,
+  Wartosc TEXT NOT NULL,
+  Kolor TEXT,
+  Kolejnosc INTEGER,
+  Aktywna TEXT,
+  UNIQUE(Kategoria, Wartosc)
+);
+CREATE INDEX IF NOT EXISTS idx_etykiety_kategoria ON etykiety_konfiguracji(Kategoria);
+
 CREATE TABLE IF NOT EXISTS ryzyka_i_problemy (
   ID TEXT PRIMARY KEY NOT NULL,
   ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,

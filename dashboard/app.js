@@ -7,6 +7,7 @@ const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
   clients: [], clientContacts: [], checklists: [], notifications: [], taskStages: [], parcels: [],
+  labelConfig: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(), clientById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -104,9 +105,6 @@ const FAZA_COLORS = {
   "Nadzor autorski": "cat-7",
   "Zakonczenie": "cat-4",
 };
-const FUNKCJE_BIURA = ["Projektant wiodacy", "Nadzor autorski", "Analiza/doradztwo", "Uczestnik konkursu", "Koordynacja branzowa"];
-
-const SEGMENTS = ["Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"];
 const STATUSES = ["Planowanie", "W realizacji", "Wstrzymany", "Przeglad", "Zakonczony", "Anulowany"];
 // Kolejnosc = chronologia typowego projektu (uzyta 1:1 w <select>, patrz pairs()) - lustrzane
 // odbicie ENUM_FIELDS["projekty"]["Faza"] w server.py, oba miejsca trzeba aktualizowac razem.
@@ -119,12 +117,10 @@ const ROLE_W_PROJEKCIE = ["Sponsor", "Owner", "Kierownik projektu", "Czlonek zes
 // Wstrzymany/Przeglad dopisane w Faza 1 - Status przenosi sie z projekty na sub-projekt (A9),
 // wiec sub-projekt musi umiec reprezentowac te same stany co dawny projekty.Status (STATUSES).
 const TASK_STATUSES = ["Nie rozpoczete", "W trakcie", "Wstrzymany", "Zakonczone", "Opoznione", "Przeglad", "Anulowany"];
-// Typ_etapu = ktora faza procesu ten sub-projekt reprezentuje (Faza 1, warsztat 22.07.2026) -
-// mirror ENUM_FIELDS["harmonogram"]["Typ_etapu"] w server.py, startowa lista wg kolejnosci
-// procesu (A12), do potwierdzenia/edycji pozniej przez A13 (edytowalne etykiety).
-const TYP_ETAPU = ["Konkurs", "Analiza urbanistyczna/chlonnosci", "Projekt koncepcyjny",
-  "Projekt budowlany (PB)", "Projekt techniczny (PT)", "Projekt wykonawczy (PW)",
-  "Nadzor autorski", "Przetarg", "Budowa", "Zakonczenie", "Inne"];
+// Typ_etapu/Segment/Funkcja_biura NIE sa juz statycznymi stalymi (Faza 2, A13) - edytowalny
+// slownik w etykiety_konfiguracji, patrz labelPairsFor()/labelColor() nizej. Status/Priorytet/
+// Faza swiadomie ZOSTAJA statyczne (patrz komentarz w schema.sql przy CREATE TABLE
+// etykiety_konfiguracji - maja zaleznosci w innej logice, ktore swobodna edycja by zepsula).
 const KATEGORIE_ZADAN = ["Koncepcja", "Konsultacje", "Projektowanie", "Rysunki wykonawcze",
   "Dokumentacja przetargowa", "Pozwolenia/Uzgodnienia", "Nadzor autorski", "Koordynacja branzowa",
   "Wizja lokalna/Spotkanie", "Prezentacja", "Administracja/Inne"];
@@ -316,7 +312,10 @@ function badge(text, cls) {
   return `<span class="badge badge-${cls}"><span class="dot" style="background:currentColor"></span>${esc(text)}</span>`;
 }
 function typeTag(type) {
-  const slot = TYPE_COLORS[type] || "cat-3";
+  // labelColor() pierwsze - Faza 2 (A13) Typ_etapu ma teraz kolor z edytowalnego slownika;
+  // TYPE_COLORS zostaje jako fallback dla starych, sprzed-Fazy-1 wartosci Typ_projektu
+  // (ktore nie maja juz zadnego wpisu w etykiety_konfiguracji, patrz projectPrimaryType()).
+  const slot = labelColor("Typ_etapu", type) || TYPE_COLORS[type] || "cat-3";
   return `<span class="type-tag"><span class="dot" style="background:var(--${slot})"></span>${esc(type || "—")}</span>`;
 }
 function fazaTag(faza) {
@@ -483,6 +482,7 @@ async function loadFromApi() {
   STATE.checklists = data.checklists || [];
   STATE.taskStages = data.taskStages || [];
   STATE.parcels = data.parcels || [];
+  STATE.labelConfig = data.labelConfig || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
     assignedProjectIds: data.me.assignedProjectIds || [],
@@ -1101,7 +1101,7 @@ function projectCardHtml(p) {
   const budPct = tot ? Math.min(100, spent / tot * 100) : 0;
   const over = tot && spent > tot;
   const primaryType = projectPrimaryType(p);
-  const slot = TYPE_COLORS[primaryType] || "cat-3";
+  const slot = labelColor("Typ_etapu", primaryType) || TYPE_COLORS[primaryType] || "cat-3";
   return `
     <div class="project-card" style="border-left-color:var(--${slot})" data-open-project="${esc(p.ID_Projektu)}">
       <div class="pc-top">
@@ -1884,6 +1884,110 @@ function renderRyzyka() {
 function roleBadgeClass(role) { return role == null ? "warning" : role === "Admin" || role === "COO" ? "good" : "muted"; }
 function fmtBytes(n) { return n == null ? "—" : n < 1024 * 1024 ? Math.round(n / 1024) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB"; }
 
+/* ---------- Etykiety (Faza 2, A13) - edytowalny slownik Typ_etapu/Segment/Funkcja_biura ---------- */
+const LABEL_CATEGORIES = [["Typ_etapu", "Typ etapu (sub-projektu)"], ["Segment", "Segment"], ["Funkcja_biura", "Funkcja biura"]];
+const LABEL_COLOR_CHOICES = ["cat-1", "cat-2", "cat-3", "cat-4", "cat-5", "cat-6", "cat-7", "cat-8"];
+// Wszystkie etykiety kategorii (w tym NIEaktywne, wyszarzone) - do panelu zarzadzania.
+// labelsForCategory() (tylko aktywne) zostaje osobno, uzywane w dropdownach formularzy.
+function allLabelsForCategory(kategoria) {
+  return STATE.labelConfig.filter(e => e.Kategoria === kategoria).sort((a, b) => (a.Kolejnosc ?? 0) - (b.Kolejnosc ?? 0));
+}
+function renderLabelAdminSection() {
+  return `
+    <div class="section-head"><h2>Etykiety</h2></div>
+    <div class="panel" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px">
+      ${LABEL_CATEGORIES.map(([kat, label]) => {
+        const items = allLabelsForCategory(kat);
+        return `
+        <div>
+          <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">${esc(label)}</h4>
+            <button class="icon-btn" data-add-label="${esc(kat)}">+ Dodaj</button></div>
+          ${items.map((e, i) => `
+            <div class="dp-list-item" style="opacity:${e.Aktywna === "Nie" ? "0.5" : "1"}">
+              <div class="item-actions">
+                <button class="icon-btn" data-move-label="${esc(e.ID_Etykiety)}" data-dir="up" ${i === 0 ? "disabled" : ""}>↑</button>
+                <button class="icon-btn" data-move-label="${esc(e.ID_Etykiety)}" data-dir="down" ${i === items.length - 1 ? "disabled" : ""}>↓</button>
+                <button class="icon-btn" data-edit-label="${esc(e.ID_Etykiety)}">Edytuj</button>
+                <button class="icon-btn" data-toggle-label-active="${esc(e.ID_Etykiety)}">${e.Aktywna === "Nie" ? "Aktywuj" : "Dezaktywuj"}</button>
+                <button class="icon-btn danger" data-delete-label="${esc(e.ID_Etykiety)}">Usuń</button>
+              </div>
+              <div class="title"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;background:var(--${e.Kolor || "cat-3"})"></span>${esc(e.Wartosc)}</div>
+            </div>`).join("") || `<div class="empty-hint">Brak etykiet.</div>`}
+        </div>`;
+      }).join("")}
+    </div>
+  `;
+}
+function openLabelForm(kategoria, id = null) {
+  const e = id ? STATE.labelConfig.find(x => x.ID_Etykiety === id) : {};
+  if (id && !requireExisting(e, "etykieta")) return;
+  const body = `
+    ${fInput("Wartość *", "Wartosc", e.Wartosc, "text", "required")}
+    ${fSelect("Kolor", "Kolor", pairs(LABEL_COLOR_CHOICES), e.Kolor || "cat-3")}
+  `;
+  openModal(id ? "Edytuj etykietę" : "Nowa etykieta", body, {
+    submitLabel: "Zapisz",
+    onSubmit: (data) => saveLabelFromForm(data, kategoria, id),
+  });
+}
+async function saveLabelFromForm(data, kategoria, id) {
+  if (!data.Wartosc) { alert("Podaj wartość etykiety."); return; }
+  const isNew = !id;
+  const existing = isNew ? {} : STATE.labelConfig.find(x => x.ID_Etykiety === id);
+  if (!isNew && !requireExisting(existing, "etykieta")) return;
+  const fields = isNew
+    ? { Kategoria: kategoria, Wartosc: data.Wartosc, Kolor: data.Kolor, Kolejnosc: allLabelsForCategory(kategoria).length, Aktywna: "Tak" }
+    : { Wartosc: data.Wartosc, Kolor: data.Kolor };
+  const saved = await persistEntity({ isNew, endpoint: "/api/etykiety_konfiguracji", id, fields, errorLabel: "etykiety" });
+  if (!saved) return;
+  if (isNew) STATE.labelConfig.push(saved); else Object.assign(existing, saved);
+  closeModal();
+  renderAll();
+}
+async function deleteLabel(id) {
+  if (!confirm("Usunąć tę etykietę? Projekty/etapy, które już jej używają, zachowają starą wartość jako zwykły tekst, ale nie będzie już można jej wybrać dla nowych.")) return;
+  if (!await deleteEntity(`/api/etykiety_konfiguracji/${id}`, "etykiety")) return;
+  STATE.labelConfig = STATE.labelConfig.filter(e => e.ID_Etykiety !== id);
+  renderAll();
+}
+async function toggleLabelActive(id) {
+  const e = STATE.labelConfig.find(x => x.ID_Etykiety === id);
+  if (!e) return;
+  const prev = e.Aktywna;
+  e.Aktywna = prev === "Nie" ? "Tak" : "Nie";
+  renderAll();
+  try {
+    const saved = await apiPut(`/api/etykiety_konfiguracji/${id}`, { Aktywna: e.Aktywna });
+    Object.assign(e, saved);
+  } catch (err) {
+    e.Aktywna = prev;
+    alert("Nie udało się zaktualizować etykiety: " + err.message);
+  }
+  renderAll();
+}
+async function moveLabel(id, dir) {
+  const e = STATE.labelConfig.find(x => x.ID_Etykiety === id);
+  if (!e) return;
+  const siblings = allLabelsForCategory(e.Kategoria);
+  const idx = siblings.findIndex(x => x.ID_Etykiety === id);
+  const swapIdx = dir === "up" ? idx - 1 : idx + 1;
+  if (swapIdx < 0 || swapIdx >= siblings.length) return;
+  const other = siblings[swapIdx];
+  const myOrder = e.Kolejnosc, otherOrder = other.Kolejnosc;
+  e.Kolejnosc = otherOrder; other.Kolejnosc = myOrder;
+  renderAll();
+  try {
+    await Promise.all([
+      apiPut(`/api/etykiety_konfiguracji/${e.ID_Etykiety}`, { Kolejnosc: e.Kolejnosc }),
+      apiPut(`/api/etykiety_konfiguracji/${other.ID_Etykiety}`, { Kolejnosc: other.Kolejnosc }),
+    ]);
+  } catch (err) {
+    e.Kolejnosc = myOrder; other.Kolejnosc = otherOrder;
+    alert("Nie udało się zmienić kolejności: " + err.message);
+    renderAll();
+  }
+}
+
 function renderUsers() {
   $("#view-uzytkownicy").innerHTML = `
     <div class="section-head"><h2>Użytkownicy</h2><button data-add-user="1">+ Dodaj użytkownika</button></div>
@@ -1910,6 +2014,8 @@ function renderUsers() {
         </tbody>
       </table>
     </div>
+
+    ${renderLabelAdminSection()}
 
     <div class="section-head"><h2>Backup bazy danych</h2><button data-backup-now="1">Backup teraz</button></div>
     <div class="panel" style="overflow-x:auto">
@@ -2127,6 +2233,19 @@ function fCheckboxGroup(label, name, options, selectedValues = []) {
   </label>`;
 }
 function pairs(arr) { return arr.map(x => [x, x]); }
+// Faza 2 (A13): Typ_etapu/Segment/Funkcja_biura sa teraz edytowalnym slownikiem
+// (STATE.labelConfig, mirror etykiety_konfiguracji w server.py) zamiast statycznych tablic -
+// posortowane wg Kolejnosc, tylko aktywne (Aktywna !== "Nie", ten sam warunek co
+// active_label_values() w server.py).
+function labelsForCategory(kategoria) {
+  return STATE.labelConfig
+    .filter(e => e.Kategoria === kategoria && e.Aktywna !== "Nie")
+    .sort((a, b) => (a.Kolejnosc ?? 0) - (b.Kolejnosc ?? 0));
+}
+function labelPairsFor(kategoria) { return labelsForCategory(kategoria).map(e => [e.Wartosc, e.Wartosc]); }
+function labelColor(kategoria, wartosc) {
+  return STATE.labelConfig.find(e => e.Kategoria === kategoria && e.Wartosc === wartosc)?.Kolor;
+}
 function teamOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.map(t => [t.ID_Osoby, t.Imie_i_nazwisko])]; }
 // Sponsor projektu = czlonek zarzadu odpowiedzialny za finansowanie - zawezone do
 // istniejacej, prawdziwej wartosci enuma Dzial="Zarzad" (nic nowego nie trzeba dodawac do
@@ -2175,15 +2294,15 @@ function openProjectForm(pid = null) {
     ${fInput("Sygnatura (numer)", "Sygnatura", p.Sygnatura)}
     ${fInput("Symbol projektu", "Symbol_projektu", p.Symbol_projektu)}
     ${fTextarea("Nazwa zamierzenia budowlanego (oficjalny tytuł z PFU)", "Nazwa_zamierzenia_budowlanego", p.Nazwa_zamierzenia_budowlanego)}
-    ${fSelect("Funkcja biura", "Funkcja_biura", pairs(FUNKCJE_BIURA), p.Funkcja_biura)}
-    ${fSelect("Segment", "Segment", pairs(SEGMENTS), p.Segment)}
+    ${fSelect("Funkcja biura", "Funkcja_biura", labelPairsFor("Funkcja_biura"), p.Funkcja_biura)}
+    ${fSelect("Segment", "Segment", labelPairsFor("Segment"), p.Segment)}
     ${fSelect("Owner *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
     ${fSelect("Kierownik projektu", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu || architektDefaultOwner)}
     ${fSelect("Sponsor (zarząd)", "ID_Osoby_sponsora", boardMemberOptionsPairs(), p.ID_Osoby_sponsora)}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), p.Priorytet || "Sredni")}
     ${fTagsInput("Tagi", "Tagi", p.Tagi, allProjectTags())}
     ${statusRagInfo}
-    ${!pid ? fCheckboxGroup("Etapy / sub-projekty (wybierz typy)", "Typy_etapow", pairs(TYP_ETAPU), []) : ""}
+    ${!pid ? fCheckboxGroup("Etapy / sub-projekty (wybierz typy)", "Typy_etapow", labelPairsFor("Typ_etapu"), []) : ""}
 
     <div class="form-section-title">Terminy i postęp</div>
     ${fInput("Data rozpoczęcia", "Data_rozpoczecia", p.Data_rozpoczecia, "date")}
@@ -2572,7 +2691,7 @@ function openTaskForm(pid, tid = null) {
         ...STATE.projects.filter(p => can("create", "harmonogram", { ID_Projektu: p.ID_Projektu })).map(p => [p.ID_Projektu, p.Nazwa])],
         currentPid) : ""}
     ${fInput("Nazwa etapu *", "Nazwa_zadania", t.Nazwa_zadania, "text", "required")}
-    ${fSelect("Typ etapu (sub-projektu)", "Typ_etapu", [["", "— brak —"], ...pairs(TYP_ETAPU)], t.Typ_etapu)}
+    ${fSelect("Typ etapu (sub-projektu)", "Typ_etapu", [["", "— brak —"], ...labelPairsFor("Typ_etapu")], t.Typ_etapu)}
     ${fSelect("Kategoria", "Kategoria", [["", "— wybierz —"], ...pairs(KATEGORIE_ZADAN)], t.Kategoria)}
     ${fSelect("Odpowiedzialny", "ID_Osoby_odpowiedzialnej", teamOptionsPairs(), t.ID_Osoby_odpowiedzialnej)}
     ${fInput("Start (plan) *", "Data_start_plan", t.Data_start_plan, "date", "required")}
@@ -4387,6 +4506,22 @@ document.addEventListener("click", (e) => {
   if (toggleActiveUser) { toggleUserActive(toggleActiveUser.getAttribute("data-toggle-active-user")); return; }
   const backupNowBtn = e.target.closest("[data-backup-now]");
   if (backupNowBtn) { triggerBackupNow(); return; }
+
+  const addLabelBtn = e.target.closest("[data-add-label]");
+  if (addLabelBtn) { openLabelForm(addLabelBtn.getAttribute("data-add-label")); return; }
+  const editLabelBtn = e.target.closest("[data-edit-label]");
+  if (editLabelBtn) {
+    const eid = editLabelBtn.getAttribute("data-edit-label");
+    const lbl = STATE.labelConfig.find(x => x.ID_Etykiety === eid);
+    if (lbl) openLabelForm(lbl.Kategoria, eid);
+    return;
+  }
+  const deleteLabelBtn = e.target.closest("[data-delete-label]");
+  if (deleteLabelBtn) { deleteLabel(deleteLabelBtn.getAttribute("data-delete-label")); return; }
+  const toggleLabelBtn = e.target.closest("[data-toggle-label-active]");
+  if (toggleLabelBtn) { toggleLabelActive(toggleLabelBtn.getAttribute("data-toggle-label-active")); return; }
+  const moveLabelBtn = e.target.closest("[data-move-label]");
+  if (moveLabelBtn) { moveLabel(moveLabelBtn.getAttribute("data-move-label"), moveLabelBtn.getAttribute("data-dir")); return; }
 
   // klik w pasek/wiersz Gantta = edycja etapu (sprawdzane po przyciskach add/delete, żeby nie kolidowało)
   const taskRow = e.target.closest("[data-task-id]");

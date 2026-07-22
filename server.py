@@ -42,6 +42,7 @@ from baza_danych.schema_migrate import (
     ensure_harmonogram_subproject_columns, ensure_zadania_etapy_table,
     ensure_default_subproject_for_legacy_projects, ensure_project_identification_columns,
     ensure_project_location_columns, ensure_dzialki_table,
+    ensure_etykiety_konfiguracji_table, ensure_seed_etykiety_konfiguracji,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -115,6 +116,8 @@ ensure_default_subproject_for_legacy_projects(DB_PATH)  # jw. - musi biec PO dwo
 ensure_project_identification_columns(DB_PATH)  # jw. - Sygnatura/Symbol_projektu/Nazwa_zamierzenia_budowlanego (Faza 2)
 ensure_project_location_columns(DB_PATH)  # jw. - Kraj/Wojewodztwo/Powiat/Gmina/Miejscowosc/Ulica/Kod_pocztowy (Faza 2)
 ensure_dzialki_table(DB_PATH)  # jw. - nowa tabela dzialek ewidencyjnych (Faza 2)
+ensure_etykiety_konfiguracji_table(DB_PATH)  # jw. - nowa tabela edytowalnych etykiet (Faza 2, A13)
+ensure_seed_etykiety_konfiguracji(DB_PATH)  # jw. - musi biec PO powyzszej (potrzebuje tabeli)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -205,6 +208,7 @@ TABLES = {
     "kontakty_klienta": ("ID_Kontaktu", "KKL", 3),
     "checklisty_projektow": ("ID_Pozycji", "CHK", 4),
     "dzialki": ("ID_Dzialki", "DZI", 3),
+    "etykiety_konfiguracji": ("ID_Etykiety", "ETY", 3),
 }
 
 # tabela SQL -> klucz w odpowiedzi /api/bootstrap (nazwy pol STATE.* w dashboard/app.js)
@@ -221,6 +225,7 @@ BOOTSTRAP_KEYS = {
     "podwykonawcy": "subcontractors", "przypisania_podwykonawcow": "subcontractorAssignments",
     "ideapool": "ideapool", "klienci": "clients", "kontakty_klienta": "clientContacts",
     "checklisty_projektow": "checklists", "zadania_etapy": "taskStages", "dzialki": "parcels",
+    "etykiety_konfiguracji": "labelConfig",
 }
 
 
@@ -391,6 +396,10 @@ TABLE_SCOPE = {
     "kontakty_klienta": "global",
     "checklisty_projektow": "project_scoped",
     "dzialki": "project_scoped",
+    # global (nie admin_only!) - kazda rola musi umiec ODCZYTAC te etykiety, zeby wypelnic
+    # wlasne dropdowny (Typ_etapu/Segment/Funkcja_biura) - zapis ograniczony osobno w
+    # can_write() do FULL_ACCESS_ROLES (patrz jego komentarz), nie przez TABLE_SCOPE.
+    "etykiety_konfiguracji": "global",
 }
 
 # Pola zerowane w odpowiedzi GET wylacznie dla roli Specjalista (nigdy nie usuwane - fmtMoney()/
@@ -476,6 +485,13 @@ def can_write(conn, user, action, table, row):
             # czlonkow zarzadu (COO/Admin, juz obsluzeni wyzej) - "przypisywani sa jedynie do
             # czlonkow zarzadu". Odczyt (GET) zostaje portfolio-wide bez zmian (scope "global"),
             # to zawezenie dotyczy wylacznie zapisu.
+            return False
+        if table == "etykiety_konfiguracji":
+            # Zarzadzanie slownikiem etykiet (Faza 2, A13) - zmiana wplywa na dropdowny
+            # WSZYSTKICH uzytkownikow, wiec zarezerwowane dla COO/Admin (juz obsluzeni wyzej).
+            # Jawny warunek zamiast polegania na domyslnym "return False" na koncu funkcji -
+            # ta tabela nie ma ID_Projektu, wiec generyczny fallback nizej i tak zwrociłby
+            # False, ale jawnosc tutaj czyni to celowa decyzja, nie przypadkiem.
             return False
         if table == "zespol":
             # Architekt prowadzacy moze dodac NOWA osobe do zespolu (np. onboarding czlonka
@@ -717,7 +733,7 @@ def _create_subprojects_for_selected_types(conn, new_row, user):
     typy = payload.get("Typy_etapow")
     if not isinstance(typy, list):
         return
-    valid_typy = ENUM_FIELDS.get("harmonogram", {}).get("Typ_etapu", set())
+    valid_typy = active_label_values(conn, "Typ_etapu")
     for typ in typy:
         if typ not in valid_typy:
             continue  # cichy pomin nieprawidlowej wartosci - nie wywala calego utworzenia projektu
@@ -781,6 +797,7 @@ TABLE_CREATE_DEFAULTS = {
         data.setdefault("Wykonano", "Nie"),
         data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds")),
     ),
+    "etykiety_konfiguracji": lambda data, user: data.setdefault("Aktywna", "Tak"),
 }
 # Trzeci, mniejszy rejestr - zaczepy PO udanym zapisie (potrzebuja prawdziwego pk_val nowego
 # wiersza, wiec nie mogly by czyms takim jak TABLE_CREATE_DEFAULTS, ktory dziala na payloadzie
@@ -832,9 +849,9 @@ ENUM_FIELDS = {
     "projekty": {
         "Typ_projektu": {"Projekt koncepcyjny", "Analiza urbanistyczna", "Projekt budowlany",
                           "Projekt wykonawczy", "Nadzor autorski", "Konkurs", "Projekt techniczny (PT)", "Inne"},
-        "Funkcja_biura": {"Projektant wiodacy", "Nadzor autorski", "Analiza/doradztwo",
-                           "Uczestnik konkursu", "Koordynacja branzowa"},
-        "Segment": {"Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"},
+        # Funkcja_biura/Segment PRZENIESIONE do DYNAMIC_ENUM_FIELDS ponizej (Faza 2, A13,
+        # edytowalny slownik w etykiety_konfiguracji) - juz nie tutaj, statyczne zbiory ponizej
+        # to dalej jedyne zrodlo prawdy dla pol BEZ semantyki wplywajacej na inna logike.
         "Status": {"Planowanie", "W realizacji", "Wstrzymany", "Przeglad", "Zakonczony", "Anulowany"},
         # "Projektowanie" i "Pozwolenia/Przetarg" swiadomie usuniete (nie dopisane obok) - rozbite
         # na szczegolowe fazy ponizej, na wprost zyczenie uzytkownika (2026-07-10). "Konkurs - etap
@@ -859,14 +876,8 @@ ENUM_FIELDS = {
         "Kategoria": {"Koncepcja", "Konsultacje", "Projektowanie", "Rysunki wykonawcze",
                        "Dokumentacja przetargowa", "Pozwolenia/Uzgodnienia", "Nadzor autorski",
                        "Koordynacja branzowa", "Wizja lokalna/Spotkanie", "Prezentacja", "Administracja/Inne"},
-        # Typ_etapu = ktora faza procesu ten sub-projekt reprezentuje (Faza 1, warsztat
-        # 22.07.2026) - OSOBNA os klasyfikacji od Kategoria (rodzaj pracy), patrz komentarz
-        # przy CREATE TABLE w schema.sql. Startowa lista wg kolejnosci procesu podanej wprost
-        # przez zespol (A12) - do potwierdzenia/edycji pozniej przez A13 (edytowalne etykiety),
-        # nie zaszyta na stale.
-        "Typ_etapu": {"Konkurs", "Analiza urbanistyczna/chlonnosci", "Projekt koncepcyjny",
-                       "Projekt budowlany (PB)", "Projekt techniczny (PT)", "Projekt wykonawczy (PW)",
-                       "Nadzor autorski", "Przetarg", "Budowa", "Zakonczenie", "Inne"},
+        # Typ_etapu PRZENIESIONY do DYNAMIC_ENUM_FIELDS ponizej (Faza 2, A13) - edytowalny
+        # slownik w etykiety_konfiguracji zamiast statycznego zbioru tutaj.
         # Wstrzymany/Przeglad dopisane w Faza 1 - Status przenosi sie z projekty (gdzie te
         # wartosci juz istnialy) na poziom sub-projektu (A9), wiec sub-projekt musi umiec
         # reprezentowac te same stany, inaczej master nigdy by ich nie osiagnal przez rollup.
@@ -923,7 +934,31 @@ ENUM_FIELDS = {
     "checklisty_projektow": {
         "Wykonano": {"Tak", "Nie"},
     },
+    "etykiety_konfiguracji": {
+        # Zamkniety zestaw kategorii, ktore ten slownik obsluguje (Faza 2, A13) - patrz
+        # komentarz przy CREATE TABLE w schema.sql, dlaczego Status/Priorytet/Faza NIE sa tu
+        # wlaczone. Dopisanie nowej kategorii do UI wymaga dopisania jej tez tutaj.
+        "Kategoria": {"Typ_etapu", "Segment", "Funkcja_biura"},
+        "Aktywna": {"Tak", "Nie"},
+    },
 }
+
+# Kategorie w ENUM_FIELDS powyzej, ktore ZAMIAST statycznego zbioru sa wyliczane z aktywnych
+# wierszy etykiety_konfiguracji (Faza 2, A13) - {table: {field: Kategoria}}. Rejestr zamiast
+# nowej galezi w validate_field_types_and_ranges() dla kazdego dynamicznego pola z osobna.
+DYNAMIC_ENUM_FIELDS = {
+    "projekty": {"Segment": "Segment", "Funkcja_biura": "Funkcja_biura"},
+    "harmonogram": {"Typ_etapu": "Typ_etapu"},
+}
+
+
+def active_label_values(conn, kategoria):
+    rows = conn.execute(
+        "SELECT Wartosc FROM etykiety_konfiguracji WHERE Kategoria = ? AND Aktywna != 'Nie'",
+        (kategoria,),
+    ).fetchall()
+    return {r["Wartosc"] for r in rows}
+
 
 # (min, max) dla pol procentowych, ktore formularz w app.js przycina po stronie klienta
 # (input type=number min=/max=), ale API dotad przyjmowalo cokolwiek. Procent_postepu i
@@ -954,6 +989,9 @@ def validate_field_types_and_ranges(conn, table, data):
                 return f"Pole {field} musi być liczbą (otrzymano: {value!r})."
     for field, valid_values in ENUM_FIELDS.get(table, {}).items():
         if field in data and data[field] is not None and data[field] not in valid_values:
+            return f"Nieprawidłowa wartość pola {field}: {data[field]!r}."
+    for field, kategoria in DYNAMIC_ENUM_FIELDS.get(table, {}).items():
+        if field in data and data[field] is not None and data[field] not in active_label_values(conn, kategoria):
             return f"Nieprawidłowa wartość pola {field}: {data[field]!r}."
     for field, (lo, hi) in NUMERIC_RANGES.get(table, {}).items():
         if field in data and data[field] is not None:

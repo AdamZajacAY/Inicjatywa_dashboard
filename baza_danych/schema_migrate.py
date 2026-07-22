@@ -358,6 +358,65 @@ def ensure_project_identification_columns(db_path):
     })
 
 
+def ensure_etykiety_konfiguracji_table(db_path):
+    """Dodaje tabele etykiety_konfiguracji (edytowalny slownik etykiet, Faza 2, A13) do baz
+    powstalych przed jej wprowadzeniem."""
+    _ensure_table(db_path, "etykiety_konfiguracji")
+    conn = sqlite3.connect(db_path)
+    try:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            schema_sql = f.read()
+        for stmt in re.findall(r"CREATE INDEX IF NOT EXISTS idx_etykiety_.*?;", schema_sql):
+            conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# Startowe wartosci = dokladnie to, co dotad bylo hardkodowane w TYP_ETAPU/SEGMENTS/
+# FUNKCJE_BIURA w app.js (Faza 1/juz istniejace) - migracja tylko PRZENOSI je do tabeli,
+# nie zmienia zestawu ani kolejnosci, zeby wyglad/zachowanie sprzed A13 sie nie zmienilo.
+_SEED_ETYKIETY = {
+    "Typ_etapu": ["Konkurs", "Analiza urbanistyczna/chlonnosci", "Projekt koncepcyjny",
+                  "Projekt budowlany (PB)", "Projekt techniczny (PT)", "Projekt wykonawczy (PW)",
+                  "Nadzor autorski", "Przetarg", "Budowa", "Zakonczenie", "Inne"],
+    "Segment": ["Mieszkaniowy", "Komercyjny", "Publiczny", "Zielen"],
+    "Funkcja_biura": ["Projektant wiodacy", "Nadzor autorski", "Analiza/doradztwo",
+                       "Uczestnik konkursu", "Koordynacja branzowa"],
+}
+
+
+def ensure_seed_etykiety_konfiguracji(db_path):
+    """Zasiewa etykiety_konfiguracji poczatkowymi wartosciami przy pierwszym uruchomieniu po
+    Faza 2 (A13) - TYLKO dla kategorii, ktore jeszcze nie maja ZADNEGO wiersza (jesli zespol juz
+    zaczal recznie zarzadzac etykietami danej kategorii - np. usunal/dodal cos - migracja jej
+    nie dotyka, bezpieczne do wielokrotnego wywolania). Kolor przypisany cyklicznie z
+    istniejacej palety cat-1..cat-8 (ta sama, ktorej TYPE_COLORS/FAZA_COLORS juz uzywaly w
+    app.js), zeby wyglad sprzed migracji sie nie zmienil."""
+    conn = sqlite3.connect(db_path)
+    try:
+        existing_categories = {row[0] for row in conn.execute("SELECT DISTINCT Kategoria FROM etykiety_konfiguracji").fetchall()}
+        max_n = 0
+        for row in conn.execute("SELECT ID_Etykiety FROM etykiety_konfiguracji").fetchall():
+            m = re.match(r"^ETY(\d+)$", row[0] or "")
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        for kategoria, values in _SEED_ETYKIETY.items():
+            if kategoria in existing_categories:
+                continue
+            for i, wartosc in enumerate(values):
+                max_n += 1
+                eid = f"ETY{str(max_n).zfill(3)}"
+                conn.execute(
+                    "INSERT INTO etykiety_konfiguracji (ID_Etykiety, Kategoria, Wartosc, Kolor, Kolejnosc, Aktywna) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (eid, kategoria, wartosc, f"cat-{(i % 8) + 1}", i, "Tak"),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def ensure_project_location_columns(db_path):
     """Dodaje strukturalne pola lokalizacji urzedowej do projekty w bazach powstalych przed
     ich wprowadzeniem (Faza 2, A7, warsztat 22.07.2026) - osobne od istniejacych Lokalizacja_
