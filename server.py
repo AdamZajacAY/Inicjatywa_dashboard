@@ -472,6 +472,20 @@ def can_write(conn, user, action, table, row):
     return False
 
 
+def strip_financial_fields_for_restricted_role(user, table, data):
+    # redact_row() dziala tylko na ODCZYCIE - bez tego lustrzanego mechanizmu na ZAPISIE,
+    # pola wyzerowane przez redact_row() wracaja w formularzu jako puste, a kolejny zapis
+    # (PUT/POST) NADPISUJE w bazie prawdziwe wartosci zerami/null (audyt 2026-07-22: kazda
+    # edycja WLASNEGO projektu przez Architekta Prowadzacego cicho zerowala mu realny
+    # budzet/przychod, bo can_write() zezwala na update, ale nic nie chronilo tych
+    # konkretnych pol payloadu). Pomijamy pola z payloadu zamiast je walidowac/blokowac -
+    # istniejaca wartosc w bazie zostaje nietknieta (UPDATE po prostu jej nie dotyka).
+    if user["Rola"] in FINANCIAL_RESTRICTED_ROLES:
+        for field in FINANCIAL_FIELDS.get(table, ()):
+            data.pop(field, None)
+    return data
+
+
 def redact_row(user, table, row):
     if row is None:
         return None
@@ -1085,6 +1099,7 @@ def collection(table):
         return jsonify([redact_row(g.user, table, dict(r)) for r in rows])
 
     data = parse_payload(conn, table)
+    data = strip_financial_fields_for_restricted_role(g.user, table, data)
     if not can_write(conn, g.user, "create", table, data):
         abort(403)
     error = validate_field_types_and_ranges(conn, table, data)
@@ -1171,6 +1186,7 @@ def item(table, item_id):
     if not can_write(conn, g.user, "update", table, existing):
         abort(403)
     data = parse_payload(conn, table, exclude={pk})
+    data = strip_financial_fields_for_restricted_role(g.user, table, data)
     if not data:
         return jsonify({"error": "Brak pól do aktualizacji"}), 400
     # Sprawdz uprawnienia TEZ na obrazie PO zmianie, nie tylko przed - inaczej dawaloby sie
@@ -1229,7 +1245,13 @@ def release_project(item_id):
         # wymazanie calego zespolu projektowego (np. wsparcia/konsultantow tez przypisanych).
         conn.execute("DELETE FROM przypisania WHERE ID_Projektu = ? AND ID_Osoby = ?", (item_id, g.user["ID_Osoby"]))
     conn.commit()
-    return jsonify(fetch_row(conn, "projekty", "ID_Projektu", item_id))
+    # redact_row() tutaj jest KRYTYCZNE, nie kosmetyczne - bez niego Architekt_PM (rola w
+    # FINANCIAL_RESTRICTED_ROLES) dostawal surowy wiersz z prawdziwymi Budzet_*/Przychod_*,
+    # ktory app.js wstrzykiwal wprost do STATE.projects (Object.assign na tym samym obiekcie,
+    # patrz projectById), pokazujac realne kwoty na zywo bez przeladowania strony. Audyt
+    # 2026-07-22 potwierdzil to jako mechanizm zgloszonego wycieku ("Daniel widzial budzet
+    # Grzegorza") - jedyny route w tym pliku, ktory pomijal redakcje.
+    return jsonify(redact_row(g.user, "projekty", fetch_row(conn, "projekty", "ID_Projektu", item_id)))
 
 
 @app.route("/api/zadania_tickety/<ticket_id>/komentarze", methods=["GET", "POST"])

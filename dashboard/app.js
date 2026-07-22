@@ -26,6 +26,10 @@ const FULL_ACCESS_ROLES = ["COO", "Admin"];
 // "Pracownik biurowy" ma dokladnie te same uprawnienia co "Architekt" (Specjalista) - mirror
 // SPECJALISTA_ROLES w server.py, patrz komentarz tam.
 const SPECJALISTA_ROLES = ["Specjalista", "Pracownik_biurowy"];
+// Szerszy zbior niz SPECJALISTA_ROLES - Architekt_PM zachowuje portfolio-wide odczyt (nie jest
+// zawezony do wlasnych projektow), ale rowniez ma pola finansowe zredagowane na odczycie -
+// mirror FINANCIAL_RESTRICTED_ROLES w server.py (SPECJALISTA_ROLES | {"Architekt_PM"}).
+const FINANCIAL_RESTRICTED_ROLES = [...SPECJALISTA_ROLES, "Architekt_PM"];
 
 function can(action, table, row) {
   const role = STATE.me.role;
@@ -916,7 +920,7 @@ function renderOverview() {
           <div class="hbar-track"><div class="hbar-fill" style="width:${Math.min(100, budTotal ? budSpent / budTotal * 100 : 0)}%;background:var(--accent)"></div></div>
           <div class="hbar-value">${budTotal ? Math.round(budSpent / budTotal * 100) : 0}%</div>
         </div>
-        <div class="kpi-sub" style="margin-top:6px">${fmtMoney(budSpent)} z ${fmtMoney(budTotal)} (${SPECJALISTA_ROLES.includes(STATE.me.role) ? "dane finansowe ukryte dla tej roli" : "suma widocznych projektów, PLN"})</div>
+        <div class="kpi-sub" style="margin-top:6px">${fmtMoney(budSpent)} z ${fmtMoney(budTotal)} (${FINANCIAL_RESTRICTED_ROLES.includes(STATE.me.role) ? "dane finansowe ukryte dla tej roli" : "suma widocznych projektów, PLN"})</div>
 
         <h3 style="margin-top:20px">RAG portfela</h3>
         <div class="segmented-bar">
