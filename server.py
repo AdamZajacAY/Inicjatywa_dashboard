@@ -43,6 +43,7 @@ from baza_danych.schema_migrate import (
     ensure_default_subproject_for_legacy_projects, ensure_project_identification_columns,
     ensure_project_location_columns, ensure_dzialki_table,
     ensure_etykiety_konfiguracji_table, ensure_seed_etykiety_konfiguracji,
+    ensure_ticket_timeline_and_tags_columns,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -118,6 +119,7 @@ ensure_project_location_columns(DB_PATH)  # jw. - Kraj/Wojewodztwo/Powiat/Gmina/
 ensure_dzialki_table(DB_PATH)  # jw. - nowa tabela dzialek ewidencyjnych (Faza 2)
 ensure_etykiety_konfiguracji_table(DB_PATH)  # jw. - nowa tabela edytowalnych etykiet (Faza 2, A13)
 ensure_seed_etykiety_konfiguracji(DB_PATH)  # jw. - musi biec PO powyzszej (potrzebuje tabeli)
+ensure_ticket_timeline_and_tags_columns(DB_PATH)  # jw. - Data_rozpoczecia/Tagi/Typ_zadania (Faza 3)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -671,6 +673,10 @@ def _default_zglaszajacy(data, user):
     # wprost zamiast samej obecnosci klucza.
     if not data.get("ID_Osoby_zglaszajacej") and user.get("ID_Osoby"):
         data["ID_Osoby_zglaszajacej"] = user["ID_Osoby"]
+    # Faza 3, B10 - jedyny zarejestrowany create-default hook dla tej tabeli, wiec dopisany tu
+    # zamiast nowego wpisu w TABLE_CREATE_DEFAULTS. Wewnetrzne to bezpieczny domyslny brak
+    # czerwonej flagi terminu nieprzekraczalnego dla nowych zadan bez jawnego wyboru.
+    data.setdefault("Typ_zadania", "Wewnetrzne")
 
 
 def _default_ideapool(data, user):
@@ -890,6 +896,10 @@ ENUM_FIELDS = {
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
         "Status": {"Backlog", "W tym tygodniu", "W trakcie", "Do przegladu", "Zrobione",
                     "Zablokowane", "Zarchiwizowane"},
+        # Faza 3, B10 - urzedowe (wnioski/uzupelnienia, nieprzekraczalny termin) vs wewnetrzne.
+        # NULL (zadania sprzed tego pola) traktowany jak "Wewnetrzne" wszedzie w app.js/server.py -
+        # bezpieczny domyslny brak czerwonej flagi terminu nieprzekraczalnego.
+        "Typ_zadania": {"Urzedowe", "Wewnetrzne"},
     },
     # Audyt: brakowalo tego wpisu (i calego UI tworzenia/edycji w app.js - patrz commit) mimo
     # ze milestoneStatusBadge() w app.js juz zaklada zamkniety zestaw wartosci.

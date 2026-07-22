@@ -442,6 +442,19 @@ def ensure_dzialki_table(db_path):
         conn.close()
 
 
+def ensure_ticket_timeline_and_tags_columns(db_path):
+    """Dodaje Data_rozpoczecia/Tagi/Typ_zadania do zadania_tickety w bazach powstalych przed
+    ich wprowadzeniem (Faza 3, warsztat 22.07.2026, B3/B6/B10). Data_rozpoczecia to opcjonalny
+    start (np. zlozenie wniosku) - Termin/Data_zakonczenia (plan/rzeczywiste zakonczenie) juz
+    istnialy. Tagi mirroruje istniejacy, dzialajacy mechanizm projekty.Tagi (CSV, ten sam
+    fTagsInput() w app.js). Typ_zadania (Urzedowe/Wewnetrzne) - NULL traktowany jak Wewnetrzne
+    (bezpieczny domyslny brak specjalnego oznaczenia czerwonej flagi terminu nieprzekraczalnego,
+    patrz B10)."""
+    _ensure_columns(db_path, "zadania_tickety", {
+        "Data_rozpoczecia": "TEXT", "Tagi": "TEXT", "Typ_zadania": "TEXT",
+    })
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")

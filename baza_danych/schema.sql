@@ -189,12 +189,15 @@ CREATE TABLE IF NOT EXISTS zadania_tickety (
   ID_Podwykonawcy TEXT REFERENCES podwykonawcy(ID_Podwykonawcy) ON DELETE SET NULL,
   Wycena_podwykonawcy REAL,
   Data_utworzenia TEXT,
+  Data_rozpoczecia TEXT,
   Termin TEXT,
   Szacowane_roboczogodziny REAL,
   Rzeczywiste_roboczogodziny REAL,
   Priorytet TEXT,
   Status TEXT,
-  Data_zakonczenia TEXT
+  Data_zakonczenia TEXT,
+  Tagi TEXT,
+  Typ_zadania TEXT
 );
 
 CREATE TABLE IF NOT EXISTS komentarze_tickety (

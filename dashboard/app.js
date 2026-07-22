@@ -147,7 +147,7 @@ const DATE_FIELDS = {
   risks: ["Data_identyfikacji", "Data_zamkniecia"],
   statusReports: ["Data_raportu"],
   subcontractorAssignments: ["Data_od", "Data_do", "Data_zakonczenia_rzeczywista"],
-  tickets: ["Data_utworzenia", "Termin", "Data_zakonczenia"],
+  tickets: ["Data_utworzenia", "Data_rozpoczecia", "Termin", "Data_zakonczenia"],
   users: ["Data_utworzenia", "Data_ostatniego_logowania"],
   ideapool: ["Data_zgloszenia"],
 };
@@ -796,6 +796,10 @@ function projectTags(p) {
 function allProjectTags() {
   return Array.from(new Set(STATE.projects.flatMap(projectTags))).sort();
 }
+// Faza 3 (B6) - Tagi zadan, mirror projectTags/allProjectTags powyzej (ten sam CSV-w-TEXT
+// mechanizm, ten sam fTagsInput() w UI, tylko STATE.tickets zamiast STATE.projects).
+function ticketTags(t) { return (t.Tagi || "").split(",").map(s => s.trim()).filter(Boolean); }
+function allTicketTags() { return Array.from(new Set(STATE.tickets.flatMap(ticketTags))).sort(); }
 function projectRevenue(p) {
   return num(p.Przychod_rzeczywisty) > 0 ? num(p.Przychod_rzeczywisty) : num(p.Przychod_planowany);
 }
@@ -860,12 +864,39 @@ function projectOnTimeStats(pid) {
 }
 
 /* ---------------------------------------------------------------- powiadomienia (opoznienia) */
+// Faza 3, B13 - prog (w dniach) "zbliza sie termin" konfigurowalny przez uzytkownika (na wprost
+// zyczenie warsztatu: "15/30/90 dni, 2 tyg."), nie zaszyty na sztywno jak dawne "in7". Trzymany
+// w localStorage (per przegladarka, nie per konto - to preferencja UI, nie dana projektowa),
+// wspoldzielony miedzy kamieniami milowymi (dawne zachowanie) i nowymi alertami zadan
+// urzedowych (B10) - jeden prog, jedno miejsce do zmiany.
+const NOTIF_THRESHOLD_KEY = "ip_notif_threshold_days";
+const NOTIF_THRESHOLD_DEFAULT = 14;
+function getNotificationThresholdDays() {
+  const v = Math.round(Number(localStorage.getItem(NOTIF_THRESHOLD_KEY)));
+  return v > 0 ? v : NOTIF_THRESHOLD_DEFAULT;
+}
+function setNotificationThresholdDays(days) {
+  localStorage.setItem(NOTIF_THRESHOLD_KEY, String(Math.max(1, Math.round(days) || NOTIF_THRESHOLD_DEFAULT)));
+}
+// Typ_zadania NULL (zadania sprzed Fazy 3) traktowany jak "Wewnetrzne" wszedzie - patrz komentarz
+// przy ENUM_FIELDS["zadania_tickety"] w server.py, ten sam domyslny brak flagi po obu stronach.
+function isUrzedoweTicket(t) { return (t.Typ_zadania || "Wewnetrzne") === "Urzedowe"; }
+function isUrgentAdministrativeTicket(t) {
+  if (!isUrzedoweTicket(t) || !(t.Termin instanceof Date) || DONE_TICKET_STATUSES.includes(t.Status)) return false;
+  const daysLeft = Math.round((t.Termin - today0()) / 86400000);
+  return daysLeft >= 0 && daysLeft <= getNotificationThresholdDays();
+}
 function getNotifications() {
   const items = [];
-  const in7 = new Date(); in7.setDate(in7.getDate() + 7);
+  const threshold = getNotificationThresholdDays();
+  const horizon = new Date(); horizon.setDate(horizon.getDate() + threshold);
   STATE.tickets.forEach(t => {
     if (isOverdueTicket(t)) {
       items.push({ sev: "critical", pid: t.ID_Projektu, text: `Ticket „${t.Tytul}” (${t.ID_Tickietu}) — ${ticketAssigneeLabel(t)} — termin minął ${fmtDate(t.Termin)}` });
+    } else if (isUrgentAdministrativeTicket(t)) {
+      // B10 - zadania urzedowe (wnioski/uzupelnienia) maja nieprzekraczalny termin, wiec "wala
+      // na czerwono" (critical, nie warning, mimo ze jeszcze nie po terminie) juz w oknie progu.
+      items.push({ sev: "critical", pid: t.ID_Projektu, text: `Ticket urzędowy „${t.Tytul}” (${t.ID_Tickietu}) — ${ticketAssigneeLabel(t)} — nieprzekraczalny termin za ${Math.round((t.Termin - today0()) / 86400000)} dni (${fmtDate(t.Termin)})` });
     }
   });
   STATE.tasks.forEach(t => {
@@ -876,7 +907,7 @@ function getNotifications() {
   STATE.milestones.forEach(m => {
     if (m.Data_planowana instanceof Date && m.Data_planowana < today0() && m.Status !== "Zakonczone") {
       items.push({ sev: "critical", pid: m.ID_Projektu, text: `Kamień milowy „${m.Nazwa_kamienia}” (${projectName(m.ID_Projektu)}) — minął termin ${fmtDate(m.Data_planowana)}` });
-    } else if (m.Data_planowana instanceof Date && m.Data_planowana >= today0() && m.Data_planowana <= in7 && m.Status !== "Zakonczone") {
+    } else if (m.Data_planowana instanceof Date && m.Data_planowana >= today0() && m.Data_planowana <= horizon && m.Status !== "Zakonczone") {
       items.push({ sev: "warning", pid: m.ID_Projektu, text: `Kamień milowy „${m.Nazwa_kamienia}” (${projectName(m.ID_Projektu)}) — zbliża się termin ${fmtDate(m.Data_planowana)}` });
     }
   });
@@ -954,7 +985,12 @@ function renderOverview() {
     </div>
 
     <div class="panel">
-      <div class="section-head" style="margin-bottom:4px"><h3 style="margin:0">🔔 Powiadomienia (${notifications.length})</h3></div>
+      <div class="section-head" style="margin-bottom:4px">
+        <h3 style="margin:0">🔔 Powiadomienia (${notifications.length})</h3>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary)" title="Ile dni przed terminem pokazywać alert 'zbliża się' (kamienie milowe, zadania urzędowe)">
+          Próg (dni): <input type="number" id="fNotifThreshold" min="1" max="365" value="${getNotificationThresholdDays()}" style="width:56px">
+        </label>
+      </div>
       ${notifications.length ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px">${notifications.slice(0, 12).map(n => `
         <div class="dp-list-item clickable" data-open-project="${esc(n.pid)}" style="cursor:pointer;margin:0">
           <div class="title" style="font-size:12.5px">${badge(n.sev === "critical" ? "Opóźnione" : "Zbliża się", n.sev)} ${esc(n.text)}</div>
@@ -1031,6 +1067,10 @@ function renderOverview() {
     </div>
   `;
   $("#view-przeglad").innerHTML = html;
+  $("#fNotifThreshold").addEventListener("change", e => {
+    setNotificationThresholdDays(Number(e.target.value));
+    renderOverview();
+  });
 }
 
 /* ================================================================== VIEW: PROJEKTY */
@@ -1415,22 +1455,45 @@ function renderSubcontractors() {
 }
 
 /* ================================================================== VIEW: ZADANIA (tickety) */
-let ticketFilters = { projekt: "", osoba: "", statuses: [], onlyOverdue: false, view: "kanban" };
+let ticketFilters = { projekt: "", osoba: "", statuses: [], onlyOverdue: false, view: "kanban",
+  tag: "", typ: "", sortField: "Termin", sortDir: "asc" }; // tag/typ/sort: Faza 3 (B2/B6/B10)
+
+// Faza 3 (B2) - wartosc do sortowania listy zadan wg klikanego naglowka kolumny; Termin domyslnie
+// (mirror poprzedniego, na sztywno wpisanego sortowania), reszta pol dopisana obok, nie zamiast.
+function ticketSortValue(t, field) {
+  switch (field) {
+    case "Tytul": return (t.Tytul || "").toLowerCase();
+    case "Projekt": return (projectName(t.ID_Projektu) || "").toLowerCase();
+    case "Osoba": return (ticketAssigneeLabel(t) || "").toLowerCase();
+    case "Priorytet": return PRIORITY_RANK[t.Priorytet] ?? 3;
+    case "SzacRbh": return num(t.Szacowane_roboczogodziny);
+    case "RzeczRbh": return num(t.Rzeczywiste_roboczogodziny);
+    case "Status": return ticketEffectiveStatus(t) || "";
+    case "Termin": default: return t.Termin?.getTime() || 0;
+  }
+}
+function tkSortIndicator(field) {
+  if (ticketFilters.sortField !== field) return "";
+  return ticketFilters.sortDir === "asc" ? " ▲" : " ▼";
+}
 
 function ticketCardHtml(t) {
   const overdue = isOverdueTicket(t);
+  const urgentAdmin = isUrgentAdministrativeTicket(t);
   const isSub = !!t.ID_Podwykonawcy;
   const editable = can("update", "zadania_tickety", t);
   return `
-    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue ? "overdue" : ""}" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""}" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
       <div class="kc-title">${esc(t.Tytul)}</div>
       <div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>
       <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)}</div>
       ${t.ID_Osoby_zglaszajacej ? `<div class="kc-meta">zgłosił: ${esc(personName(t.ID_Osoby_zglaszajacej))}</div>` : ""}
+      ${ticketTags(t).length ? `<div class="tag-chips" style="margin-top:4px">${ticketTags(t).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join("")}</div>` : ""}
       <div class="kc-foot">
         ${isSub ? badge("Podwykonawca", "sub") : ""}
+        ${isUrzedoweTicket(t) ? badge("Urzędowe", "warning") : ""}
         ${badge(t.Priorytet || "—", t.Priorytet === "Wysoki" ? "critical" : t.Priorytet === "Niski" ? "muted" : "warning")}
-        ${overdue ? badge("Opoznione", "critical") : ""}
+        ${overdue ? badge("Opóźnione", "critical") : urgentAdmin ? badge("Nieprzekraczalny termin blisko", "critical") : ""}
       </div>
     </div>`;
 }
@@ -1454,8 +1517,14 @@ function renderTickets() {
     if (ticketFilters.osoba && t.ID_Osoby_przypisanej !== ticketFilters.osoba) return false;
     if (ticketFilters.statuses.length && !ticketFilters.statuses.includes(ticketEffectiveStatus(t))) return false;
     if (ticketFilters.onlyOverdue && !isOverdueTicket(t)) return false;
+    if (ticketFilters.tag && !ticketTags(t).includes(ticketFilters.tag)) return false;
+    if (ticketFilters.typ && (t.Typ_zadania || "Wewnetrzne") !== ticketFilters.typ) return false;
     return true;
-  }).sort((a, b) => (a.Termin?.getTime() || 0) - (b.Termin?.getTime() || 0));
+  }).sort((a, b) => {
+    const dir = ticketFilters.sortDir === "desc" ? -1 : 1;
+    const va = ticketSortValue(a, ticketFilters.sortField), vb = ticketSortValue(b, ticketFilters.sortField);
+    return va < vb ? -dir : va > vb ? dir : 0;
+  });
   const view = ticketFilters.view || "kanban";
 
   $("#view-zadania").innerHTML = `
@@ -1472,6 +1541,8 @@ function renderTickets() {
     <div class="filters">
       <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
       <select id="fTkOsoba"><option value="">Wszystkie osoby</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ticketFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
+      <select id="fTkTag"><option value="">Wszystkie tagi</option>${allTicketTags().map(tag => `<option value="${esc(tag)}" ${ticketFilters.tag === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}</select>
+      <select id="fTkTyp"><option value="">Urzędowe i wewnętrzne</option><option value="Urzedowe" ${ticketFilters.typ === "Urzedowe" ? "selected" : ""}>Tylko urzędowe</option><option value="Wewnetrzne" ${ticketFilters.typ === "Wewnetrzne" ? "selected" : ""}>Tylko wewnętrzne</option></select>
       ${view === "lista" ? `<div class="status-chips">
         <button type="button" class="status-chip badge badge-muted ${!ticketFilters.statuses.length ? "active" : ""}" data-tk-status-filter="">Wszystkie</button>
         ${STATUSY_TICKIETOW.map(s => `<button type="button" class="status-chip badge badge-${ticketStatusBadge(s)} ${ticketFilters.statuses.includes(s) ? "active" : ""}" data-tk-status-filter="${esc(s)}"><span class="dot" style="background:currentColor"></span>${esc(s)}</button>`).join("")}
@@ -1485,8 +1556,16 @@ function renderTickets() {
     <div class="panel" style="overflow-x:auto">
       <table class="data-table">
         <thead><tr>
-          <th>ID</th><th>Tytuł</th><th>Projekt</th><th>Osoba</th><th>Termin</th><th>Priorytet</th>
-          <th class="num">Szac. rbh</th><th class="num">Rzecz. rbh</th><th>Status</th>
+          <th>ID</th>
+          <th class="clickable" data-tk-sort="Tytul">Tytuł${tkSortIndicator("Tytul")}</th>
+          <th class="clickable" data-tk-sort="Projekt">Projekt${tkSortIndicator("Projekt")}</th>
+          <th class="clickable" data-tk-sort="Osoba">Osoba${tkSortIndicator("Osoba")}</th>
+          <th class="clickable" data-tk-sort="Termin">Termin${tkSortIndicator("Termin")}</th>
+          <th class="clickable" data-tk-sort="Priorytet">Priorytet${tkSortIndicator("Priorytet")}</th>
+          <th class="num clickable" data-tk-sort="SzacRbh">Szac. rbh${tkSortIndicator("SzacRbh")}</th>
+          <th class="num clickable" data-tk-sort="RzeczRbh">Rzecz. rbh${tkSortIndicator("RzeczRbh")}</th>
+          <th class="clickable" data-tk-sort="Status">Status${tkSortIndicator("Status")}</th>
+          <th>Kategoria</th><th>Tagi</th>
         </tr></thead>
         <tbody>
           ${list.map(t => `
@@ -1500,12 +1579,16 @@ function renderTickets() {
               <td class="num">${t.Szacowane_roboczogodziny ?? "—"}</td>
               <td class="num">${t.Rzeczywiste_roboczogodziny ?? "—"}</td>
               <td>${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))}</td>
-            </tr>`).join("") || `<tr><td colspan="9" class="empty-hint">Brak zadań — dodaj tickety z poziomu karty projektu.</td></tr>`}
+              <td>${isUrzedoweTicket(t) ? badge("Urzędowe", isUrgentAdministrativeTicket(t) ? "critical" : "warning") : "—"}</td>
+              <td>${ticketTags(t).length ? `<div class="tag-chips">${ticketTags(t).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join("")}</div>` : "—"}</td>
+            </tr>`).join("") || `<tr><td colspan="11" class="empty-hint">Brak zadań — dodaj tickety z poziomu karty projektu.</td></tr>`}
         </tbody>
       </table>
     </div>`}`;
   $("#fTkProj").addEventListener("change", e => { ticketFilters.projekt = e.target.value; renderTickets(); });
   $("#fTkOsoba").addEventListener("change", e => { ticketFilters.osoba = e.target.value; renderTickets(); });
+  $("#fTkTag").addEventListener("change", e => { ticketFilters.tag = e.target.value; renderTickets(); });
+  $("#fTkTyp").addEventListener("change", e => { ticketFilters.typ = e.target.value; renderTickets(); });
   $("#fTkOverdue").addEventListener("change", e => { ticketFilters.onlyOverdue = e.target.checked; renderTickets(); });
 }
 
@@ -1583,6 +1666,38 @@ document.addEventListener("drop", (e) => {
 
 /* ================================================================== VIEW: GANTT */
 let ganttFilters = { projekt: "", typ: "", osoba: "", groupBy: "projekt", view: "skrocony" };
+// Faza 3 (B1) - ID_Zadania (etapow) recznie zwinietych przez uzytkownika w widoku Gantt "np.
+// schowac PB, zostawic PT" - w pamieci karty (jak ticketFilters/ganttFilters), nie persystowane
+// miedzy przeladowaniami. Domyslnie wszystko rozwiniete (brak wpisu = rozwiniete).
+let ganttCollapsedStages = new Set();
+// Zadania (tickety) na Gancie maja inny slownik statusow niz etapy (STATUSY_TICKIETOW, nie
+// harmonogram.Status) - mapujemy na te same 4 kolory/klasy CSS (status-done/progress/delayed/
+// notstarted) co juz istnieja dla etapow (taskStatusClass), zamiast nowej, piatej palety.
+function ticketGanttStatusClass(t) {
+  if (DONE_TICKET_STATUSES.includes(t.Status)) return "done";
+  if (isOverdueTicket(t)) return "delayed";
+  if (t.Status === "Backlog") return "notstarted";
+  return "progress"; // W tym tygodniu / W trakcie / Do przegladu / Zablokowane
+}
+// Ticket z Data_rozpoczecia (opcjonalna, B3) dostaje prawdziwy pasek; bez niej - tylko Termin
+// jest znany, wiec rysujemy punktowy znacznik (romb, reuse .gantt-milestone) w miejscu terminu
+// zamiast zmyslac fikcyjny start. Bez Terminu w ogole nie da sie zadania umiescic na osi czasu.
+function ticketGanttMarkupFor(t, tMin, totalMs) {
+  const endD = t.Termin instanceof Date ? t.Termin : null;
+  if (!endD) return "";
+  const startD = t.Data_rozpoczecia instanceof Date ? t.Data_rozpoczecia : null;
+  const cls = ticketGanttStatusClass(t);
+  const titleLines = [t.Tytul, startD ? `${fmtDate(startD)} — ${fmtDate(endD)}` : `Termin: ${fmtDate(endD)}`,
+    `Status: ${ticketEffectiveStatus(t)}`, `Odpowiedzialny: ${ticketAssigneeLabel(t)}`];
+  const title = titleLines.map(esc).join("&#10;");
+  if (startD) {
+    const left = (startD.getTime() - tMin.getTime()) / totalMs * 100;
+    const width = Math.max(0.6, (endD.getTime() - startD.getTime()) / totalMs * 100);
+    return `<div class="gantt-bar gantt-bar-ticket status-${cls}" style="left:${left}%;width:${width}%" title="${title}"><span>${esc(t.Tytul)}</span></div>`;
+  }
+  const left = (endD.getTime() - tMin.getTime()) / totalMs * 100;
+  return `<div class="gantt-milestone status-${cls}" style="left:${left}%" title="${title}"></div>`;
+}
 
 function renderGanttFilters() {
   const condensed = ganttFilters.view === "skrocony";
@@ -1727,14 +1842,37 @@ function buildGantt(tasks, opts = {}) {
         <div class="gantt-label-col" ${groupClickAttr(key)}>${esc(groupLabelOf(key))}</div>
         <div class="gantt-timeline-col"></div>
       </div>`;
-    const rows = ptasks.map(t => `
+    const rows = ptasks.map(t => {
+      // B1 - zadania (tickety) przypiete do tego etapu, zagniezdzone jako zwijalna sekcja pod
+      // jego paskiem ("np. schowac PB, zostawic PT" - na wprost zyczenie warsztatu). Pseudo-etapy
+      // widoku skroconego (buildGanttCondensed) maja ID_Zadania = ID projektu, ktore nigdy nie
+      // wystapi w zadania_etapy, wiec ponizsze i tak zwrocilyby [] tam nawet bez opts.condensed -
+      // ale jawny warunek jest tansi (pomija lookup) i czytelniejszy niz poleganie na tym zbiegu.
+      const stageTickets = opts.condensed ? [] :
+        ticketIdsForStage(t.ID_Zadania).map(tid => STATE.tickets.find(x => x.ID_Tickietu === tid)).filter(Boolean);
+      const plottable = stageTickets.filter(tk => tk.Termin instanceof Date);
+      const collapsed = ganttCollapsedStages.has(t.ID_Zadania);
+      const toggleHtml = plottable.length
+        ? `<button type="button" class="gantt-stage-toggle" data-toggle-gantt-stage="${esc(t.ID_Zadania)}" title="${collapsed ? "Rozwiń zadania tego etapu" : "Zwiń zadania tego etapu"}">${collapsed ? "▸" : "▾"}</button>`
+        : "";
+      const stageRow = `
       <div class="gantt-row" data-task-id="${esc(t.ID_Zadania)}" data-open-project="${esc(t.ID_Projektu)}" title="${opts.condensed ? "Kliknij, aby otworzyć projekt" : "Kliknij, aby edytować etap"}">
-        <div class="gantt-label-col" title="${esc(t.Nazwa_zadania)}">${esc(t.Nazwa_zadania)}</div>
+        <div class="gantt-label-col" title="${esc(t.Nazwa_zadania)}">${toggleHtml}${esc(t.Nazwa_zadania)}${plottable.length ? ` <span class="gantt-stage-count">${plottable.length}</span>` : ""}</div>
         <div class="gantt-track">
           <div class="gantt-today" style="position:absolute;left:${todayPct}%;top:0;bottom:0;border-left:1px dashed var(--status-critical)"></div>
           ${barFor(t)}
         </div>
-      </div>`).join("");
+      </div>`;
+      const ticketRows = (!collapsed && plottable.length) ? plottable.map(tk => {
+        const editable = can("update", "zadania_tickety", tk); // mirror ticketCardHtml - tylko edytowalne zadania sa klikalne
+        return `
+      <div class="gantt-row gantt-row-ticket" ${editable ? `data-open-ticket="${esc(tk.ID_Tickietu)}"` : ""} title="${editable ? "Kliknij, aby edytować zadanie" : esc(tk.Tytul)}">
+        <div class="gantt-label-col" title="${esc(tk.Tytul)}">${esc(tk.Tytul)}</div>
+        <div class="gantt-track">${ticketGanttMarkupFor(tk, tMin, totalMs)}</div>
+      </div>`;
+      }).join("") : "";
+      return stageRow + ticketRows;
+    }).join("");
     return groupHeader + rows;
   }).join("");
 
@@ -2181,6 +2319,35 @@ $("#modalForm").addEventListener("change", (e) => {
   const hidden = group.querySelector("input[type=hidden]");
   if (hidden) hidden.value = JSON.stringify(checked);
 });
+// Faza 3 (B4) - przelicznik dni <-> data (fDaysDateLink powyzej). Reaguje na 3 pola: sam input
+// liczby dni (przelicz koniec), oraz pole startu/konca gdziekolwiek w formularzu (przelicz dni) -
+// te dwa nie sa zagniezdzone w [data-days-link], wiec szukamy widgetu PO ich name, nie po
+// przodku, w odroznieniu od checkbox-group powyzej.
+$("#modalForm").addEventListener("input", (e) => {
+  const form = $("#modalForm");
+  const daysInput = e.target.matches("[data-days-link-input]") ? e.target : null;
+  const wrap = daysInput ? daysInput.closest("[data-days-link]")
+    : (e.target.name ? form.querySelector(`[data-days-link-start="${e.target.name}"], [data-days-link-end="${e.target.name}"]`) : null);
+  if (!wrap) return;
+  const startEl = form.querySelector(`[name="${wrap.dataset.daysLinkStart}"]`);
+  const endEl = form.querySelector(`[name="${wrap.dataset.daysLinkEnd}"]`);
+  const daysEl = wrap.querySelector("[data-days-link-input]");
+  if (!startEl || !endEl || !daysEl) return;
+  const startDate = parseDateInput(startEl.value);
+  if (e.target === daysEl) {
+    const days = daysEl.value === "" ? null : Number(daysEl.value);
+    if (startDate && days != null && !isNaN(days) && days >= 0) {
+      const end = new Date(startDate); end.setDate(end.getDate() + days);
+      endEl.value = dateDisplayVal(end);
+    }
+  } else {
+    const endDate = parseDateInput(endEl.value);
+    if (startDate && endDate) {
+      const diff = Math.round((endDate - startDate) / 86400000);
+      if (diff >= 0) daysEl.value = diff;
+    }
+  }
+});
 
 function fInput(label, name, value, type = "text", extra = "") {
   if (type === "date") {
@@ -2230,6 +2397,16 @@ function fCheckboxGroup(label, name, options, selectedValues = []) {
       ${options.map(([v, l]) => `<label class="checkbox-chip"><input type="checkbox" value="${esc(v)}" ${selected.has(v) ? "checked" : ""}> ${esc(l)}</label>`).join("") || `<span class="empty-hint">Brak dostępnych opcji.</span>`}
     </div>
     <input type="hidden" name="${name}" value='${esc(JSON.stringify([...selected]))}'>
+  </label>`;
+}
+// Faza 3 (B4) - przelicznik dni <-> data, dwukierunkowo. `startName`/`endName` to name'y juz
+// istniejacych pol daty w tym samym formularzu (np. Data_rozpoczecia/Termin) - ten input nie ma
+// wlasnego name (nie jest czescia FormData), tylko odczytuje/nadpisuje wartosci tamtych dwoch
+// pol przez delegowany listener "input" na #modalForm (patrz nizej), tak jak fCheckboxGroup
+// odczytuje/nadpisuje swoj hidden input przez delegowany "change".
+function fDaysDateLink(startName, endName, seedDays) {
+  return `<label class="f-label" data-days-link data-days-link-start="${esc(startName)}" data-days-link-end="${esc(endName)}">Liczba dni (od startu)
+    <input type="number" min="0" step="1" data-days-link-input value="${seedDays ?? ""}" placeholder="np. 60">
   </label>`;
 }
 function pairs(arr) { return arr.map(x => [x, x]); }
@@ -2936,12 +3113,16 @@ function openTicketForm(pid, tid = null, seed = null) {
     ${fSelect("Wspomagający (opcjonalnie)", "ID_Osoby_wspomagajacej", assignedTeamOptionsPairs(currentPid, t.ID_Osoby_wspomagajacej), t.ID_Osoby_wspomagajacej)}
     ${fSelect("Podwykonawca (jeśli zlecone branżyście)", "ID_Podwykonawcy", subcontractorOptionsPairs(), t.ID_Podwykonawcy)}
     ${fInput("Wycena podwykonawcy", "Wycena_podwykonawcy", t.Wycena_podwykonawcy, "number", "min=0 step=0.01")}
+    ${fInput("Data rozpoczęcia (opcjonalnie)", "Data_rozpoczecia", t.Data_rozpoczecia, "date")}
     ${fInput("Termin *", "Termin", t.Termin, "date", "required")}
+    ${fDaysDateLink("Data_rozpoczecia", "Termin", (t.Data_rozpoczecia instanceof Date && t.Termin instanceof Date) ? Math.round((t.Termin - t.Data_rozpoczecia) / 86400000) : "")}
     ${fCheckboxGroup("Powiązane etapy / sub-projekty", "Etapy", stageCheckboxPairs(currentPid), tid ? stageIdsForTicket(tid) : (seed?._seedStageIds || []))}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), t.Priorytet || "Sredni")}
     ${fSelect("Status", "Status", pairs(STATUSY_TICKIETOW), t.Status || "Backlog")}
+    ${fSelect("Kategoria zadania", "Typ_zadania", [["Wewnetrzne", "Wewnętrzne"], ["Urzedowe", "Urzędowe (nieprzekraczalny termin)"]], t.Typ_zadania || "Wewnetrzne")}
     ${fInput("Szacowane roboczogodziny", "Szacowane_roboczogodziny", t.Szacowane_roboczogodziny, "number", "min=0 step=0.5")}
     ${fInput("Rzeczywiste roboczogodziny", "Rzeczywiste_roboczogodziny", t.Rzeczywiste_roboczogodziny, "number", "min=0 step=0.5")}
+    ${fTagsInput("Tagi", "Tagi", t.Tagi, allTicketTags())}
     ${fTextarea("Opis zadania", "Opis", t.Opis)}
     ${ticketCommentsSectionHtml(t, tid)}
   `;
@@ -2991,12 +3172,15 @@ async function saveTicketFromForm(data, pid, tid) {
     ID_Podwykonawcy: data.ID_Podwykonawcy || null,
     Wycena_podwykonawcy: data.ID_Podwykonawcy ? num(data.Wycena_podwykonawcy) : null,
     Data_utworzenia: existing.Data_utworzenia || new Date(),
+    Data_rozpoczecia: parseDateInput(data.Data_rozpoczecia),
     Termin: parseDateInput(data.Termin),
     Szacowane_roboczogodziny: num(data.Szacowane_roboczogodziny),
     Rzeczywiste_roboczogodziny: num(data.Rzeczywiste_roboczogodziny),
     Priorytet: data.Priorytet, Status: data.Status,
+    Typ_zadania: data.Typ_zadania || "Wewnetrzne",
     Data_zakonczenia: deriveTicketCompletionDate(data.Status, existing.Data_zakonczenia),
     Etapy: JSON.parse(data.Etapy || "[]"),
+    Tagi: data.Tagi,
   };
   const saved = await persistEntity({ isNew, endpoint: "/api/zadania_tickety", id: tid, fields, dateFields: DATE_FIELDS.tickets, errorLabel: "zadanie" });
   if (!saved) return;
@@ -3024,15 +3208,17 @@ async function deleteTicket(tid, pid) {
 function duplicateTicket(tid) {
   // Otwiera formularz NOWEGO ticketu wypelniony wartosciami zrodlowego - na wprost zyczenie
   // uzytkownika ("zadania niewiele sie od siebie roznia, a trzeba wprowadzac wszystko od
-  // zera"). Termin/Status/Rzeczywiste_roboczogodziny/Data_zakonczenia celowo NIE sa kopiowane -
-  // to pola, ktore niemal zawsze roznia sie miedzy "podobnymi" zadaniami (a przekopiowanie
-  // minionego Terminu tworzyloby duplikat od razu oznaczony jako opozniony).
+  // zera"). Data_rozpoczecia/Termin/Status/Rzeczywiste_roboczogodziny/Data_zakonczenia celowo
+  // NIE sa kopiowane - to pola, ktore niemal zawsze roznia sie miedzy "podobnymi" zadaniami
+  // (a przekopiowanie minionego Terminu tworzyloby duplikat od razu oznaczony jako opozniony).
+  // Tagi/Typ_zadania (Faza 3) SA kopiowane - to opisowe cechy zadania (gestor/rodzaj pracy,
+  // urzedowe-czy-nie), typowo wspolne dla "podobnych" zadan, nie per-instancja jak daty.
   const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
   if (!requireExisting(t, "ticket")) return;
   const seed = {
     ...t,
     Tytul: (t.Tytul || "") + " (kopia)",
-    Termin: null, Status: "Backlog", Rzeczywiste_roboczogodziny: null, Data_zakonczenia: null,
+    Data_rozpoczecia: null, Termin: null, Status: "Backlog", Rzeczywiste_roboczogodziny: null, Data_zakonczenia: null,
     _seedStageIds: stageIdsForTicket(tid),
   };
   closeModal();
@@ -4426,6 +4612,14 @@ document.addEventListener("click", (e) => {
     renderTickets();
     return;
   }
+  const tkSortHeader = e.target.closest("[data-tk-sort]");
+  if (tkSortHeader) {
+    const field = tkSortHeader.getAttribute("data-tk-sort");
+    if (ticketFilters.sortField === field) ticketFilters.sortDir = ticketFilters.sortDir === "asc" ? "desc" : "asc";
+    else { ticketFilters.sortField = field; ticketFilters.sortDir = "asc"; }
+    renderTickets();
+    return;
+  }
   const openTicketRow = e.target.closest("[data-open-ticket]");
   if (openTicketRow) { const tkid = openTicketRow.getAttribute("data-open-ticket"); const tk = STATE.tickets.find(x => x.ID_Tickietu === tkid); if (tk) { openTicketForm(tk.ID_Projektu, tkid); return; } }
 
@@ -4522,6 +4716,17 @@ document.addEventListener("click", (e) => {
   if (toggleLabelBtn) { toggleLabelActive(toggleLabelBtn.getAttribute("data-toggle-label-active")); return; }
   const moveLabelBtn = e.target.closest("[data-move-label]");
   if (moveLabelBtn) { moveLabel(moveLabelBtn.getAttribute("data-move-label"), moveLabelBtn.getAttribute("data-dir")); return; }
+
+  // B1 - zwin/rozwin zadania etapu na Gancie. Sprawdzane PRZED data-task-id ponizej, bo przycisk
+  // zyje wewnatrz wiersza etapu (data-task-id na tym samym div) - bez tego klik w strzalke
+  // otwieralby tez formularz edycji etapu.
+  const ganttStageToggle = e.target.closest("[data-toggle-gantt-stage]");
+  if (ganttStageToggle) {
+    const sid = ganttStageToggle.getAttribute("data-toggle-gantt-stage");
+    if (ganttCollapsedStages.has(sid)) ganttCollapsedStages.delete(sid); else ganttCollapsedStages.add(sid);
+    renderGanttView();
+    return;
+  }
 
   // klik w pasek/wiersz Gantta = edycja etapu (sprawdzane po przyciskach add/delete, żeby nie kolidowało)
   const taskRow = e.target.closest("[data-task-id]");

@@ -300,6 +300,8 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data-table td { padding: 9px 10px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
 .data-table tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .data-table tr.clickable { cursor: pointer; }
+.data-table th.clickable { cursor: pointer; user-select: none; }
+.data-table th.clickable:hover { color: var(--text-secondary); }
 .num { font-variant-numeric: tabular-nums; text-align: right; }
 
 .view-toggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -388,6 +390,16 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .status-progress { background: var(--status-active); }
 .status-delayed { background: var(--status-critical); }
 .status-notstarted { background: var(--status-neutral); }
+/* Faza 3 (B1) - zadania zagniezdzone pod etapem na Gancie, zwijalne przez gantt-stage-toggle */
+.gantt-stage-toggle { background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 11px; padding: 0 5px 0 0; vertical-align: middle; }
+.gantt-stage-toggle:hover { color: var(--text-primary); }
+.gantt-stage-count { color: var(--text-muted); font-weight: 400; }
+.gantt-row.gantt-row-ticket { min-height: 26px; background: color-mix(in srgb, var(--text-muted) 4%, transparent); }
+.gantt-row.gantt-row-ticket .gantt-label-col { padding-left: 30px; font-size: 11.5px; font-weight: 400; color: var(--text-muted); }
+.gantt-row.gantt-row-ticket .gantt-track { height: 26px; }
+.gantt-bar-ticket { height: 13px; top: 6.5px; }
+.gantt-bar-ticket span { font-size: 9.5px; }
+.gantt-row-ticket .gantt-milestone { top: 6px; width: 11px; height: 11px; }
 .gantt-legend { display: flex; gap: 16px; padding: 10px 14px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
 .gantt-legend .item { display: flex; align-items: center; gap: 6px; }
 .gantt-legend .swatch { width: 10px; height: 10px; border-radius: 3px; }
