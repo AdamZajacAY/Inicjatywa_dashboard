@@ -846,6 +846,18 @@ function ticketStatusBadge(status) {
   return "muted"; // Backlog, Zarchiwizowane i kazda inna/brak wartosci
 }
 const KANBAN_KOLUMNY = ["Backlog", "W tym tygodniu", "W trakcie", "Do przegladu", "Zrobione", "Zablokowane", "Zarchiwizowane"];
+// Mapuje slot badge'a (good/warning/critical/serious/active/muted, patrz ticketStatusBadge/
+// projectStatusClass/priorityBadgeClass powyzej) na zmienna CSS z kolorem - jedno miejsce
+// uzywane zarowno przez tlo kolumny Kanban, jak i tlo karty Kanban (na zyczenie uzytkownika:
+// "kolumny/karty tez powinny miec kolor zgodny ze statusem", subtelny odcien, nie pelny kolor).
+function statusColorVar(slot) {
+  if (slot === "good") return "--status-good";
+  if (slot === "critical") return "--status-critical";
+  if (slot === "serious") return "--status-serious";
+  if (slot === "warning") return "--status-warning";
+  if (slot === "active") return "--status-active";
+  return "--text-muted"; // muted
+}
 
 function realCostForProject(pid) {
   return ticketsForProject(pid).reduce((s, t) => s + num(t.Rzeczywiste_roboczogodziny) * personRate(t.ID_Osoby_przypisanej), 0);
@@ -1249,7 +1261,7 @@ function projectCardHtml(p) {
       <div class="pc-row"><span>Projektant główny</span><b>${esc(p.Kierownik_projektu)}</b></div>
       ${p.Projektant_sprawdzajacy ? `<div class="pc-row"><span>Projektant sprawdzający</span><b>${esc(p.Projektant_sprawdzajacy)}</b></div>` : ""}
       ${p.ID_Osoby_sponsora ? `<div class="pc-row"><span>Sponsor</span><b>${esc(personName(p.ID_Osoby_sponsora))}</b></div>` : ""}
-      <div class="pc-row"><span>Status</span><b>${esc(p.Status)}</b></div>
+      <div class="pc-row"><span>Status</span><b>${badge(p.Status || "—", projectStatusClass(p.Status))}</b></div>
       <div class="pc-row"><span>Termin (plan)</span><b>${fmtDate(p.Data_zakonczenia_planowana)}</b></div>
       <div class="pc-row"><span>Postęp</span><b>${fmtPctFraction(p.Procent_postepu)}</b></div>
       <div class="progress-track"><div class="progress-fill" style="width:${num(p.Procent_postepu) * 100}%"></div></div>
@@ -1578,8 +1590,13 @@ function ticketCardHtml(t) {
   const urgentAdmin = isUrgentAdministrativeTicket(t);
   const isSub = !!t.ID_Podwykonawcy;
   const editable = can("update", "zadania_tickety", t);
+  // Subtelne tlo karty wg statusu (na zyczenie uzytkownika: "karty zadan tez powinny miec
+  // kolory zgodne ze statusami") - ta sama funkcja co tlo kolumny Kanban (statusColorVar),
+  // ale liczona z EFEKTYWNEGO statusu (uwzglednia opoznienie), nie surowego t.Status - ten sam
+  // input co juz uzywany do lewego akcentu ".overdue" ponizej.
+  const cardTintVar = statusColorVar(ticketStatusBadge(ticketEffectiveStatus(t)));
   return `
-    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""}" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""}" style="--card-tint:var(${cardTintVar})" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
       <div class="kc-title">${esc(t.Tytul)}</div>
       <div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>
       <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)}</div>
@@ -1601,8 +1618,9 @@ function ticketCardHtml(t) {
 function renderTicketsKanban(list) {
   return `<div class="kanban-board">${KANBAN_KOLUMNY.map(status => {
     const items = list.filter(t => t.Status === status);
+    const tintVar = statusColorVar(ticketStatusBadge(status));
     return `
-      <div class="kanban-col" data-drop-status="${esc(status)}">
+      <div class="kanban-col" data-drop-status="${esc(status)}" style="--col-tint:var(${tintVar})">
         <div class="kanban-col-head">${esc(status)}<span class="count-pill">${items.length}</span></div>
         <div class="kanban-col-body">
           ${items.map(ticketCardHtml).join("") || `<div class="kanban-empty">Brak zadań</div>`}
@@ -1686,7 +1704,7 @@ function renderTickets() {
               <td>${esc(projectName(t.ID_Projektu))}</td>
               <td>${esc(ticketAssigneeLabel(t))}</td>
               <td>${fmtDate(t.Termin)}</td>
-              <td>${esc(t.Priorytet)}</td>
+              <td>${t.Priorytet ? badge(t.Priorytet, priorityBadgeClass(t.Priorytet)) : "—"}</td>
               <td class="num">${t.Szacowane_roboczogodziny ?? "—"}</td>
               <td class="num">${t.Rzeczywiste_roboczogodziny ?? "—"}</td>
               <td>${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))} ${num(t.Liczba_reaktywacji) > 0 ? badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : ""}</td>

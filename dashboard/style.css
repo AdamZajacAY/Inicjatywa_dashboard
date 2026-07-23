@@ -348,18 +348,21 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 
 .kanban-board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; align-items: flex-start; }
 .kanban-col {
-  flex: 0 0 240px; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius);
+  flex: 0 0 240px; background: color-mix(in srgb, var(--col-tint, transparent) 5%, var(--surface-1));
+  border: 1px solid var(--border); border-radius: var(--radius);
   display: flex; flex-direction: column; max-height: calc(100vh - 260px); transition: background .12s, border-color .12s;
 }
 .kanban-col.drag-over { background: color-mix(in srgb, var(--accent) 8%, var(--surface-1)); border-color: var(--accent); }
 .kanban-col-head {
   display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--text-primary);
   padding: 10px 12px; border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--col-tint, transparent) 10%, transparent);
 }
 .kanban-col-body { padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .kanban-empty { color: var(--text-muted); font-size: 12px; padding: 10px 4px; text-align: center; }
 .kanban-card {
-  background: var(--page); border: 1px solid var(--border); border-radius: 10px; padding: 10px 11px;
+  background: color-mix(in srgb, var(--card-tint, transparent) 7%, var(--page));
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 11px;
   cursor: grab; box-shadow: var(--shadow); transition: transform .08s, opacity .12s;
 }
 .kanban-card:active { cursor: grabbing; }
