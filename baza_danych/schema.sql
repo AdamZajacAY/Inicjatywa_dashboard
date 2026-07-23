@@ -271,6 +271,14 @@ CREATE TABLE IF NOT EXISTS checklista_szablony (
 -- (ID_Szablonu NULL). Wymagany (C1, "wymagane/niewymagane" per projekt) ODROZNIONY od Wykonano
 -- (czy juz zrobione) - zaznaczenie Wymagany="Tak" auto-tworzy powiazane zadanie (C2, "bez
 -- dublowania" - ID_Tickietu raz ustawiony nigdy nie jest nadpisywany kolejnym zadaniem).
+-- ID_Etapu (weekly 23.07.2026): NULL = pozycja ogolna projektu (dotychczasowe zachowanie,
+-- widoczna w sekcji "Checklista" karty projektu), wypelnione = pozycja odnosi sie do
+-- KONKRETNEGO zakresu prac danego etapu/sub-projektu (widoczna w checklistcie tego etapu w
+-- formularzu harmonogramu). Addytywne - NIE zastepuje ogolnej checklisty projektu, jest obok
+-- niej (ten sam wzorzec co ID_Szablonu/ID_Tickietu powyzej). ON DELETE CASCADE (nie SET NULL
+-- jak reszta FK w tej tabeli) - pozycja checklisty scisle zwiazana z zakresem TEGO etapu traci
+-- sens po usunieciu etapu, w odroznieniu od np. ID_Szablonu (usuniecie szablonu ma zostawic
+-- pozycje jako samodzielna, patrz deleteChecklistTemplate w app.js).
 CREATE TABLE IF NOT EXISTS checklisty_projektow (
   ID_Pozycji TEXT PRIMARY KEY NOT NULL,
   ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
@@ -280,7 +288,8 @@ CREATE TABLE IF NOT EXISTS checklisty_projektow (
   Wykonano TEXT,
   ID_Tickietu TEXT REFERENCES zadania_tickety(ID_Tickietu) ON DELETE SET NULL,
   Kolejnosc INTEGER,
-  Data_utworzenia TEXT
+  Data_utworzenia TEXT,
+  ID_Etapu TEXT REFERENCES harmonogram(ID_Zadania) ON DELETE CASCADE
 );
 
 -- Notatki ze spotkan -> zadania (Faza 4, D1, warsztat 22.07.2026): notatka (spotkanie/telefon)

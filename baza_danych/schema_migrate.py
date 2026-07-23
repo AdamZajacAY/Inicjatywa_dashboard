@@ -509,6 +509,16 @@ def ensure_checklist_instance_columns(db_path):
     })
 
 
+def ensure_checklist_stage_column(db_path):
+    """Dodaje ID_Etapu do checklisty_projektow w bazach powstalych przed weekly 23.07.2026 -
+    pozwala odrebnej pozycji checklisty odnosic sie do KONKRETNEGO etapu/sub-projektu (zakres
+    prac), obok dotychczasowych ogolnych pozycji projektu (ID_Etapu NULL) - patrz komentarz w
+    schema.sql. Addytywne, ten sam wzorzec co ensure_checklist_instance_columns powyzej."""
+    _ensure_columns(db_path, "checklisty_projektow", {
+        "ID_Etapu": "TEXT REFERENCES harmonogram(ID_Zadania) ON DELETE CASCADE",
+    })
+
+
 def ensure_checklist_backfill_for_existing_projects(db_path):
     """Dla kazdego istniejacego projektu, wstawia brakujace pozycje checklisty z AKTYWNYCH
     wierszy checklista_szablony (dopasowanie po ID_Szablonu) - musi biec PO

@@ -732,7 +732,12 @@ function assignmentsForProject(pid) { return STATE.assignments.filter(a => a.ID_
 function assignmentsForPerson(oid) { return STATE.assignments.filter(a => a.ID_Osoby === oid); }
 function tasksForProject(pid) { return STATE.tasks.filter(t => t.ID_Projektu === pid); }
 function milestonesForProject(pid) { return STATE.milestones.filter(m => m.ID_Projektu === pid); }
-function checklistForProject(pid) { return STATE.checklists.filter(c => c.ID_Projektu === pid); }
+// ID_Etapu (weekly 23.07.2026) - pozycje odnoszace sie do KONKRETNEGO etapu/sub-projektu maja
+// wlasna sekcje (patrz stageChecklistSectionHtml), wiec ogolna checklista projektu pokazuje
+// tylko te bez etapu - inaczej pozycje etapowe pokazywalyby sie podwojnie (i tu, i w formularzu
+// etapu).
+function checklistForProject(pid) { return STATE.checklists.filter(c => c.ID_Projektu === pid && !c.ID_Etapu); }
+function checklistForStage(sid) { return STATE.checklists.filter(c => c.ID_Etapu === sid); }
 function meetingNotesForProject(pid) { return STATE.meetingNotes.filter(n => n.ID_Projektu === pid); }
 function notePointsForNote(noteId) {
   return STATE.notePoints.filter(p => p.ID_Notatki === noteId).sort((a, b) => (a.Kolejnosc ?? 999) - (b.Kolejnosc ?? 999));
@@ -846,6 +851,25 @@ function realCostForProject(pid) {
 }
 function realHoursForProject(pid) {
   return ticketsForProject(pid).reduce((s, t) => s + num(t.Rzeczywiste_roboczogodziny), 0);
+}
+// Rozbicie godzin per etap/sub-projekt (weekly 23.07.2026, "ile czasu kosztowal subprojekt kazdy
+// po kolei") - suma NIE musi rownac sie realHoursForProject(pid) co do grosza: ticket przypiety
+// do kilku etapow naraz (zadania_etapy, n:n, Faza 1/B5) liczy sie w KAZDYM z nich - to swiadomy
+// skutek modelu n:n (praca faktycznie dotyczyla obu zakresow), nie blad.
+function ticketsForStage(sid) {
+  const ids = new Set(ticketIdsForStage(sid));
+  return STATE.tickets.filter(t => ids.has(t.ID_Tickietu));
+}
+// Jedno przejscie po ticketsForStage() zamiast osobnych estHoursForStage()/realHoursForStage()
+// (kazda re-skanowalaby ta sama liste) - count liczony z TEJ SAMEJ listy co sumy, nie z
+// surowego ticketIdsForStage(), zeby nie mogly sie rozjechac.
+function stageTicketStats(sid) {
+  const tickets = ticketsForStage(sid);
+  return tickets.reduce((acc, t) => {
+    acc.est += num(t.Szacowane_roboczogodziny);
+    acc.real += num(t.Rzeczywiste_roboczogodziny);
+    return acc;
+  }, { count: tickets.length, est: 0, real: 0 });
 }
 
 function projectTags(p) {
@@ -1526,7 +1550,7 @@ function renderSubcontractors() {
 
 /* ================================================================== VIEW: ZADANIA (tickety) */
 let ticketFilters = { projekt: "", osoba: "", statuses: [], onlyOverdue: false, view: "kanban",
-  tag: "", typ: "", sortField: "Termin", sortDir: "asc" }; // tag/typ/sort: Faza 3 (B2/B6/B10)
+  tag: "", typ: "", sortField: "Termin", sortDir: "asc", etap: "" }; // tag/typ/sort: Faza 3 (B2/B6/B10); etap: weekly 23.07.2026
 
 // Faza 3 (B2) - wartosc do sortowania listy zadan wg klikanego naglowka kolumny; Termin domyslnie
 // (mirror poprzedniego, na sztywno wpisanego sortowania), reszta pol dopisana obok, nie zamiast.
@@ -1586,6 +1610,9 @@ function renderTicketsKanban(list) {
 }
 
 function renderTickets() {
+  // Zbior ID_Tickietu dla wybranego etapu policzony RAZ przed petla (nie stageIdsForTicket()
+  // per ticket w srodku filter() - to re-skanowaloby caly STATE.taskStages dla kazdego ticketu).
+  const stageTicketIds = ticketFilters.etap ? new Set(ticketIdsForStage(ticketFilters.etap)) : null;
   const list = STATE.tickets.filter(t => {
     if (ticketFilters.projekt && t.ID_Projektu !== ticketFilters.projekt) return false;
     if (ticketFilters.osoba && t.ID_Osoby_przypisanej !== ticketFilters.osoba) return false;
@@ -1593,6 +1620,7 @@ function renderTickets() {
     if (ticketFilters.onlyOverdue && !isOverdueTicket(t)) return false;
     if (ticketFilters.tag && !ticketTags(t).includes(ticketFilters.tag)) return false;
     if (ticketFilters.typ && (t.Typ_zadania || "Wewnetrzne") !== ticketFilters.typ) return false;
+    if (stageTicketIds && !stageTicketIds.has(t.ID_Tickietu)) return false;
     return true;
   }).sort((a, b) => {
     const dir = ticketFilters.sortDir === "desc" ? -1 : 1;
@@ -1614,6 +1642,10 @@ function renderTickets() {
     </div>
     <div class="filters">
       <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
+      <select id="fTkEtap" ${ticketFilters.projekt ? "" : "disabled"} title="${ticketFilters.projekt ? "" : "Wybierz najpierw projekt"}">
+        <option value="">${ticketFilters.projekt ? "Wszystkie etapy / sub-projekty" : "— wybierz projekt —"}</option>
+        ${stageCheckboxPairs(ticketFilters.projekt).map(([v, l]) => `<option value="${esc(v)}" ${ticketFilters.etap === v ? "selected" : ""}>${esc(l)}</option>`).join("")}
+      </select>
       <select id="fTkOsoba"><option value="">Wszystkie osoby</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ticketFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
       <select id="fTkTag"><option value="">Wszystkie tagi</option>${allTicketTags().map(tag => `<option value="${esc(tag)}" ${ticketFilters.tag === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}</select>
       <select id="fTkTyp"><option value="">Urzędowe i wewnętrzne</option><option value="Urzedowe" ${ticketFilters.typ === "Urzedowe" ? "selected" : ""}>Tylko urzędowe</option><option value="Wewnetrzne" ${ticketFilters.typ === "Wewnetrzne" ? "selected" : ""}>Tylko wewnętrzne</option></select>
@@ -1659,7 +1691,8 @@ function renderTickets() {
         </tbody>
       </table>
     </div>`}`;
-  $("#fTkProj").addEventListener("change", e => { ticketFilters.projekt = e.target.value; renderTickets(); });
+  $("#fTkProj").addEventListener("change", e => { ticketFilters.projekt = e.target.value; ticketFilters.etap = ""; renderTickets(); });
+  $("#fTkEtap").addEventListener("change", e => { ticketFilters.etap = e.target.value; renderTickets(); });
   $("#fTkOsoba").addEventListener("change", e => { ticketFilters.osoba = e.target.value; renderTickets(); });
   $("#fTkTag").addEventListener("change", e => { ticketFilters.tag = e.target.value; renderTickets(); });
   $("#fTkTyp").addEventListener("change", e => { ticketFilters.typ = e.target.value; renderTickets(); });
@@ -2069,9 +2102,12 @@ function ganttProjectTaskTableHtml(tasks, opts = {}) {
         <thead><tr>
           <th>Zadanie / etap</th><th>Kategoria</th><th>Start (plan)</th><th>Koniec (plan)</th>
           <th>Status</th><th>Postęp</th><th>Priorytet</th><th>Odpowiedzialny</th>
+          <th>Rbh szac.</th><th>Rbh rzecz.</th>
         </tr></thead>
         <tbody>
-          ${sorted.map(t => `
+          ${sorted.map(t => {
+            const stats = stageTicketStats(t.ID_Zadania);
+            return `
             <tr class="clickable" data-task-id="${esc(t.ID_Zadania)}">
               <td>${esc(t.Nazwa_zadania)}</td>
               <td>${esc(t.Kategoria || "—")}</td>
@@ -2081,7 +2117,10 @@ function ganttProjectTaskTableHtml(tasks, opts = {}) {
               <td>${fmtPctFraction(t.Procent_ukonczenia)}</td>
               <td>${t.Priorytet ? badge(t.Priorytet, priorityBadgeClass(t.Priorytet)) : "—"}</td>
               <td>${esc(personName(t.ID_Osoby_odpowiedzialnej))}</td>
-            </tr>`).join("")}
+              <td class="num">${stats.est || "—"}</td>
+              <td class="num">${stats.real || "—"}</td>
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
     </div>`;
@@ -3155,12 +3194,107 @@ function openTaskForm(pid, tid = null) {
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), t.Priorytet || "Sredni")}
     ${fSelect("Kamień milowy", "Kamien_milowy", [["Nie", "Nie"], ["Tak", "Tak"]], t.Kamien_milowy || "Nie")}
     ${fTextarea("Uwagi", "Uwagi", t.Uwagi)}
+    ${tid ? stageWorkloadSectionHtml(tid, currentPid) : ""}
+    ${tid ? stageChecklistSectionHtml(tid, currentPid) : ""}
   `;
   openModal(tid ? "Edytuj etap harmonogramu" : "Nowy etap harmonogramu", body, {
     wide: true,
     submitLabel: "Zapisz etap",
     onSubmit: (data) => saveTaskFromForm(data, pid, tid),
   });
+}
+
+// Rozbicie godzin + skrot do zadan TEGO etapu (weekly 23.07.2026) - patrz stageTicketStats()
+// i gotoStageTasks. Tylko dla ISTNIEJACEGO etapu (tid) - swiezo tworzony sub-projekt nie ma
+// jeszcze przypietych zadan.
+function stageWorkloadSectionHtml(tid, pid) {
+  const { count, est, real } = stageTicketStats(tid);
+  return `
+    <div class="form-section-title">Zadania tego etapu</div>
+    <div class="empty-hint full" style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>${count} zadań · ${est || 0} rbh szac. · ${real || 0} rbh rzecz.</span>
+      <button type="button" class="icon-btn" data-goto-stage-tasks="${esc(tid)}" data-project="${esc(pid)}">Zobacz zadania tego etapu →</button>
+    </div>
+  `;
+}
+
+// Odrebna checklista per etap (weekly 23.07.2026, "sub projekt powinien miec odrebne check
+// listy dla konkretnego zakresu dzialan") - wlasny, niezalezny od reszty formularza cykl zycia
+// (mirror ticketCommentsSectionHtml/loadTicketComments) - dodanie/odznaczenie pozycji NIE
+// powinno zapisywac/zamykac reszty niezapisanych zmian w formularzu etapu. Input jest
+// textarea (nie input type=text) z tego samego powodu co w ticketCommentsSectionHtml - to pole
+// zyje wewnatrz #modalForm, ktory ma wlasny submit-button; zwykly <input> odpalalby Enterem
+// PELNE zapisanie/zamkniecie formularza etapu zamiast dodania pozycji checklisty.
+function stageChecklistSectionHtml(sid, pid) {
+  const editable = can("create", "checklisty_projektow", { ID_Projektu: pid });
+  return `
+    <div class="form-section-title">Checklista tego etapu (zakres prac)</div>
+    <div class="comment-list" data-stage-checklist-list="${esc(sid)}">${stageChecklistListHtml(sid)}</div>
+    ${editable ? `
+      <div class="comment-add">
+        <textarea data-stage-checklist-input="${esc(sid)}" rows="2" placeholder="Nowa pozycja checklisty tego etapu…"></textarea>
+        <button type="button" data-add-stage-checklist="${esc(sid)}" data-project="${esc(pid)}">Dodaj pozycję</button>
+      </div>` : ""}
+  `;
+}
+
+function stageChecklistItemHtml(c, sid) {
+  const editable = can("update", "checklisty_projektow", c);
+  return `
+    <div class="dp-list-item" style="padding:6px 0">
+      ${can("delete", "checklisty_projektow", c) ? `<div class="item-actions"><button class="icon-btn danger" type="button" data-delete-stage-checklist="${esc(c.ID_Pozycji)}" data-stage="${esc(sid)}">Usuń</button></div>` : ""}
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" data-toggle-stage-checklist="${esc(c.ID_Pozycji)}" data-stage="${esc(sid)}" ${c.Wykonano === "Tak" ? "checked" : ""} ${editable ? "" : "disabled"}>
+        <span style="${c.Wykonano === "Tak" ? "text-decoration:line-through;color:var(--text-muted)" : ""}">${esc(c.Tresc)}</span>
+      </div>
+    </div>`;
+}
+
+function stageChecklistListHtml(sid) {
+  return checklistForStage(sid).map(c => stageChecklistItemHtml(c, sid)).join("") || `<div class="kpi-sub">Brak pozycji checklisty dla tego etapu.</div>`;
+}
+
+function renderStageChecklistList(sid) {
+  const listEl = $(`[data-stage-checklist-list="${sid}"]`);
+  if (!listEl) return;
+  listEl.innerHTML = stageChecklistListHtml(sid);
+}
+
+async function addStageChecklistItem(sid, pid) {
+  const input = $(`[data-stage-checklist-input="${sid}"]`);
+  const tresc = input.value.trim();
+  if (!tresc) return;
+  const btn = $(`[data-add-stage-checklist="${sid}"]`);
+  btn.disabled = true;
+  try {
+    const saved = await apiPost(`/api/checklisty_projektow`, { ID_Projektu: pid, ID_Etapu: sid, Tresc: tresc });
+    STATE.checklists.push(saved);
+    input.value = "";
+    renderStageChecklistList(sid);
+  } catch (e) {
+    alert("Nie udało się dodać pozycji checklisty: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function toggleStageChecklistItem(id, sid) {
+  return toggleChecklistItemCore(id, () => renderStageChecklistList(sid));
+}
+
+function deleteStageChecklistItem(id, sid) {
+  return deleteChecklistItemCore(id, "Usunąć pozycję checklisty tego etapu?", () => renderStageChecklistList(sid));
+}
+
+// Skok do zakladki Zadania, przefiltrowanej do TEGO etapu - z wewnatrz otwartego modala
+// formularza etapu, nie z karty projektu, wiec closeModal() (nie closeDetail(), patrz
+// gotoProjectTasks nizej). Reszta (reset filtrow, przelaczenie widoku) - wspolny
+// resetTicketFiltersForStageView().
+function gotoStageTasks(pid, sid) {
+  closeModal();
+  resetTicketFiltersForStageView(pid, sid);
+  switchToView("zadania");
+  renderTickets();
 }
 
 async function saveTaskFromForm(data, pid, tid) {
@@ -3200,6 +3334,7 @@ async function deleteTask(tid, pid) {
   STATE.tasks = STATE.tasks.filter(t => t.ID_Zadania !== tid);
   STATE.tickets.forEach(t => { if (t.ID_Etapu === tid) t.ID_Etapu = null; });
   STATE.taskStages = STATE.taskStages.filter(e => e.ID_Zadania !== tid); // mirror ON DELETE CASCADE w schema.sql
+  STATE.checklists = STATE.checklists.filter(c => c.ID_Etapu !== tid); // jw. - checklisty_projektow.ID_Etapu (weekly 23.07.2026)
   renderAll();
   openProjectDetail(pid);
 }
@@ -3633,23 +3768,29 @@ async function saveChecklistItemFromForm(data, pid, id) {
   openProjectDetail(pid);
 }
 
-async function deleteChecklistItem(id, pid) {
-  if (!confirm("Usunąć pozycję checklisty?")) return;
+// Core wspolny dla checklisty projektu i checklisty etapu (weekly 23.07.2026) - jedyna roznica
+// miedzy nimi to co odswiezyc po zapisie (cala karta projektu vs. tylko wbudowana lista w
+// formularzu etapu), wiec to jest jedyny parametr (mirror persistEntity/deleteEntity, ktore z
+// tego samego powodu przyjmuja tail jako argument zamiast byc kopiowane per-tabela).
+async function deleteChecklistItemCore(id, confirmMsg, onDone) {
+  if (!confirm(confirmMsg)) return;
   if (!await deleteEntity(`/api/checklisty_projektow/${id}`, "pozycji checklisty")) return;
   STATE.checklists = STATE.checklists.filter(c => c.ID_Pozycji !== id);
-  renderAll();
-  openProjectDetail(pid);
+  onDone();
+}
+function deleteChecklistItem(id, pid) {
+  return deleteChecklistItemCore(id, "Usunąć pozycję checklisty?", () => { renderAll(); openProjectDetail(pid); });
 }
 
-async function toggleChecklistItem(id, pid) {
-  // Optymistyczny update bez modala (mirror moveTicketToStatus) - zaznaczenie/odznaczenie
-  // pozycji to jednoklikowa akcja, nie zasluguje na otwieranie formularza.
+// Optymistyczny update bez modala (mirror moveTicketToStatus) - zaznaczenie/odznaczenie pozycji
+// to jednoklikowa akcja, nie zasluguje na otwieranie formularza.
+async function toggleChecklistItemCore(id, onDone) {
   const item = STATE.checklists.find(c => c.ID_Pozycji === id);
   if (!item) return;
   if (!can("update", "checklisty_projektow", item)) return;
   const prev = item.Wykonano;
   item.Wykonano = prev === "Tak" ? "Nie" : "Tak";
-  openProjectDetail(pid);
+  onDone();
   try {
     const saved = await apiPut(`/api/checklisty_projektow/${id}`, { Wykonano: item.Wykonano });
     Object.assign(item, saved);
@@ -3657,7 +3798,10 @@ async function toggleChecklistItem(id, pid) {
     item.Wykonano = prev;
     alert("Nie udało się zaktualizować pozycji checklisty: " + e.message);
   }
-  openProjectDetail(pid);
+  onDone();
+}
+function toggleChecklistItem(id, pid) {
+  return toggleChecklistItemCore(id, () => openProjectDetail(pid));
 }
 
 async function toggleChecklistRequired(id, pid) {
@@ -4791,12 +4935,19 @@ function switchToView(viewName) {
   $all(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.view === viewName));
   $all(".view").forEach(v => v.classList.toggle("active", v.id === `view-${viewName}`));
 }
-function gotoProjectTasks(pid) {
-  closeDetail();
+// Wspolny reset filtrow zakladki Zadania dla obu "skokow" (z karty projektu i z formularza
+// etapu, patrz gotoStageTasks powyzej) - jedyna roznica miedzy nimi to ktory ekran zamykaja
+// (closeDetail() vs closeModal()) i czy etap jest juz z gory znany.
+function resetTicketFiltersForStageView(pid, sid = "") {
   ticketFilters.projekt = pid;
+  ticketFilters.etap = sid;
   ticketFilters.statuses = [];
   ticketFilters.osoba = "";
   ticketFilters.onlyOverdue = false;
+}
+function gotoProjectTasks(pid) {
+  closeDetail();
+  resetTicketFiltersForStageView(pid);
   switchToView("zadania");
   renderTickets();
 }
@@ -5006,6 +5157,8 @@ document.addEventListener("change", (e) => {
   if (checklistCheckbox) { toggleChecklistItem(checklistCheckbox.getAttribute("data-toggle-checklist"), checklistCheckbox.getAttribute("data-project")); return; }
   const checklistRequiredCheckbox = e.target.closest && e.target.closest("[data-toggle-checklist-required]");
   if (checklistRequiredCheckbox) { toggleChecklistRequired(checklistRequiredCheckbox.getAttribute("data-toggle-checklist-required"), checklistRequiredCheckbox.getAttribute("data-project")); return; }
+  const stageChecklistCheckbox = e.target.closest && e.target.closest("[data-toggle-stage-checklist]");
+  if (stageChecklistCheckbox) { toggleStageChecklistItem(stageChecklistCheckbox.getAttribute("data-toggle-stage-checklist"), stageChecklistCheckbox.getAttribute("data-stage")); return; }
   const avatarFile = e.target.closest && e.target.closest("[data-avatar-file]");
   if (avatarFile) {
     const file = avatarFile.files[0];
@@ -5100,6 +5253,12 @@ document.addEventListener("click", (e) => {
   if (duplicateTicketBtn) { duplicateTicket(duplicateTicketBtn.getAttribute("data-duplicate-ticket")); return; }
   const addCommentBtn = e.target.closest("[data-add-comment]");
   if (addCommentBtn) { addTicketComment(addCommentBtn.getAttribute("data-add-comment")); return; }
+  const addStageChecklistBtn = e.target.closest("[data-add-stage-checklist]");
+  if (addStageChecklistBtn) { addStageChecklistItem(addStageChecklistBtn.getAttribute("data-add-stage-checklist"), addStageChecklistBtn.getAttribute("data-project")); return; }
+  const deleteStageChecklistBtn = e.target.closest("[data-delete-stage-checklist]");
+  if (deleteStageChecklistBtn) { deleteStageChecklistItem(deleteStageChecklistBtn.getAttribute("data-delete-stage-checklist"), deleteStageChecklistBtn.getAttribute("data-stage")); return; }
+  const gotoStageTasksBtn = e.target.closest("[data-goto-stage-tasks]");
+  if (gotoStageTasksBtn) { gotoStageTasks(gotoStageTasksBtn.getAttribute("data-project"), gotoStageTasksBtn.getAttribute("data-goto-stage-tasks")); return; }
   const tkViewBtn = e.target.closest("[data-tk-view]");
   if (tkViewBtn) { ticketFilters.view = tkViewBtn.getAttribute("data-tk-view"); renderTickets(); return; }
   const tkStatusChip = e.target.closest("[data-tk-status-filter]");

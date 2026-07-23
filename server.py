@@ -51,6 +51,7 @@ from baza_danych.schema_migrate import (
     ensure_polish_role_translation, ensure_ticket_reactivation_column,
     ensure_stage_split_for_legacy_projects,
     ensure_project_reviewer_column, ensure_checklist_konserwator_item,
+    ensure_checklist_stage_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -139,6 +140,7 @@ ensure_ticket_reactivation_column(DB_PATH)  # jw. - Liczba_reaktywacji na zadani
 ensure_stage_split_for_legacy_projects(DB_PATH)  # jw. - dzieli auto-zmigrowany 1 sub-projekt na etapy, gdy Typ_projektu/Faza wskazuja realna historie (uwaga uzytkownika, 23.07.2026)
 ensure_project_reviewer_column(DB_PATH)  # jw. - Projektant_sprawdzajacy na projekty (weekly 23.07.2026)
 ensure_checklist_konserwator_item(DB_PATH)  # jw. - brakujaca pozycja checklisty (konserwator zabytkow) + backfill na istniejace projekty
+ensure_checklist_stage_column(DB_PATH)  # jw. - ID_Etapu na checklisty_projektow, odrebna checklista per sub-projekt (weekly 23.07.2026)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
