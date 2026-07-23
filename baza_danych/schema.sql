@@ -211,7 +211,10 @@ CREATE TABLE IF NOT EXISTS zadania_tickety (
   Status TEXT,
   Data_zakonczenia TEXT,
   Tagi TEXT,
-  Typ_zadania TEXT
+  Typ_zadania TEXT,
+  -- Faza 5 (B11/B12) - licznik reaktywacji zadania z "Zrobione" z powrotem do pracy (np. dach
+  -- rysowany 10x) - rowniez rejestr powtorzen do przyszlej kalibracji estymacji czasu.
+  Liczba_reaktywacji INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS komentarze_tickety (

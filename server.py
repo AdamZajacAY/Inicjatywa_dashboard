@@ -48,6 +48,7 @@ from baza_danych.schema_migrate import (
     ensure_checklista_szablony_table, ensure_seed_checklista_szablony,
     ensure_checklist_instance_columns, ensure_checklist_backfill_for_existing_projects,
     ensure_notatki_spotkan_tables,
+    ensure_polish_role_translation, ensure_ticket_reactivation_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -131,6 +132,8 @@ ensure_seed_checklista_szablony(DB_PATH)  # jw. - musi biec PO powyzszej (potrze
 ensure_checklist_instance_columns(DB_PATH)  # jw. - ID_Szablonu/Wymagany/ID_Tickietu na checklisty_projektow (Faza 4, C1/C2)
 ensure_checklist_backfill_for_existing_projects(DB_PATH)  # jw. - musi biec PO obu powyzszych (potrzebuje kolumn + zasianego szablonu)
 ensure_notatki_spotkan_tables(DB_PATH)  # jw. - nowe tabele notatek ze spotkan (Faza 4, D1)
+ensure_polish_role_translation(DB_PATH)  # jw. - Rola_w_projekcie "Owner" -> "Wlasciciel" (Faza 5, A17)
+ensure_ticket_reactivation_column(DB_PATH)  # jw. - Liczba_reaktywacji na zadania_tickety (Faza 5, B11/B12)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -975,7 +978,9 @@ ENUM_FIELDS = {
         "Aktywny": {"Tak", "Nie"},
     },
     "przypisania": {
-        "Rola_w_projekcie": {"Sponsor", "Owner", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"},
+        # Faza 5 (A17) - "Owner" -> "Wlasciciel" (mirror app.js ROLE_W_PROJEKCIE), migracja
+        # tlumaczy istniejace wiersze - patrz ensure_polish_role_translation w schema_migrate.py.
+        "Rola_w_projekcie": {"Sponsor", "Wlasciciel", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"},
         "Status": {"Aktywny", "Zakonczony"},
     },
     "harmonogram": {

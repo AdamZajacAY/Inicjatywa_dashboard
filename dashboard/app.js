@@ -3,6 +3,29 @@
  * dla struktury) przez REST API pod /api/* — patrz apiGet/apiPost/apiPut/apiDelete.
  */
 
+// Faza 5 (E1) - manualny przelacznik jasny/ciemny. Na samej gorze pliku (przed reszta),
+// zeby zaaplikowac motyw najwczesniej jak sie da, zanim cokolwiek innego sie wyrenderuje.
+// Domyslnie (brak zapisanej preferencji) = respektuj system jak dotad (prefers-color-scheme),
+// ale jawny wybor uzytkownika (localStorage) nadpisuje to trwale az do ponownej zmiany -
+// patrz :root[data-theme] w style.css (osobne od @media, zeby wygrywalo niezaleznie od OS).
+const THEME_KEY = "ip_theme";
+function effectiveTheme() {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored === "dark" || stored === "light") return stored;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const btn = document.getElementById("btnThemeToggle");
+  if (btn) btn.textContent = theme === "dark" ? "☀️" : "🌙";
+}
+applyTheme(effectiveTheme());
+document.getElementById("btnThemeToggle")?.addEventListener("click", () => {
+  const next = effectiveTheme() === "dark" ? "light" : "dark";
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+});
+
 const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
@@ -117,7 +140,10 @@ const FAZY = ["Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs -
   "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzor autorski", "Zakonczenie"];
 const PRIORYTETY = ["Wysoki", "Sredni", "Niski"];
 const DZIALY = ["Architekci", "Specjalisci", "Kierownictwo projektow", "PMO", "Prawny", "Finansowy", "Marketing/Sprzedaz", "Zarzad"];
-const ROLE_W_PROJEKCIE = ["Sponsor", "Owner", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"];
+// Faza 5 (A17, "kalka jezykowa") - "Owner" -> "Wlasciciel", ta sama polska nazwa co juz uzyta
+// dla ID_Osoby_wlasciciela w ryzykach (kolumna "Właściciel") - usuwa niespojnosc jezykowa,
+// nie wprowadza nowego terminu. Migracja (schema_migrate.py) tlumaczy istniejace wiersze.
+const ROLE_W_PROJEKCIE = ["Sponsor", "Wlasciciel", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"];
 // Wstrzymany/Przeglad dopisane w Faza 1 - Status przenosi sie z projekty na sub-projekt (A9),
 // wiec sub-projekt musi umiec reprezentowac te same stany co dawny projekty.Status (STATUSES).
 const TASK_STATUSES = ["Nie rozpoczete", "W trakcie", "Wstrzymany", "Zakonczone", "Opoznione", "Przeglad", "Anulowany"];
@@ -716,6 +742,13 @@ function meetingNoteStatusBadge(status) {
   return "warning"; // Nowa
 }
 function parcelsForProject(pid) { return STATE.parcels.filter(d => d.ID_Projektu === pid); }
+// Faza 5 (A8) - "identifyParcel" to udokumentowany parametr Geoportalu krajowego (GUGiK,
+// ogloszenie 08.10.2018 "Linkowanie do Geoportalu z identyfikatorem dzialki ewidencyjnej") -
+// ustawia widok dokladnie na wskazanej dzialce. Identyfikator_dzialki (Faza 2, A7) juz ma
+// dokladnie ten format (WWPPGG_R.OOOO.NDZ), wiec zero dodatkowego parsowania/formatowania.
+function geoportalParcelUrl(identyfikator) {
+  return `https://mapy.geoportal.gov.pl/imapnext/imap/?identifyParcel=${encodeURIComponent(identyfikator)}`;
+}
 // Faza 2 (A7): sklada pojedyncze pola lokalizacji urzedowej w jeden czytelny wiersz do wyswietlenia
 // (formularz trzyma je jako osobne pola, ale w widoku detali jeden wiersz jest czytelniejszy).
 function formatLokalizacjaUrzedowa(p) {
@@ -1014,7 +1047,7 @@ function renderOverview() {
       <div class="kpi-tile accent-critical"><div class="kpi-label">Opóźnione etapy/tickety</div><div class="kpi-value">${ot.overdueStages + ot.overdueTickets}</div></div>
       <div class="kpi-tile accent-critical"><div class="kpi-label">RAG czerwony</div><div class="kpi-value">${byRag("Czerwony")}</div></div>
       <div class="kpi-tile accent-critical"><div class="kpi-label">Otwarte ryzyka</div><div class="kpi-value">${openRisks}</div></div>
-      <div class="kpi-tile ${portfolioMargin >= 0 ? "accent-good" : "accent-critical"}"><div class="kpi-label">Marża portfela</div><div class="kpi-value">${portfolioRevenue ? Math.round(portfolioMargin / portfolioRevenue * 100) + "%" : "—"}</div><div class="kpi-sub">${fmtMoney(portfolioMargin)}</div></div>
+      ${FINANCIAL_RESTRICTED_ROLES.includes(STATE.me.role) ? "" : `<div class="kpi-tile ${portfolioMargin >= 0 ? "accent-good" : "accent-critical"}"><div class="kpi-label">Marża portfela</div><div class="kpi-value">${portfolioRevenue ? Math.round(portfolioMargin / portfolioRevenue * 100) + "%" : "—"}</div><div class="kpi-sub">${fmtMoney(portfolioMargin)}</div></div>`}
     </div>
 
     <div class="panel">
@@ -1074,6 +1107,7 @@ function renderOverview() {
       </div>
 
       <div class="panel">
+        ${FINANCIAL_RESTRICTED_ROLES.includes(STATE.me.role) ? "" : `
         <h3>Marża wg projektu (przychód vs. koszt)</h3>
         ${marginRows.length ? marginRows.map(({ p, m }) => `
           <div class="hbar-row clickable" data-open-project="${esc(p.ID_Projektu)}" style="cursor:pointer">
@@ -1082,8 +1116,9 @@ function renderOverview() {
             <div class="hbar-value" style="width:auto;white-space:nowrap">${Math.round(m.marginPct)}%</div>
           </div>`).join("") : `<div class="kpi-sub">Brak danych o przychodach — uzupełnij pole „Przychód” w projektach.</div>`}
         <div class="kpi-sub" style="margin-top:6px">Marża % liczona względem przychodu; mark-up % (na karcie projektu) względem kosztu.</div>
+        `}
 
-        <h3 style="margin-top:20px">Projekty wymagające uwagi (RAG czerwony)</h3>
+        <h3 ${FINANCIAL_RESTRICTED_ROLES.includes(STATE.me.role) ? "" : 'style="margin-top:20px"'}>Projekty wymagające uwagi (RAG czerwony)</h3>
         ${redProjects.length ? redProjects.map(p => `
           <div class="dp-list-item clickable" data-open-project="${esc(p.ID_Projektu)}" style="cursor:pointer">
             <div class="title">${esc(p.Nazwa)}</div>
@@ -1119,7 +1154,7 @@ function renderProjectsFilters() {
       <input type="text" id="fProjQ" placeholder="Szukaj po nazwie…" value="${esc(projectFilters.q)}">
       <select id="fProjTyp"><option value="">Wszystkie typy</option>${TYPE_ORDER.map(t => `<option ${projectFilters.typ === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
       <select id="fProjStatus"><option value="">Wszystkie statusy</option>${statuses.map(s => `<option ${projectFilters.status === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
-      <select id="fProjOwner"><option value="">Wszyscy ownerzy</option>${owners.map(o => `<option ${projectFilters.owner === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
+      <select id="fProjOwner"><option value="">Wszyscy właściciele</option>${owners.map(o => `<option ${projectFilters.owner === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
       <select id="fProjRag"><option value="">Wszystkie RAG</option>
         <option value="Zielony" ${projectFilters.rag === "Zielony" ? "selected" : ""}>Zielony</option>
         <option value="Zolty" ${projectFilters.rag === "Zolty" ? "selected" : ""}>Żółty</option>
@@ -1184,7 +1219,7 @@ function projectCardHtml(p) {
         </div>
         ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
       </div>
-      <div class="pc-row"><span>Owner</span><b>${ownerTagHtml(p.Owner)}</b></div>
+      <div class="pc-row"><span>Właściciel</span><b>${ownerTagHtml(p.Owner)}</b></div>
       <div class="pc-row"><span>Kierownik projektu</span><b>${esc(p.Kierownik_projektu)}</b></div>
       ${p.ID_Osoby_sponsora ? `<div class="pc-row"><span>Sponsor</span><b>${esc(personName(p.ID_Osoby_sponsora))}</b></div>` : ""}
       <div class="pc-row"><span>Status</span><b>${esc(p.Status)}</b></div>
@@ -1213,7 +1248,7 @@ function renderProjectsTable(list) {
         <div class="panel" style="overflow-x:auto">
           <table class="data-table">
             <thead><tr>
-              <th>Nazwa</th><th>Owner</th><th>Typ</th><th>Status</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
+              <th>Nazwa</th><th>Właściciel</th><th>Typ</th><th>Status</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
             </tr></thead>
             <tbody>
               ${rows.map(p => `
@@ -1527,7 +1562,11 @@ function ticketCardHtml(t) {
         ${isUrzedoweTicket(t) ? badge("Urzędowe", "warning") : ""}
         ${badge(t.Priorytet || "—", t.Priorytet === "Wysoki" ? "critical" : t.Priorytet === "Niski" ? "muted" : "warning")}
         ${overdue ? badge("Opóźnione", "critical") : urgentAdmin ? badge("Nieprzekraczalny termin blisko", "critical") : ""}
+        ${num(t.Liczba_reaktywacji) > 0 ? badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : ""}
       </div>
+      ${DONE_TICKET_STATUSES.includes(t.Status) && editable
+        ? `<button type="button" class="icon-btn" data-reactivate-ticket="${esc(t.ID_Tickietu)}" style="margin-top:6px;width:100%" title="Zadanie wraca do pracy (status „Do przeglądu”) zamiast tworzenia od nowa">↻ Reaktywuj</button>`
+        : ""}
     </div>`;
 }
 
@@ -1611,7 +1650,7 @@ function renderTickets() {
               <td>${esc(t.Priorytet)}</td>
               <td class="num">${t.Szacowane_roboczogodziny ?? "—"}</td>
               <td class="num">${t.Rzeczywiste_roboczogodziny ?? "—"}</td>
-              <td>${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))}</td>
+              <td>${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))} ${num(t.Liczba_reaktywacji) > 0 ? badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : ""}</td>
               <td>${isUrzedoweTicket(t) ? badge("Urzędowe", isUrgentAdministrativeTicket(t) ? "critical" : "warning") : "—"}</td>
               <td>${ticketTags(t).length ? `<div class="tag-chips">${ticketTags(t).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join("")}</div>` : "—"}</td>
             </tr>`).join("") || `<tr><td colspan="11" class="empty-hint">Brak zadań — dodaj tickety z poziomu karty projektu.</td></tr>`}
@@ -1653,6 +1692,34 @@ async function moveTicketToStatus(tid, newStatus) {
     alert("Nie udało się zmienić statusu zadania: " + e.message);
   }
   renderTickets();
+}
+
+// Faza 5 (B11/B12, warsztat 22.07.2026) - "zakonczone na teraz" != "zamkniete na zawsze"
+// (np. dach rysowany 10x). Reaktywacja wraca do "Do przegladu" (istniejacy status - "przeglad"
+// z B11, nie nowy mechanizm) zamiast tworzenia zadania od zera, i inkrementuje
+// Liczba_reaktywacji (rejestr powtorzen, B12 - do przyszlej kalibracji estymacji czasu).
+async function reactivateTicket(tid) {
+  const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
+  if (!t || !DONE_TICKET_STATUSES.includes(t.Status)) return;
+  if (!can("update", "zadania_tickety", t)) return;
+  const prevStatus = t.Status, prevDone = t.Data_zakonczenia, prevCount = t.Liczba_reaktywacji;
+  t.Status = "Do przegladu";
+  t.Data_zakonczenia = null;
+  t.Liczba_reaktywacji = num(t.Liczba_reaktywacji) + 1;
+  renderAll();
+  try {
+    const payload = serializeForApi(
+      { Status: t.Status, Data_zakonczenia: t.Data_zakonczenia, Liczba_reaktywacji: t.Liczba_reaktywacji },
+      ["Data_zakonczenia"],
+    );
+    const saved = await apiPut(`/api/zadania_tickety/${tid}`, payload);
+    reviveDates([saved], DATE_FIELDS.tickets);
+    Object.assign(t, saved);
+  } catch (e) {
+    t.Status = prevStatus; t.Data_zakonczenia = prevDone; t.Liczba_reaktywacji = prevCount;
+    alert("Nie udało się reaktywować zadania: " + e.message);
+  }
+  renderAll();
 }
 
 // Uogolniony kanban drag&drop - karty dowolnego "rodzaju" (na razie ticket/project) niosa
@@ -1698,6 +1765,21 @@ document.addEventListener("drop", (e) => {
 });
 
 /* ================================================================== VIEW: GANTT */
+// Faza 5 (E3, "ergonomia Gantta") - kolko myszy przewija oS czasu poziomo zamiast/obok pionowego
+// przewijania strony, zeby nie trzeba bylo szukac paska przewijania na samym dole ani trzymac
+// Shift. Delegowane na document (mirror reszty listenerow) - .gantt-scroll jest przebudowywane
+// od zera przy kazdym renderGanttView(). Ucieka wczesnie gdy: gest juz jest poziomy (trackpad -
+// nie ingerujemy), trzymany Shift (przegladarka i tak juz to tlumaczy na scroll poziomy), albo
+// nie ma czego przewijac poziomo (contentu miesci sie w calosci).
+document.addEventListener("wheel", (e) => {
+  const scrollEl = e.target.closest && e.target.closest(".gantt-scroll");
+  if (!scrollEl || e.shiftKey) return;
+  if (scrollEl.scrollWidth <= scrollEl.clientWidth) return;
+  if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+  e.preventDefault();
+  scrollEl.scrollLeft += e.deltaY;
+}, { passive: false });
+
 let ganttFilters = { projekt: "", typ: "", osoba: "", groupBy: "projekt", view: "skrocony" };
 // Faza 3 (B1) - ID_Zadania (etapow) recznie zwinietych przez uzytkownika w widoku Gantt "np.
 // schowac PB, zostawic PT" - w pamieci karty (jak ticketFilters/ganttFilters), nie persystowane
@@ -2617,7 +2699,7 @@ function openProjectForm(pid = null) {
     ${fTextarea("Nazwa zamierzenia budowlanego (oficjalny tytuł z PFU)", "Nazwa_zamierzenia_budowlanego", p.Nazwa_zamierzenia_budowlanego)}
     ${fSelect("Funkcja biura", "Funkcja_biura", labelPairsFor("Funkcja_biura"), p.Funkcja_biura)}
     ${fSelect("Segment", "Segment", labelPairsFor("Segment"), p.Segment)}
-    ${fSelect("Owner *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
+    ${fSelect("Właściciel *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
     ${fSelect("Kierownik projektu", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu || architektDefaultOwner)}
     ${fSelect("Sponsor (zarząd)", "ID_Osoby_sponsora", boardMemberOptionsPairs(), p.ID_Osoby_sponsora)}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), p.Priorytet || "Sredni")}
@@ -2687,7 +2769,7 @@ function openProjectForm(pid = null) {
 
 async function saveProjectFromForm(data, pid) {
   if (!data.Nazwa || !data.Owner || !data.Data_zakonczenia_planowana) {
-    alert("Uzupełnij wymagane pola: nazwa, owner, zakończenie (plan).");
+    alert("Uzupełnij wymagane pola: nazwa, właściciel, zakończenie (plan).");
     return;
   }
   const isNew = !pid;
@@ -4337,7 +4419,7 @@ function openProjectDetail(pid) {
         ${p.Symbol_projektu ? `<div><div class="k">Symbol projektu</div><div class="v">${esc(p.Symbol_projektu)}</div></div>` : ""}
         ${p.Nazwa_zamierzenia_budowlanego ? `<div style="grid-column:1/-1"><div class="k">Nazwa zamierzenia budowlanego</div><div class="v">${esc(p.Nazwa_zamierzenia_budowlanego)}</div></div>` : ""}
         <div><div class="k">Funkcja biura</div><div class="v">${p.Funkcja_biura ? esc(p.Funkcja_biura) : "—"}</div></div>
-        <div><div class="k">Owner</div><div class="v">${esc(p.Owner)}</div></div>
+        <div><div class="k">Właściciel</div><div class="v">${esc(p.Owner)}</div></div>
         <div><div class="k">Kierownik projektu</div><div class="v">${esc(p.Kierownik_projektu)}</div></div>
         <div><div class="k">Sponsor</div><div class="v">${p.ID_Osoby_sponsora ? esc(personName(p.ID_Osoby_sponsora)) : "—"}</div></div>
         <div><div class="k">Data rozpoczęcia</div><div class="v">${fmtDate(p.Data_rozpoczecia)}</div></div>
@@ -4357,6 +4439,7 @@ function openProjectDetail(pid) {
       ${parcelsForProject(pid).map(d => `
         <div class="dp-list-item" ${can("update", "dzialki", d) ? `data-edit-parcel="${esc(d.ID_Dzialki)}" data-project="${esc(pid)}" style="cursor:pointer"` : ""}>
           <div class="item-actions">
+            ${d.Identyfikator_dzialki ? `<a class="icon-btn" href="${esc(geoportalParcelUrl(d.Identyfikator_dzialki))}" target="_blank" rel="noopener" data-geoportal-link="1" title="Otwórz działkę w Geoportalu (GUGiK)">🌐 Geoportal</a>` : ""}
             ${can("delete", "dzialki", d) ? `<button class="icon-btn danger" data-delete-parcel="${esc(d.ID_Dzialki)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">Działka nr ${esc(d.Numer_dzialki)}</div>
@@ -4809,12 +4892,21 @@ function syncTagsHiddenInput(field) {
   field.parentElement.querySelector('input[type="hidden"]').value = tags.join(",");
 }
 function addTagFromInput(input) {
-  const value = input.value.trim().replace(/,+$/, "").trim();
+  const raw = input.value.trim().replace(/,+$/, "");
   input.value = "";
-  if (!value) return;
+  if (!raw) return;
   const field = input.closest(".tag-chips-editable");
-  if ($all(".tag-chip", field).some(el => el.getAttribute("data-tag") === value)) return;
-  input.insertAdjacentHTML("beforebegin", tagChipHtml(value));
+  // Faza 5 (B7) - "#" jest separatorem tagow, nie czescia tagu: wklejone/wpisane razem
+  // "#ABC #FD" staje sie DWOMA tagami ("ABC","FD"), nie jedna fraza z krzyzykami w srodku.
+  // Split po "#" i przecinku (przecinek tez moze przyjsc z wklejenia, nie tylko z pojedynczego
+  // keydown) - filter(Boolean) usuwa puste kawalki (np. wiodacy "#" przed pierwszym tagiem).
+  const values = raw.split(/[#,]/).map(s => s.trim()).filter(Boolean);
+  const existing = $all(".tag-chip", field).map(el => el.getAttribute("data-tag"));
+  for (const value of values) {
+    if (existing.includes(value)) continue;
+    input.insertAdjacentHTML("beforebegin", tagChipHtml(value));
+    existing.push(value);
+  }
   syncTagsHiddenInput(field);
 }
 
@@ -4976,6 +5068,11 @@ document.addEventListener("click", (e) => {
     renderTickets();
     return;
   }
+  // B11 - sprawdzane PRZED data-open-ticket ponizej, bo przycisk zyje wewnatrz karty kanban,
+  // ktora sama ma data-open-ticket (mirror gantt-stage-toggle w Fazie 3) - bez tego klik w
+  // "Reaktywuj" otwieralby tez formularz edycji ticketu.
+  const reactivateBtn = e.target.closest("[data-reactivate-ticket]");
+  if (reactivateBtn) { reactivateTicket(reactivateBtn.getAttribute("data-reactivate-ticket")); return; }
   const openTicketRow = e.target.closest("[data-open-ticket]");
   if (openTicketRow) { const tkid = openTicketRow.getAttribute("data-open-ticket"); const tk = STATE.tickets.find(x => x.ID_Tickietu === tkid); if (tk) { openTicketForm(tk.ID_Projektu, tkid); return; } }
 
@@ -5013,6 +5110,10 @@ document.addEventListener("click", (e) => {
   const convertNotePointBtn = e.target.closest("[data-convert-note-point]");
   if (convertNotePointBtn) { openConvertNotePointForm(convertNotePointBtn.getAttribute("data-convert-note-point"), convertNotePointBtn.getAttribute("data-project")); return; }
 
+  // A8 - link nawiguje natywnie (target="_blank") - zatrzymane PRZED data-edit-parcel ponizej,
+  // bo link zyje wewnatrz wiersza dzialki, ktory sam ma data-edit-parcel (mirror wzorca
+  // reactivate-ticket/gantt-stage-toggle) - bez tego klik w link otwieralby TEZ formularz edycji.
+  if (e.target.closest("[data-geoportal-link]")) return;
   const addParcel = e.target.closest("[data-add-parcel]");
   if (addParcel) { openParcelForm(addParcel.getAttribute("data-add-parcel")); return; }
   const editParcel = e.target.closest("[data-edit-parcel]");

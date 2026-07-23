@@ -561,6 +561,27 @@ def ensure_notatki_spotkan_tables(db_path):
         conn.close()
 
 
+def ensure_polish_role_translation(db_path):
+    """Faza 5 (A17, 'kalka jezykowa') - tlumaczy istniejace przypisania.Rola_w_projekcie='Owner'
+    (angielskie) na 'Wlasciciel' (mirror ROLE_W_PROJEKCIE w app.js) - usuwa niespojnosc jezykowa
+    w UI (obok juz istniejacego polskiego "Właściciel" dla ID_Osoby_wlasciciela w ryzykach).
+    Idempotentne - UPDATE po prostu nie trafia w nic przy kolejnym uruchomieniu."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE przypisania SET Rola_w_projekcie = 'Wlasciciel' WHERE Rola_w_projekcie = 'Owner'")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_ticket_reactivation_column(db_path):
+    """Dodaje Liczba_reaktywacji do zadania_tickety w bazach powstalych przed jej wprowadzeniem
+    (Faza 5, B11/B12, warsztat 22.07.2026) - "zakonczone na teraz" != "zamkniete na zawsze"
+    (np. dach rysowany 10x); licznik reaktywacji slada tez jako rejestr powtorzen (B12) do
+    kalibracji przyszlych estymacji czasu."""
+    _ensure_columns(db_path, "zadania_tickety", {"Liczba_reaktywacji": "INTEGER"})
+
+
 def ensure_ticket_timeline_and_tags_columns(db_path):
     """Dodaje Data_rozpoczecia/Tagi/Typ_zadania do zadania_tickety w bazach powstalych przed
     ich wprowadzeniem (Faza 3, warsztat 22.07.2026, B3/B6/B10). Data_rozpoczecia to opcjonalny

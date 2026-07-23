@@ -77,6 +77,28 @@
   }
 }
 
+/* Faza 5 (E1) - manualny przelacznik jasny/ciemny (patrz applyTheme() w app.js). Te same
+   wartosci co odpowiednia galaz wyzej, tylko jako selektor atrybutu zamiast media query, wiec
+   wygrywa niezaleznie od ustawien systemowych przegladarki gdy uzytkownik jawnie wybierze motyw
+   (localStorage) - bez tego np. wybranie "jasny" na systemie z ciemnym motywem OS nic by nie dalo,
+   bo @media (prefers-color-scheme: dark) i tak by wygrywal. */
+:root[data-theme="dark"] {
+  --surface-1: #1c1c1a; --page: #101010; --text-primary: #ffffff; --text-secondary: #c9c7bd;
+  --text-muted: #8f8d86; --grid: #2c2c2a; --baseline: #3a3a37; --border: rgba(255,255,255,0.12);
+  --accent: #ffffff; --accent-contrast: #000000; --logo-filter: none;
+  --cat-1: #3987e5; --cat-2: #199e70; --cat-3: #c98500; --cat-4: #008300;
+  --cat-5: #9085e9; --cat-6: #e66767; --cat-7: #d55181; --cat-8: #d95926;
+  --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.35);
+}
+:root[data-theme="light"] {
+  --surface-1: #ffffff; --page: #f4f3ed; --text-primary: #000000; --text-secondary: #55534c;
+  --text-muted: #7f7e7b; --grid: #e0dfd9; --baseline: #c9c7bd; --border: rgba(0, 0, 0, 0.11);
+  --accent: #000000; --accent-contrast: #ffffff; --logo-filter: invert(1);
+  --cat-1: #2a78d6; --cat-2: #1baf7a; --cat-3: #eda100; --cat-4: #008300;
+  --cat-5: #4a3aa7; --cat-6: #e34948; --cat-7: #e87ba4; --cat-8: #eb6834;
+  --shadow: 0 1px 2px rgba(11,11,11,0.06), 0 4px 16px rgba(11,11,11,0.06);
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
