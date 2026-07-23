@@ -181,6 +181,7 @@ const DATE_FIELDS = {
   tickets: ["Data_utworzenia", "Data_rozpoczecia", "Termin", "Data_zakonczenia"],
   users: ["Data_utworzenia", "Data_ostatniego_logowania"],
   ideapool: ["Data_zgloszenia"],
+  meetingNotes: ["Data_spotkania"],
 };
 
 /* ---------------------------------------------------------------- utils */
@@ -1501,6 +1502,7 @@ function renderTeam() {
           <button type="button" class="view-toggle-btn ${view === "tabela" ? "active" : ""}" data-team-view="tabela">Tabela wg działu</button>
         </div>
         ${can("create", "zespol") ? `<button data-add-team="1">+ Dodaj osobę</button>` : ""}
+        ${FULL_ACCESS_ROLES.includes(STATE.me.role) ? `<button class="icon-btn" data-add-team-board="1" title="Otwiera formularz nowej osoby z Działem od razu ustawionym na Zarząd">+ Dodaj do zarządu</button>` : ""}
       </div>
     </div>
     ${PORTFOLIO_RESTRICTED_ROLES.includes(STATE.me.role) ? `<div class="empty-hint" style="margin-bottom:12px">Obciążenie i lista projektów uwzględniają tylko projekty, do których i Ty jesteś przypisany/a — mogą nie odzwierciedlać pełnego obciążenia danej osoby.</div>` : ""}
@@ -2697,6 +2699,11 @@ function teamOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.map
 // istniejacej, prawdziwej wartosci enuma Dzial="Zarzad" (nic nowego nie trzeba dodawac do
 // zespol, zeby wiedziec "kto jest w zarzadzie").
 function boardMemberOptionsPairs() { return [["", "— wybierz —"], ...STATE.team.filter(t => t.Dzial === "Zarzad").map(t => [t.ID_Osoby, t.Imie_i_nazwisko])]; }
+// Projektant glowny (Kierownik_projektu) - na zyczenie uzytkownika zawezony do Zarzadu (mirror
+// boardMemberOptionsPairs powyzej), ale ta kolumna przechowuje IMIE (wolny tekst), nie ID_Osoby
+// (patrz teamNamePairs) - stad osobna wersja z tym samym filtrem Dzial="Zarzad", ale parami
+// [Imie_i_nazwisko, Imie_i_nazwisko] zamiast [ID_Osoby, Imie_i_nazwisko].
+function boardMemberNamePairs() { return [["", "— wybierz —"], ...STATE.team.filter(t => t.Dzial === "Zarzad").map(t => [t.Imie_i_nazwisko, t.Imie_i_nazwisko])]; }
 function clientOptionsPairs() { return [["", "— brak / spoza rejestru —"], ...STATE.clients.map(c => [c.ID_Klienta, c.Nazwa])]; }
 function assignedTeamOptionsPairs(pid, mustIncludeId) {
   const assignedIds = new Set(assignmentsForProject(pid).map(a => a.ID_Osoby));
@@ -2743,7 +2750,7 @@ function openProjectForm(pid = null) {
     ${fSelect("Funkcja biura", "Funkcja_biura", labelPairsFor("Funkcja_biura"), p.Funkcja_biura)}
     ${fSelect("Segment", "Segment", labelPairsFor("Segment"), p.Segment)}
     ${fSelect("Architekt prowadzący *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
-    ${fSelect("Projektant główny", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu || architektDefaultOwner)}
+    ${fSelect("Projektant główny (Zarząd)", "Kierownik_projektu", boardMemberNamePairs(), p.Kierownik_projektu || architektDefaultOwner)}
     ${fSelect("Projektant sprawdzający", "Projektant_sprawdzajacy", teamNamePairs(), p.Projektant_sprawdzajacy)}
     ${fSelect("Sponsor (zarząd)", "ID_Osoby_sponsora", boardMemberOptionsPairs(), p.ID_Osoby_sponsora)}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), p.Priorytet || "Sredni")}
@@ -2772,8 +2779,8 @@ function openProjectForm(pid = null) {
     ${fInput("Miasto", "Miasto", p.Miasto)}
     ${fInput("Powierzchnia (m²)", "Powierzchnia_m2", p.Powierzchnia_m2, "number", "min=0")}
     ${fInput("Liczba jednostek", "Liczba_jednostek", p.Liczba_jednostek, "number", "min=0")}
-    ${fInput("Inwestor / Klient (opis, jeśli brak w rejestrze)", "Inwestor_Klient", p.Inwestor_Klient)}
-    ${fSelect("Klient (z rejestru)", "ID_Klienta", clientOptionsPairs(), p.ID_Klienta)}
+    ${fInput("Inwestor (opis, jeśli brak w rejestrze)", "Inwestor_Klient", p.Inwestor_Klient)}
+    ${fSelect("Inwestor (z rejestru)", "ID_Klienta", clientOptionsPairs(), p.ID_Klienta)}
 
     <div class="form-section-title">Lokalizacja urzędowa (do wniosków/pism)</div>
     ${fInput("Kraj", "Kraj", p.Kraj)}
@@ -3070,8 +3077,13 @@ async function removeAvatar(personId) {
   renderAll();
 }
 
-function openTeamForm(oid = null) {
-  const t = oid ? STATE.teamById.get(oid) : {};
+// seedDzial: pozwala otworzyc formularz NOWEJ osoby z gory ustawiony na konkretny dzial
+// (patrz "+ Dodaj do zarządu" na zakladce Zespol, FULL_ACCESS_ROLES only) - Projektant glowny
+// na projekcie jest teraz zawezony do Zarzadu (boardMemberNamePairs), wiec to jest jedyny
+// szybki sposob dopisania kogos do Zarzadu bez recznego szukania go/jej na liscie i zmiany
+// Dzialu osobno.
+function openTeamForm(oid = null, seedDzial = null) {
+  const t = oid ? STATE.teamById.get(oid) : { Dzial: seedDzial };
   if (!requireExisting(t, "osoba")) return;
   const body = `
     ${avatarSectionHtml(t, oid)}
@@ -3837,6 +3849,8 @@ function openMeetingNoteForm(pid, id = null) {
   if (id && !requireExisting(n, "notatka")) return;
   const body = `
     ${fInput("Tytuł *", "Tytul", n.Tytul, "text", "required")}
+    ${fInput("Data spotkania / rozmowy *", "Data_spotkania", n.Data_spotkania || dateInputVal(new Date()), "date", "required")}
+    ${fInput("Uczestnicy (imiona/nazwiska, po przecinku)", "Uczestnicy", n.Uczestnicy)}
     ${fTextarea("Treść / opis spotkania", "Tresc", n.Tresc)}
     ${!id ? fTextarea("Punkty (jeden na linię, np. „Złożyć wniosek o warunki wodociągowe”)", "Punkty", "") : ""}
   `;
@@ -3846,14 +3860,13 @@ function openMeetingNoteForm(pid, id = null) {
   });
 }
 async function saveMeetingNoteFromForm(data, pid, id) {
-  if (!data.Tytul) { alert("Podaj tytuł notatki."); return; }
+  if (!data.Tytul || !data.Data_spotkania) { alert("Podaj tytuł i datę spotkania."); return; }
   const isNew = !id;
   const existing = isNew ? {} : STATE.meetingNotes.find(x => x.ID_Notatki === id);
   if (!isNew && !requireExisting(existing, "notatka")) return;
-  const fields = isNew
-    ? { ID_Projektu: pid, Tytul: data.Tytul, Tresc: data.Tresc }
-    : { Tytul: data.Tytul, Tresc: data.Tresc };
-  const saved = await persistEntity({ isNew, endpoint: "/api/notatki_spotkan", id, fields, errorLabel: "notatki" });
+  const common = { Tytul: data.Tytul, Tresc: data.Tresc, Data_spotkania: parseDateInput(data.Data_spotkania), Uczestnicy: data.Uczestnicy };
+  const fields = isNew ? { ID_Projektu: pid, ...common } : common;
+  const saved = await persistEntity({ isNew, endpoint: "/api/notatki_spotkan", id, fields, dateFields: DATE_FIELDS.meetingNotes, errorLabel: "notatki" });
   if (!saved) return;
   if (isNew) {
     STATE.meetingNotes.push(saved);
@@ -4066,7 +4079,7 @@ async function deleteSubcontractor(sid) {
   renderAll();
 }
 
-/* ================================================================== VIEW: KLIENCI (Inwestorzy/Klienci) */
+/* ================================================================== VIEW: INWESTORZY (dawniej "Klienci" - pojecie zmienione na "Inwestor" na wprost zyczenie uzytkownika; nazwy tabel/kolumn w bazie (klienci/ID_Klienta/kontakty_klienta) NIETKNIETE, zmienione tylko etykiety UI, ten sam wzorzec co przy przemianowaniu Owner->"architekt prowadzacy" na weekly 23.07.2026) */
 function clientStatusBadge(status) { return status === "Aktywny" ? "good" : "muted"; }
 function contactsForClient(cid) { return STATE.clientContacts.filter(c => c.ID_Klienta === cid); }
 
@@ -4084,9 +4097,9 @@ function renderClients() {
       </div>
     </div>`);
   $("#view-klienci").innerHTML = `
-    <div class="section-head"><h2>Klienci</h2>${can("create", "klienci") ? `<button data-add-client="1">+ Dodaj klienta</button>` : ""}</div>
-    <div class="empty-hint" style="margin-bottom:12px">Karta klienta/inwestora (NIP, dane, kontakty) pod przyszłe fakturowanie — zarządzanie zarezerwowane dla zarządu (COO/Admin).</div>
-    <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak klientów w rejestrze${can("create", "klienci") ? ` — kliknij „+ Dodaj klienta”.` : "."}</div>`}</div>
+    <div class="section-head"><h2>Inwestorzy</h2>${can("create", "klienci") ? `<button data-add-client="1">+ Dodaj inwestora</button>` : ""}</div>
+    <div class="empty-hint" style="margin-bottom:12px">Karta inwestora (NIP, dane, kontakty) pod przyszłe fakturowanie — zarządzanie zarezerwowane dla zarządu (COO/Admin).</div>
+    <div class="team-grid">${cards.join("") || `<div class="empty-hint">Brak inwestorów w rejestrze${can("create", "klienci") ? ` — kliknij „+ Dodaj inwestora”.` : "."}</div>`}</div>
   `;
 }
 
@@ -4132,10 +4145,10 @@ function openClientDetail(cid) {
 
 function openClientForm(cid = null) {
   const c = cid ? STATE.clientById.get(cid) : {};
-  if (!requireExisting(c, "klient")) return;
+  if (!requireExisting(c, "inwestor")) return;
   const body = `
     ${fInput("Nazwa *", "Nazwa", c.Nazwa, "text", "required")}
-    ${fSelect("Typ", "Typ", pairs(["Inwestor", "Klient", "Deweloper", "Inne"]), c.Typ || "Klient")}
+    ${fSelect("Typ", "Typ", pairs(["Inwestor", "Deweloper", "Inne"]), c.Typ || "Inwestor")}
     <label class="f-label">NIP
       <div style="display:flex;gap:6px">
         <input name="NIP" type="text" value="${esc(c.NIP || "")}" placeholder="1234567890" style="flex:1" maxlength="13">
@@ -4160,24 +4173,24 @@ function openClientForm(cid = null) {
     ${fSelect("Status", "Status", pairs(["Aktywny", "Nieaktywny"]), c.Status || "Aktywny")}
     ${fTextarea("Uwagi", "Uwagi", c.Uwagi)}
   `;
-  openModal(cid ? "Edytuj klienta" : "Nowy klient", body, {
+  openModal(cid ? "Edytuj inwestora" : "Nowy inwestor", body, {
     wide: true,
-    submitLabel: "Zapisz klienta",
+    submitLabel: "Zapisz inwestora",
     onSubmit: (data) => saveClientFromForm(data, cid),
   });
 }
 
 async function saveClientFromForm(data, cid) {
-  if (!data.Nazwa) { alert("Podaj nazwę klienta."); return; }
+  if (!data.Nazwa) { alert("Podaj nazwę inwestora."); return; }
   const isNew = !cid;
   const existing = isNew ? {} : STATE.clientById.get(cid);
-  if (!requireExisting(existing, "klient")) return;
+  if (!requireExisting(existing, "inwestor")) return;
   const fields = {
     Nazwa: data.Nazwa, Typ: data.Typ, NIP: data.NIP, KRS: data.KRS, Regon: data.Regon,
     Adres_siedziby: data.Adres_siedziby, Miasto: data.Miasto, Email: data.Email, Telefon: data.Telefon,
     ID_Osoby_opiekuna: data.ID_Osoby_opiekuna, Status: data.Status, Uwagi: data.Uwagi,
   };
-  const saved = await persistEntity({ isNew, endpoint: "/api/klienci", id: cid, fields, errorLabel: "klienta" });
+  const saved = await persistEntity({ isNew, endpoint: "/api/klienci", id: cid, fields, errorLabel: "inwestora" });
   if (!saved) return;
   if (isNew) { STATE.clients.push(saved); STATE.clientById.set(saved.ID_Klienta, saved); }
   else { Object.assign(existing, saved); }
@@ -4187,8 +4200,8 @@ async function saveClientFromForm(data, cid) {
 }
 
 async function deleteClient(cid) {
-  if (!confirm("Usunąć klienta z rejestru? Powiązane kontakty zostaną również usunięte, a projekty stracą powiązanie z tym klientem.")) return;
-  if (!await deleteEntity(`/api/klienci/${cid}`, "klienta")) return;
+  if (!confirm("Usunąć inwestora z rejestru? Powiązane kontakty zostaną również usunięte, a projekty stracą powiązanie z tym inwestorem.")) return;
+  if (!await deleteEntity(`/api/klienci/${cid}`, "inwestora")) return;
   STATE.clients = STATE.clients.filter(c => c.ID_Klienta !== cid);
   STATE.clientContacts = STATE.clientContacts.filter(k => k.ID_Klienta !== cid);
   STATE.projects.forEach(p => { if (p.ID_Klienta === cid) p.ID_Klienta = null; });
@@ -4614,7 +4627,7 @@ function openProjectDetail(pid) {
         <div><div class="k">Zakończenie (plan)</div><div class="v">${fmtDate(p.Data_zakonczenia_planowana)}</div></div>
         <div><div class="k">Zakończenie (rzeczywiste)</div><div class="v">${fmtDate(p.Data_zakonczenia_rzeczywista)}</div></div>
         <div><div class="k">Data „Go Live”</div><div class="v">${fmtDate(p.Data_go_live)}</div></div>
-        <div><div class="k">Klient</div><div class="v">${p.ID_Klienta && STATE.clientById.get(p.ID_Klienta) ? `<span class="clickable" data-open-client="${esc(p.ID_Klienta)}" style="cursor:pointer;text-decoration:underline">${esc(STATE.clientById.get(p.ID_Klienta).Nazwa)}</span>` : esc(p.Inwestor_Klient) || "—"}</div></div>
+        <div><div class="k">Inwestor</div><div class="v">${p.ID_Klienta && STATE.clientById.get(p.ID_Klienta) ? `<span class="clickable" data-open-client="${esc(p.ID_Klienta)}" style="cursor:pointer;text-decoration:underline">${esc(STATE.clientById.get(p.ID_Klienta).Nazwa)}</span>` : esc(p.Inwestor_Klient) || "—"}</div></div>
         <div><div class="k">Powierzchnia</div><div class="v">${p.Powierzchnia_m2 != null ? p.Powierzchnia_m2.toLocaleString("pl-PL") + " m²" : "—"}</div></div>
         <div><div class="k">Liczba jednostek</div><div class="v">${p.Liczba_jednostek ?? "—"}</div></div>
         ${formatLokalizacjaUrzedowa(p) ? `<div style="grid-column:1/-1"><div class="k">Lokalizacja urzędowa</div><div class="v">${esc(formatLokalizacjaUrzedowa(p))}</div></div>` : ""}
@@ -4756,7 +4769,8 @@ function openProjectDetail(pid) {
             ${can("delete", "notatki_spotkan", n) ? `<button class="icon-btn danger" data-delete-meeting-note="${esc(n.ID_Notatki)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">${esc(n.Tytul || "Notatka ze spotkania")} ${badge(n.Status, meetingNoteStatusBadge(n.Status))}</div>
-          <div class="meta">${esc(n.Autor || "—")} · ${fmtDateTime(n.Data_utworzenia)}</div>
+          <div class="meta">Spotkanie: ${fmtDate(n.Data_spotkania)}${n.Uczestnicy ? " · uczestnicy: " + esc(n.Uczestnicy) : ""}</div>
+          <div class="meta">Wpisał/a: ${esc(n.Autor || "—")} · ${fmtDateTime(n.Data_utworzenia)}</div>
           ${n.Tresc ? `<div style="font-size:12.5px;margin-top:4px;white-space:pre-wrap">${esc(n.Tresc)}</div>` : ""}
           <div style="margin-top:6px;display:flex;flex-direction:column;gap:5px">
             ${points.map(pt => `
@@ -5228,6 +5242,8 @@ document.addEventListener("click", (e) => {
 
   const addTeam = e.target.closest("[data-add-team]");
   if (addTeam) { openTeamForm(); return; }
+  const addTeamBoard = e.target.closest("[data-add-team-board]");
+  if (addTeamBoard) { openTeamForm(null, "Zarzad"); return; }
   const editTeam = e.target.closest("[data-edit-team]");
   if (editTeam) { openTeamForm(editTeam.getAttribute("data-edit-team")); return; }
   const deleteTeamBtn = e.target.closest("[data-delete-team]");

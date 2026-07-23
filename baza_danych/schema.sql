@@ -298,6 +298,10 @@ CREATE TABLE IF NOT EXISTS checklisty_projektow (
 -- checklisty_projektow.ID_Tickietu powyzej). Status notatki (Nowa/Zaakceptowana) - "prowadzacy
 -- akceptuje" z warsztatu; brak osobnej roli-gate na akceptacje (patrz can_write, project_scoped
 -- jak reszta tabel projektu) - kazdy z prawem edycji tego projektu moze zatwierdzic.
+-- Data_spotkania (kiedy odbylo sie spotkanie/rozmowa) i Uczestnicy (kto byl - wolny tekst,
+-- bo czesto obejmuje osoby spoza zespolu: inwestora, urzednika, itp.) dopisane po zgloszeniu
+-- uzytkownika - Data_utworzenia to tylko znacznik "kiedy WPISANO notatke do systemu", nie to
+-- samo co faktyczny termin spotkania (notatka bywa uzupelniana pozniej, np. nastepnego dnia).
 CREATE TABLE IF NOT EXISTS notatki_spotkan (
   ID_Notatki TEXT PRIMARY KEY NOT NULL,
   ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
@@ -305,7 +309,9 @@ CREATE TABLE IF NOT EXISTS notatki_spotkan (
   Tresc TEXT,
   Autor TEXT,
   Status TEXT,
-  Data_utworzenia TEXT
+  Data_utworzenia TEXT,
+  Data_spotkania TEXT,
+  Uczestnicy TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notatka_punkty (

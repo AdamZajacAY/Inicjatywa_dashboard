@@ -52,6 +52,7 @@ from baza_danych.schema_migrate import (
     ensure_stage_split_for_legacy_projects,
     ensure_project_reviewer_column, ensure_checklist_konserwator_item,
     ensure_checklist_stage_column,
+    ensure_meeting_note_attendee_columns,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -141,6 +142,7 @@ ensure_stage_split_for_legacy_projects(DB_PATH)  # jw. - dzieli auto-zmigrowany 
 ensure_project_reviewer_column(DB_PATH)  # jw. - Projektant_sprawdzajacy na projekty (weekly 23.07.2026)
 ensure_checklist_konserwator_item(DB_PATH)  # jw. - brakujaca pozycja checklisty (konserwator zabytkow) + backfill na istniejace projekty
 ensure_checklist_stage_column(DB_PATH)  # jw. - ID_Etapu na checklisty_projektow, odrebna checklista per sub-projekt (weekly 23.07.2026)
+ensure_meeting_note_attendee_columns(DB_PATH)  # jw. - Data_spotkania/Uczestnicy na notatki_spotkan
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -1056,7 +1058,9 @@ ENUM_FIELDS = {
         "Status": {"Zgloszony", "W rozwazaniu", "Zaakceptowany", "Odrzucony"},
     },
     "klienci": {
-        "Typ": {"Inwestor", "Klient", "Deweloper", "Inne"},
+        # "Klient" usuniete z listy (pojecie zastapione przez "Inwestor" na zyczenie
+        # uzytkownika) - rejestr byl pusty w chwili zmiany, wiec bez migracji danych.
+        "Typ": {"Inwestor", "Deweloper", "Inne"},
         "Status": {"Aktywny", "Nieaktywny"},
     },
     "checklisty_projektow": {

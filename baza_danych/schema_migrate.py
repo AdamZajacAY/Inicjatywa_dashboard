@@ -575,6 +575,13 @@ def ensure_notatki_spotkan_tables(db_path):
         conn.close()
 
 
+def ensure_meeting_note_attendee_columns(db_path):
+    """Dodaje Data_spotkania/Uczestnicy do notatki_spotkan w bazach powstalych przed
+    zgloszeniem uzytkownika - odrozniaja FAKTYCZNY termin/uczestnikow spotkania od
+    Data_utworzenia (kiedy notatke wpisano do systemu, patrz komentarz w schema.sql)."""
+    _ensure_columns(db_path, "notatki_spotkan", {"Data_spotkania": "TEXT", "Uczestnicy": "TEXT"})
+
+
 def ensure_polish_role_translation(db_path):
     """Faza 5 (A17, 'kalka jezykowa') - tlumaczy istniejace przypisania.Rola_w_projekcie='Owner'
     (angielskie) na 'Wlasciciel' (mirror ROLE_W_PROJEKCIE w app.js) - usuwa niespojnosc jezykowa
