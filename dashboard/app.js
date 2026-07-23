@@ -2051,15 +2051,17 @@ function harmonogramStatusBadgeClass(status) {
   if (status === "W trakcie") return "active";
   return "muted"; // Nie rozpoczete i kazda inna/brak wartosci
 }
-function ganttProjectTaskTableHtml(tasks) {
+function ganttProjectTaskTableHtml(tasks, opts = {}) {
   // Widok skrocony pokazuje projekt jako JEDEN pasek (celowo, patrz buildGanttCondensed) - gdy
   // uzytkownik zawezi filtr do KONKRETNEGO projektu, dopisz tez tabele z etapami harmonogramu
   // pod spodem, zeby nie trzeba bylo przelaczac sie na widok Szczegolowy tylko po to, zeby
-  // zobaczyc rozbicie na etapy jednego, juz wybranego projektu.
+  // zobaczyc rozbicie na etapy jednego, juz wybranego projektu. opts.hideHeader - reuzywane tez
+  // w karcie projektu (Uwaga #7), ktora ma juz WLASNY naglowek sekcji "Sub-projekty / etapy".
   if (!tasks.length) return `<div class="kpi-sub" style="margin-top:14px">Brak etapów harmonogramu dla tego projektu.</div>`;
   const sorted = [...tasks].sort((a, b) => (a.Data_start_plan?.getTime() || 0) - (b.Data_start_plan?.getTime() || 0));
+  const header = opts.hideHeader ? "" : `<div class="section-head" style="margin-top:18px"><h2 style="font-size:14px">Etapy harmonogramu tego projektu (${sorted.length})</h2></div>`;
   return `
-    <div class="section-head" style="margin-top:18px"><h2 style="font-size:14px">Etapy harmonogramu tego projektu (${sorted.length})</h2></div>
+    ${header}
     <div class="panel" style="overflow-x:auto">
       <table class="data-table">
         <thead><tr>
@@ -2811,8 +2813,20 @@ async function saveProjectFromForm(data, pid) {
   };
   const saved = await persistEntity({ isNew, endpoint: "/api/projekty", id: pid, fields, dateFields: DATE_FIELDS.projects, errorLabel: "projekt" });
   if (!saved) return;
-  if (isNew) { STATE.projects.push(saved); STATE.projectById.set(saved.ID_Projektu, saved); }
-  else { Object.assign(existing, saved); }
+  if (isNew) {
+    // Uwaga #7 - utworzenie projektu odpala TRZY niezalezne efekty uboczne po stronie serwera
+    // (_projekty_create_side_effects): sub-projekty z wybranych Typy_etapow (harmonogram),
+    // pelna checklista z aktywnego szablonu (checklisty_projektow, Faza 4), auto-przypisanie
+    // architekta prowadzacego do wlasnego projektu (przypisania). POST /api/projekty zwraca
+    // TYLKO sam wiersz projektu - reczne "STATE.projects.push(saved)" zostawialo
+    // STATE.tasks/checklists/assignments bez tych nowych wierszy az do nastepnego pelnego
+    // przeladowania, wiec karta swiezo utworzonego projektu wygladala jak "0 etapow, 0 pozycji
+    // checklisty" mimo ze serwer je juz utworzyl. Pelny reload zamiast recznego rekonstruowania
+    // kazdego z trzech efektow osobno - odporne tez na kolejne efekty uboczne dopisane w przyszlosci.
+    await loadFromApi();
+  } else {
+    Object.assign(existing, saved);
+  }
   closeModal();
   renderAll();
   openProjectDetail(saved.ID_Projektu);
@@ -4602,7 +4616,16 @@ function openProjectDetail(pid) {
     <div class="dp-section">
       <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Sub-projekty / etapy (${tasks.length})</h4>
         ${can("create", "harmonogram", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-task="${esc(pid)}">+ Dodaj etap</button>` : ""}</div>
-      ${tasks.length ? buildGantt(tasks, { hideGroupHeader: true }) : `<div class="empty-hint">Brak sub-projektów/etapów — kliknij „+ Dodaj etap”, żeby zbudować harmonogram (Gantt). Status i RAG projektu wyliczają się z sub-projektów.</div>`}
+      ${tasks.length
+        // Uwaga #7 - buildGantt() (widok osi czasu) ukrywal CALA liste, gdy ZADEN etap nie mial
+        // jeszcze dat (typowe dla swiezo utworzonych sub-projektow z multiselect Typy_etapow przy
+        // zakladaniu projektu - te wiersze startuja bez dat, patrz _create_subprojects_for_
+        // selected_types) - zamiast pokazac 0 zamiast prawdziwej liczby, uzytkownik nie mial ZADNEGO
+        // sposobu, zeby kliknac w istniejacy etap i uzupelnic mu daty. Zwykla tabela (jak w
+        // Harmonogram/Gantt -> widok skrocony przefiltrowany do projektu) dziala niezaleznie od
+        // tego, czy daty juz sa wypelnione.
+        ? ganttProjectTaskTableHtml(tasks, { hideHeader: true })
+        : `<div class="empty-hint">Brak sub-projektów/etapów — kliknij „+ Dodaj etap”, żeby zbudować harmonogram (Gantt). Status i RAG projektu wyliczają się z sub-projektów.</div>`}
     </div>
 
     ${reports.length ? `<div class="dp-section"><h4>Historia raportów statusowych</h4>${reports.map(r => `

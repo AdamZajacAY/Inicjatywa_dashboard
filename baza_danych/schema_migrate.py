@@ -595,6 +595,86 @@ def ensure_ticket_timeline_and_tags_columns(db_path):
     })
 
 
+# Uwaga uzytkownika (23.07.2026): "zrob logike aby aktualne etapy staly sie subprojektami" -
+# projekty zmigrowane automatycznie w Fazie 1 (ensure_default_subproject_for_legacy_projects)
+# dostaly dokladnie JEDEN sub-projekt, dziedziczacy Typ_projektu (poczatek) LUB Faza (koniec) z
+# przed-Fazowego modelu - bez realnego podzialu na etapy posrednie. Pozycje = indeks w SCISLE
+# SEKWENCYJNEJ czesci procesu projektowego (Konkurs->Analiza->Koncepcja->PB->PT->PW) - jedyna
+# czesc, gdzie "Typ_projektu wczesniej niz Faza" wiarygodnie oznacza realna historie.
+_DESIGN_PIPELINE_TYP_ETAPU = [
+    "Konkurs", "Analiza urbanistyczna/chlonnosci", "Projekt koncepcyjny",
+    "Projekt budowlany (PB)", "Projekt techniczny (PT)", "Projekt wykonawczy (PW)",
+]
+_DESIGN_PIPELINE_TYP_PROJEKTU = {
+    "Konkurs": 0, "Analiza urbanistyczna": 1, "Projekt koncepcyjny": 2,
+    "Projekt budowlany": 3, "Projekt techniczny (PT)": 4, "Projekt wykonawczy": 5,
+}
+# Przetarg/Budowa/Nadzor autorski/Zakonczenie (i przestarzale Pozwolenia/Przetarg,
+# Projektowanie) CELOWO POMINIETE - decyzja uzytkownika (23.07.2026) po analizie konkretnego
+# przypadku "Nadzor autorski" + "Budowa" w danych: to opisuje AKTYWNOSC W TRAKCIE budowy (albo
+# rownolegle do niej), nie osobny etap PRZED nia, wiec nie jest wiarygodnym sygnalem do
+# wnioskowania posrednich "zakonczonych" etapow projektowych - fabrykowalyby falszywa historie.
+_DESIGN_PIPELINE_FAZA = {
+    "Konkurs jednoetapowy": 0, "Konkurs - etap I (studialny)": 0, "Konkurs - etap II": 0,
+    "Analiza": 1, "Projekt studialny": 1,
+    "Koncepcja": 2, "Projekt budowlany": 3, "Projekt techniczny": 4, "Projekt wykonawczy": 5,
+}
+
+
+def ensure_stage_split_for_legacy_projects(db_path):
+    """Dzieli pojedynczy auto-zmigrowany sub-projekt na wiele, TYLKO gdy stary Typ_projektu i
+    Faza projektu jednoznacznie wskazuja DWA ROZNE punkty w scisle sekwencyjnej czesci procesu
+    (patrz _DESIGN_PIPELINE_* powyzej) - etapy POSREDNIE dostaja Status="Zakonczone"
+    (wnioskowanie: projekt jest juz na pozniejszym etapie, wiec wczesniejsze musialy zostac
+    ukonczone), a ISTNIEJACY wiersz (zachowuje ID_Zadania - ewentualne zadania_etapy/
+    zadania_tickety juz do niego podpiete zostaja nietkniete) dostaje Typ_etapu/Nazwa_zadania
+    odpowiadajace Fazie (najpozniejszy, biezacy punkt) - Status/RAG_Status/daty tego wiersza
+    zostaja bez zmian, bo juz poprawnie opisuja biezacy stan.
+
+    Zakres: TYLKO projekty z DOKLADNIE JEDNYM istniejacym sub-projektem - wiecej niz jeden
+    oznacza, ze ktos juz recznie zbudowal prawdziwa strukture etapow (multiselect Typy_etapow
+    przy tworzeniu albo "+ Dodaj etap"), ktorej ta migracja NIE powinna dotykac. Idempotentne -
+    projekty juz majace >1 sub-projekt (w tym te, ktore ta migracja sama juz podzielila przy
+    poprzednim uruchomieniu) nigdy nie trafiaja tu ponownie (warunek COUNT(*) = 1 w zapytaniu)."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("""
+            SELECT p.ID_Projektu, p.Typ_projektu, p.Faza, h.ID_Zadania
+            FROM projekty p JOIN harmonogram h ON h.ID_Projektu = p.ID_Projektu
+            WHERE p.ID_Projektu IN (
+                SELECT ID_Projektu FROM harmonogram GROUP BY ID_Projektu HAVING COUNT(*) = 1
+            )
+        """).fetchall()
+        max_n = 0
+        for r in conn.execute("SELECT ID_Zadania FROM harmonogram").fetchall():
+            m = re.match(r"^ZAD(\d+)$", r[0] or "")
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        for row in rows:
+            pos_typ = _DESIGN_PIPELINE_TYP_PROJEKTU.get(row["Typ_projektu"])
+            pos_faza = _DESIGN_PIPELINE_FAZA.get(row["Faza"])
+            if pos_typ is None or pos_faza is None or pos_typ >= pos_faza:
+                continue
+            for pos in range(pos_typ, pos_faza):
+                max_n += 1
+                zid = f"ZAD{str(max_n).zfill(3)}"
+                nazwa = _DESIGN_PIPELINE_TYP_ETAPU[pos]
+                conn.execute(
+                    "INSERT INTO harmonogram (ID_Zadania, ID_Projektu, Nazwa_zadania, Typ_etapu, Status) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (zid, row["ID_Projektu"], nazwa, nazwa, "Zakonczone"),
+                )
+            nazwa_biezaca = _DESIGN_PIPELINE_TYP_ETAPU[pos_faza]
+            conn.execute(
+                "UPDATE harmonogram SET Typ_etapu = ?, Nazwa_zadania = ? WHERE ID_Zadania = ?",
+                (nazwa_biezaca, nazwa_biezaca, row["ID_Zadania"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")
