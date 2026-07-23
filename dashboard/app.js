@@ -1644,14 +1644,17 @@ function renderTickets() {
     </div>
     <div class="filters">
       <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
-      <select id="fTkEtap" ${ticketFilters.projekt ? "" : "disabled"} title="${ticketFilters.projekt ? "" : "Wybierz najpierw projekt"}">
-        <option value="">${ticketFilters.projekt ? "Wszystkie etapy / sub-projekty" : "— wybierz projekt —"}</option>
-        ${stageCheckboxPairs(ticketFilters.projekt).map(([v, l]) => `<option value="${esc(v)}" ${ticketFilters.etap === v ? "selected" : ""}>${esc(l)}</option>`).join("")}
-      </select>
       <select id="fTkOsoba"><option value="">Wszystkie osoby</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ticketFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
       <select id="fTkTag"><option value="">Wszystkie tagi</option>${allTicketTags().map(tag => `<option value="${esc(tag)}" ${ticketFilters.tag === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}</select>
       <select id="fTkTyp"><option value="">Urzędowe i wewnętrzne</option><option value="Urzedowe" ${ticketFilters.typ === "Urzedowe" ? "selected" : ""}>Tylko urzędowe</option><option value="Wewnetrzne" ${ticketFilters.typ === "Wewnetrzne" ? "selected" : ""}>Tylko wewnętrzne</option></select>
-      ${view === "lista" ? `<div class="status-chips">
+      ${ticketFilters.projekt ? `<div class="status-chips" style="width:100%">
+        <button type="button" class="status-chip badge badge-muted ${!ticketFilters.etap ? "active" : ""}" data-tk-etap-filter="">Wszystkie etapy</button>
+        ${tasksForProject(ticketFilters.projekt).map(st => {
+          const slot = labelColor("Typ_etapu", st.Typ_etapu) || TYPE_COLORS[st.Typ_etapu] || "cat-3";
+          return `<button type="button" class="status-chip badge badge-${slot} ${ticketFilters.etap === st.ID_Zadania ? "active" : ""}" data-tk-etap-filter="${esc(st.ID_Zadania)}"><span class="dot" style="background:currentColor"></span>${esc(st.Nazwa_zadania)}</button>`;
+        }).join("")}
+      </div>` : `<span class="kpi-sub" style="align-self:center">Wybierz projekt, aby filtrować po etapach/sub-projektach</span>`}
+      ${view === "lista" ? `<div class="status-chips" style="width:100%">
         <button type="button" class="status-chip badge badge-muted ${!ticketFilters.statuses.length ? "active" : ""}" data-tk-status-filter="">Wszystkie</button>
         ${STATUSY_TICKIETOW.map(s => `<button type="button" class="status-chip badge badge-${ticketStatusBadge(s)} ${ticketFilters.statuses.includes(s) ? "active" : ""}" data-tk-status-filter="${esc(s)}"><span class="dot" style="background:currentColor"></span>${esc(s)}</button>`).join("")}
       </div>` : ""}
@@ -1694,7 +1697,6 @@ function renderTickets() {
       </table>
     </div>`}`;
   $("#fTkProj").addEventListener("change", e => { ticketFilters.projekt = e.target.value; ticketFilters.etap = ""; renderTickets(); });
-  $("#fTkEtap").addEventListener("change", e => { ticketFilters.etap = e.target.value; renderTickets(); });
   $("#fTkOsoba").addEventListener("change", e => { ticketFilters.osoba = e.target.value; renderTickets(); });
   $("#fTkTag").addEventListener("change", e => { ticketFilters.tag = e.target.value; renderTickets(); });
   $("#fTkTyp").addEventListener("change", e => { ticketFilters.typ = e.target.value; renderTickets(); });
@@ -5288,6 +5290,11 @@ document.addEventListener("click", (e) => {
     renderTickets();
     return;
   }
+  // Kolorowe buttony filtrujace po etapie/sub-projekcie (mirror data-tk-status-filter powyzej),
+  // ale pojedynczego wyboru (jeden etap na raz), nie multi-select jak statusy - klik na juz
+  // aktywny chip zaznacza go ponownie (bez toggle-off), Wszystkie etapy = "" czysci filtr.
+  const tkEtapChip = e.target.closest("[data-tk-etap-filter]");
+  if (tkEtapChip) { ticketFilters.etap = tkEtapChip.getAttribute("data-tk-etap-filter"); renderTickets(); return; }
   const tkSortHeader = e.target.closest("[data-tk-sort]");
   if (tkSortHeader) {
     const field = tkSortHeader.getAttribute("data-tk-sort");

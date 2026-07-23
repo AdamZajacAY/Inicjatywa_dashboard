@@ -270,6 +270,17 @@ main { flex: 1; min-width: 0; max-width: 1400px; padding: 20px 24px 80px; }
 .badge-serious { background: color-mix(in srgb, var(--status-serious) 18%, transparent); color: var(--status-serious); }
 .badge-active { background: color-mix(in srgb, var(--status-active) 16%, transparent); color: var(--status-active); }
 .badge-sub { background: color-mix(in srgb, var(--cat-5) 18%, transparent); color: var(--cat-5); }
+/* Kategoryczna paleta (mirror .badge-sub, tylko sparametryzowane cat-1..8) - filtr etapow/
+   sub-projektow (kolorowe buttony) reuzywa tych samych 8 slotow co typeTag()/etykiety_konfiguracji,
+   zeby kolor danego etapu byl spojny z jego kolorem gdzie indziej w aplikacji. */
+.badge-cat-1 { background: color-mix(in srgb, var(--cat-1) 18%, transparent); color: var(--cat-1); }
+.badge-cat-2 { background: color-mix(in srgb, var(--cat-2) 18%, transparent); color: var(--cat-2); }
+.badge-cat-3 { background: color-mix(in srgb, var(--cat-3) 18%, transparent); color: var(--cat-3); }
+.badge-cat-4 { background: color-mix(in srgb, var(--cat-4) 18%, transparent); color: var(--cat-4); }
+.badge-cat-5 { background: color-mix(in srgb, var(--cat-5) 18%, transparent); color: var(--cat-5); }
+.badge-cat-6 { background: color-mix(in srgb, var(--cat-6) 18%, transparent); color: var(--cat-6); }
+.badge-cat-7 { background: color-mix(in srgb, var(--cat-7) 18%, transparent); color: var(--cat-7); }
+.badge-cat-8 { background: color-mix(in srgb, var(--cat-8) 18%, transparent); color: var(--cat-8); }
 
 .status-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .status-chip { border: none; cursor: pointer; font: inherit; }
@@ -536,12 +547,12 @@ body.report-mode #execReport {
   background: var(--surface-1); border-radius: var(--radius); box-shadow: var(--shadow);
   padding: 22px 24px; width: min(560px, 92vw); max-height: 86vh; overflow-y: auto;
 }
-.modal-box.wide { width: min(760px, 94vw); }
+.modal-box.wide { width: min(1000px, 94vw); }
 .modal-box.open { opacity: 1; transform: translate(-50%, -50%) scale(1); pointer-events: auto; }
 .modal-box h3 { margin: 0 0 16px; padding-right: 30px; font-size: 16px; }
 #modalOverlay { z-index: 40; }
 
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
 .f-label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
 .f-label.full { grid-column: 1 / -1; }
 .f-label input, .f-label select, .f-label textarea {
