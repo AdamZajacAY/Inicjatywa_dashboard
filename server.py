@@ -44,6 +44,10 @@ from baza_danych.schema_migrate import (
     ensure_project_location_columns, ensure_dzialki_table,
     ensure_etykiety_konfiguracji_table, ensure_seed_etykiety_konfiguracji,
     ensure_ticket_timeline_and_tags_columns,
+    ensure_project_contract_columns, ensure_harmonogram_deadline_columns,
+    ensure_checklista_szablony_table, ensure_seed_checklista_szablony,
+    ensure_checklist_instance_columns, ensure_checklist_backfill_for_existing_projects,
+    ensure_notatki_spotkan_tables,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -120,6 +124,13 @@ ensure_dzialki_table(DB_PATH)  # jw. - nowa tabela dzialek ewidencyjnych (Faza 2
 ensure_etykiety_konfiguracji_table(DB_PATH)  # jw. - nowa tabela edytowalnych etykiet (Faza 2, A13)
 ensure_seed_etykiety_konfiguracji(DB_PATH)  # jw. - musi biec PO powyzszej (potrzebuje tabeli)
 ensure_ticket_timeline_and_tags_columns(DB_PATH)  # jw. - Data_rozpoczecia/Tagi/Typ_zadania (Faza 3)
+ensure_project_contract_columns(DB_PATH)  # jw. - Wymagania_PFU/Dane_planu_miejscowego (Faza 4, C4)
+ensure_harmonogram_deadline_columns(DB_PATH)  # jw. - Termin_nieprzekraczalny/Data_sprawdzenia (Faza 4, C4/C5)
+ensure_checklista_szablony_table(DB_PATH)  # jw. - nowa tabela szablonu checklisty (Faza 4, C1)
+ensure_seed_checklista_szablony(DB_PATH)  # jw. - musi biec PO powyzszej (potrzebuje tabeli)
+ensure_checklist_instance_columns(DB_PATH)  # jw. - ID_Szablonu/Wymagany/ID_Tickietu na checklisty_projektow (Faza 4, C1/C2)
+ensure_checklist_backfill_for_existing_projects(DB_PATH)  # jw. - musi biec PO obu powyzszych (potrzebuje kolumn + zasianego szablonu)
+ensure_notatki_spotkan_tables(DB_PATH)  # jw. - nowe tabele notatek ze spotkan (Faza 4, D1)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -211,6 +222,8 @@ TABLES = {
     "checklisty_projektow": ("ID_Pozycji", "CHK", 4),
     "dzialki": ("ID_Dzialki", "DZI", 3),
     "etykiety_konfiguracji": ("ID_Etykiety", "ETY", 3),
+    "checklista_szablony": ("ID_Szablonu", "SZB", 3),
+    "notatki_spotkan": ("ID_Notatki", "NOT", 3),
 }
 
 # tabela SQL -> klucz w odpowiedzi /api/bootstrap (nazwy pol STATE.* w dashboard/app.js)
@@ -227,7 +240,12 @@ BOOTSTRAP_KEYS = {
     "podwykonawcy": "subcontractors", "przypisania_podwykonawcow": "subcontractorAssignments",
     "ideapool": "ideapool", "klienci": "clients", "kontakty_klienta": "clientContacts",
     "checklisty_projektow": "checklists", "zadania_etapy": "taskStages", "dzialki": "parcels",
-    "etykiety_konfiguracji": "labelConfig",
+    "etykiety_konfiguracji": "labelConfig", "checklista_szablony": "checklistTemplates",
+    "notatki_spotkan": "meetingNotes",
+    # notatka_punkty (Faza 4, D1) CELOWO bez wpisu tutaj/w TABLES powyzej - dostepny tylko przez
+    # zagniezdzone, bespoke routes (/api/notatki_spotkan/<id>/punkty, mirror komentarze_tickety),
+    # bo scoping idzie przez ID_Notatki -> notatki_spotkan.ID_Projektu, nie przez wlasna kolumne
+    # ID_Projektu - dokladnie ten sam powod co przy zadania_etapy powyzej.
 }
 
 
@@ -402,6 +420,14 @@ TABLE_SCOPE = {
     # wlasne dropdowny (Typ_etapu/Segment/Funkcja_biura) - zapis ograniczony osobno w
     # can_write() do FULL_ACCESS_ROLES (patrz jego komentarz), nie przez TABLE_SCOPE.
     "etykiety_konfiguracji": "global",
+    # Faza 4 (C1) - ten sam wzorzec co etykiety_konfiguracji powyzej: kazda rola odczytuje
+    # (potrzebne do wyswietlenia/instancjonowania checklisty na karcie projektu), zapis
+    # zarezerwowany dla COO/Admin w can_write().
+    "checklista_szablony": "global",
+    # Faza 4 (D1) - project_scoped jak checklisty_projektow/kamienie_milowe: Specjalista nie
+    # zapisuje (jak przy tamtych tabelach), Architekt_PM tylko dla wlasnych projektow, COO/Admin
+    # bez ograniczen.
+    "notatki_spotkan": "project_scoped",
 }
 
 # Pola zerowane w odpowiedzi GET wylacznie dla roli Specjalista (nigdy nie usuwane - fmtMoney()/
@@ -488,12 +514,12 @@ def can_write(conn, user, action, table, row):
             # czlonkow zarzadu". Odczyt (GET) zostaje portfolio-wide bez zmian (scope "global"),
             # to zawezenie dotyczy wylacznie zapisu.
             return False
-        if table == "etykiety_konfiguracji":
-            # Zarzadzanie slownikiem etykiet (Faza 2, A13) - zmiana wplywa na dropdowny
-            # WSZYSTKICH uzytkownikow, wiec zarezerwowane dla COO/Admin (juz obsluzeni wyzej).
-            # Jawny warunek zamiast polegania na domyslnym "return False" na koncu funkcji -
-            # ta tabela nie ma ID_Projektu, wiec generyczny fallback nizej i tak zwrociłby
-            # False, ale jawnosc tutaj czyni to celowa decyzja, nie przypadkiem.
+        if table in ("etykiety_konfiguracji", "checklista_szablony"):
+            # Zarzadzanie slownikiem etykiet (Faza 2, A13)/szablonem checklisty (Faza 4, C1) -
+            # zmiana wplywa na WSZYSTKIE projekty/uzytkownikow, wiec zarezerwowane dla COO/Admin
+            # (juz obsluzeni wyzej). Jawny warunek zamiast polegania na domyslnym "return False"
+            # na koncu funkcji - obie tabele nie maja ID_Projektu, wiec generyczny fallback nizej
+            # i tak zwrociłby False, ale jawnosc tutaj czyni to celowa decyzja, nie przypadkiem.
             return False
         if table == "zespol":
             # Architekt prowadzacy moze dodac NOWA osobe do zespolu (np. onboarding czlonka
@@ -752,11 +778,71 @@ def _create_subprojects_for_selected_types(conn, new_row, user):
     conn.commit()
 
 
+def _instantiate_checklist_for_new_project(conn, new_row, user):
+    # Faza 4 (C1, warsztat 22.07.2026): kazdy nowy projekt dostaje od razu PELNA checklist z
+    # aktywnych wierszy checklista_szablony (Wymagany domyslnie "Nie" - uzytkownik sam zaznacza
+    # co jest wymagane dla TEGO konkretnego projektu). Mirror
+    # _create_subprojects_for_selected_types powyzej, tylko bez wyboru uzytkownika - zawsze
+    # WSZYSTKIE aktywne pozycje szablonu ("ta sama checklista dla kazdego projektu", C1).
+    templates = conn.execute(
+        "SELECT * FROM checklista_szablony WHERE Aktywna = 'Tak' ORDER BY Kolejnosc"
+    ).fetchall()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    for t in templates:
+        cid = next_id(conn, "checklisty_projektow", "ID_Pozycji", "CHK", 4)
+        conn.execute(
+            "INSERT INTO checklisty_projektow (ID_Pozycji, ID_Projektu, ID_Szablonu, Tresc, "
+            "Wymagany, Wykonano, Kolejnosc, Data_utworzenia) VALUES (?, ?, ?, ?, 'Nie', 'Nie', ?, ?)",
+            (cid, new_row["ID_Projektu"], t["ID_Szablonu"], t["Nazwa"], t["Kolejnosc"], now),
+        )
+    conn.commit()
+
+
+def _backfill_checklist_for_new_template(conn, new_row, user):
+    # Faza 4 (C1) - odwrotnosc powyzszej: gdy COO/Admin dopisze NOWA aktywna pozycje do
+    # szablonu, wszystkie JUZ ISTNIEJACE projekty tez ja dostaja - inaczej "ta sama checklista
+    # dla kazdego projektu" (C1) przestalaby byc prawdziwa dla projektow zalozonych PRZED ta
+    # zmiana szablonu.
+    if new_row.get("Aktywna") != "Tak":
+        return
+    projects = conn.execute("SELECT ID_Projektu FROM projekty").fetchall()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    for p in projects:
+        cid = next_id(conn, "checklisty_projektow", "ID_Pozycji", "CHK", 4)
+        conn.execute(
+            "INSERT INTO checklisty_projektow (ID_Pozycji, ID_Projektu, ID_Szablonu, Tresc, "
+            "Wymagany, Wykonano, Kolejnosc, Data_utworzenia) VALUES (?, ?, ?, ?, 'Nie', 'Nie', ?, ?)",
+            (cid, p["ID_Projektu"], new_row["ID_Szablonu"], new_row["Nazwa"], new_row.get("Kolejnosc"), now),
+        )
+    conn.commit()
+
+
+def _generate_checklist_task_if_required(conn, row, user):
+    # Faza 4 (C2) - zaznaczenie pozycji jako Wymagany="Tak" auto-tworzy powiazane zadanie, "bez
+    # dublowania" (ID_Tickietu raz ustawiony nigdy nie jest nadpisywany kolejnym zadaniem, wiec
+    # odznaczenie i ponowne zaznaczenie tej samej pozycji nie tworzy drugiego ticketu). Mutuje
+    # `row` (ten sam dict co new_row w item()) tak, zeby odpowiedz API od razu odzwierciedlala
+    # nowy ID_Tickietu bez potrzeby ponownego GET-a.
+    if row.get("Wymagany") != "Tak" or row.get("ID_Tickietu"):
+        return
+    tid = next_id(conn, "zadania_tickety", "ID_Tickietu", "TCK", 3)
+    conn.execute(
+        "INSERT INTO zadania_tickety (ID_Tickietu, ID_Projektu, Tytul, Data_utworzenia, Priorytet, Status, Typ_zadania) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (tid, row["ID_Projektu"], row.get("Tresc") or "Pozycja checklisty",
+         datetime.datetime.now().isoformat(timespec="seconds"), "Sredni", "Backlog", "Urzedowe"),
+    )
+    conn.execute("UPDATE checklisty_projektow SET ID_Tickietu = ? WHERE ID_Pozycji = ?", (tid, row["ID_Pozycji"]))
+    conn.commit()
+    row["ID_Tickietu"] = tid
+
+
 def _projekty_create_side_effects(conn, new_row, user):
-    # Kazdy z dwoch efektow osobno w try/except - ten sam powod co try/except wokol calego
+    # Kazdy z trzech efektow osobno w try/except - ten sam powod co try/except wokol calego
     # wywolania w collection() (rzadka kolizja next_id() bez blokady, patrz jego docstring):
-    # awaria jednego (np. przypisania architekta) nie powinna ukrasc drugiego (utworzenia
-    # sub-projektow z multiselect) - inaczej jeden zawaliby oba, mimo ze sa niezalezne.
+    # awaria jednego (np. przypisania architekta) nie powinna ukrasc kolejnych (utworzenia
+    # sub-projektow z multiselect, instancjonowania checklisty) - inaczej jeden zawaliby
+    # wszystkie, mimo ze sa niezalezne.
     try:
         _assign_architekt_to_own_project(conn, new_row, user)
     except Exception as e:
@@ -765,6 +851,10 @@ def _projekty_create_side_effects(conn, new_row, user):
         _create_subprojects_for_selected_types(conn, new_row, user)
     except Exception as e:
         print(f"_create_subprojects_for_selected_types blad: {e}")
+    try:
+        _instantiate_checklist_for_new_project(conn, new_row, user)
+    except Exception as e:
+        print(f"_instantiate_checklist_for_new_project blad: {e}")
 
 
 def _sync_ticket_stages(conn, row, user):
@@ -801,9 +891,16 @@ TABLE_CREATE_DEFAULTS = {
     "projekty": _default_project_owner_for_architekt,
     "checklisty_projektow": lambda data, user: (
         data.setdefault("Wykonano", "Nie"),
+        data.setdefault("Wymagany", "Nie"),
         data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds")),
     ),
     "etykiety_konfiguracji": lambda data, user: data.setdefault("Aktywna", "Tak"),
+    "checklista_szablony": lambda data, user: data.setdefault("Aktywna", "Tak"),
+    "notatki_spotkan": lambda data, user: (
+        data.setdefault("Status", "Nowa"),
+        data.setdefault("Autor", user.get("Imie_i_nazwisko") or user.get("Email")),
+        data.setdefault("Data_utworzenia", datetime.datetime.now().isoformat(timespec="seconds")),
+    ),
 }
 # Trzeci, mniejszy rejestr - zaczepy PO udanym zapisie (potrzebuja prawdziwego pk_val nowego
 # wiersza, wiec nie mogly by czyms takim jak TABLE_CREATE_DEFAULTS, ktory dziala na payloadzie
@@ -812,11 +909,14 @@ TABLE_CREATE_DEFAULTS = {
 TABLE_CREATE_SIDE_EFFECTS = {
     "projekty": _projekty_create_side_effects,
     "zadania_tickety": _sync_ticket_stages,
+    "checklista_szablony": _backfill_checklist_for_new_template,
 }
-# Czwarty rejestr - zaczepy PO udanym UPDATE (item(), nie collection()) - dzis tylko
-# synchronizacja zadania_etapy przy edycji ticketu, ten sam wzorzec co powyzsze.
+# Czwarty rejestr - zaczepy PO udanym UPDATE (item(), nie collection()) - synchronizacja
+# zadania_etapy przy edycji ticketu (Faza 1) + auto-generowanie zadania z checklisty (Faza 4,
+# C2), ten sam wzorzec co powyzsze.
 TABLE_UPDATE_SIDE_EFFECTS = {
     "zadania_tickety": _sync_ticket_stages,
+    "checklisty_projektow": _generate_checklist_task_if_required,
 }
 
 
@@ -891,6 +991,9 @@ ENUM_FIELDS = {
         "RAG_Status": {"Zielony", "Zolty", "Czerwony"},
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
         "Kamien_milowy": {"Tak", "Nie"},
+        # Faza 4, C4 - NULL/Nie traktowane jednakowo (bezpieczny domyslny brak flagi), ten sam
+        # wzorzec co zadania_tickety.Typ_zadania w Fazie 3.
+        "Termin_nieprzekraczalny": {"Tak", "Nie"},
     },
     "zadania_tickety": {
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
@@ -943,6 +1046,8 @@ ENUM_FIELDS = {
     },
     "checklisty_projektow": {
         "Wykonano": {"Tak", "Nie"},
+        # Faza 4, C1 - "wymagane/niewymagane" per projekt, odrebne od Wykonano (czy juz zrobione).
+        "Wymagany": {"Tak", "Nie"},
     },
     "etykiety_konfiguracji": {
         # Zamkniety zestaw kategorii, ktore ten slownik obsluguje (Faza 2, A13) - patrz
@@ -950,6 +1055,12 @@ ENUM_FIELDS = {
         # wlaczone. Dopisanie nowej kategorii do UI wymaga dopisania jej tez tutaj.
         "Kategoria": {"Typ_etapu", "Segment", "Funkcja_biura"},
         "Aktywna": {"Tak", "Nie"},
+    },
+    "checklista_szablony": {
+        "Aktywna": {"Tak", "Nie"},
+    },
+    "notatki_spotkan": {
+        "Status": {"Nowa", "Zaakceptowana", "Odrzucona"},
     },
 }
 
@@ -1553,7 +1664,7 @@ def assign_project(item_id):
 # nizej) - jedna lista, zamiast zgadywac przy kazdej nowej project_scoped/root_project tabeli.
 MERGE_CHILD_TABLES = ["harmonogram", "zadania_tickety", "przypisania", "kamienie_milowe",
                        "ryzyka_i_problemy", "raporty_statusowe", "przypisania_podwykonawcow",
-                       "checklisty_projektow", "dzialki"]
+                       "checklisty_projektow", "dzialki", "notatki_spotkan"]
 
 
 @app.route("/api/projekty/<master_id>/polacz", methods=["POST"])
@@ -1630,6 +1741,116 @@ def ticket_comments(ticket_id):
         return jsonify({"error": integrity_error_message(e, "komentarze_tickety")}), 409
     create_mention_notifications(conn, tresc, ticket_id, cid, autor)
     return jsonify(fetch_row(conn, "komentarze_tickety", "ID_Komentarza", cid)), 201
+
+
+@app.route("/api/notatki_spotkan/<note_id>/punkty", methods=["GET", "POST"])
+def notatka_punkty_list(note_id):
+    # Faza 4 (D1) - zagniezdzony endpoint, mirror ticket_comments powyzej: notatka_punkty nie ma
+    # wlasnej TABLES/generycznej fabryki (scoping idzie przez ID_Notatki -> notatki_spotkan.
+    # ID_Projektu, nie przez wlasna kolumne ID_Projektu). Uprawnienia identyczne jak przy edycji
+    # samej notatki (can_write "update") - dodanie punktu to modyfikacja notatki.
+    conn = get_db()
+    note = fetch_row(conn, "notatki_spotkan", "ID_Notatki", note_id)
+    if note is None:
+        abort(404)
+
+    if request.method == "GET":
+        if not scoped_rows(conn, g.user, "notatki_spotkan", [note]):
+            abort(403)
+        rows = conn.execute(
+            "SELECT * FROM notatka_punkty WHERE ID_Notatki = ? ORDER BY Kolejnosc", (note_id,)
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
+
+    if not can_write(conn, g.user, "update", "notatki_spotkan", note):
+        abort(403)
+    data = request.get_json(force=True, silent=True) or {}
+    tresc = str(data.get("Tresc") or "").strip()
+    if not tresc:
+        return jsonify({"error": "Treść punktu nie może być pusta."}), 400
+    next_kolejnosc = (conn.execute(
+        "SELECT COALESCE(MAX(Kolejnosc), -1) FROM notatka_punkty WHERE ID_Notatki = ?", (note_id,)
+    ).fetchone()[0]) + 1
+    pid = next_id(conn, "notatka_punkty", "ID_Punktu", "PKT", 4)
+    try:
+        conn.execute(
+            "INSERT INTO notatka_punkty (ID_Punktu, ID_Notatki, Tresc, ID_Osoby_przypisanej, Kolejnosc) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (pid, note_id, tresc, data.get("ID_Osoby_przypisanej") or None, next_kolejnosc),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        return jsonify({"error": integrity_error_message(e, "notatka_punkty")}), 409
+    return jsonify(fetch_row(conn, "notatka_punkty", "ID_Punktu", pid)), 201
+
+
+@app.route("/api/notatka_punkty/<point_id>", methods=["PUT", "DELETE"])
+def notatka_punkt_item(point_id):
+    conn = get_db()
+    point = fetch_row(conn, "notatka_punkty", "ID_Punktu", point_id)
+    if point is None:
+        abort(404)
+    note = fetch_row(conn, "notatki_spotkan", "ID_Notatki", point["ID_Notatki"])
+    if note is None or not can_write(conn, g.user, "update", "notatki_spotkan", note):
+        abort(403)
+    if request.method == "DELETE":
+        conn.execute("DELETE FROM notatka_punkty WHERE ID_Punktu = ?", (point_id,))
+        conn.commit()
+        return "", 204
+    data = request.get_json(force=True, silent=True) or {}
+    updates = {}
+    if "Tresc" in data:
+        tresc = str(data["Tresc"] or "").strip()
+        if not tresc:
+            return jsonify({"error": "Treść punktu nie może być pusta."}), 400
+        updates["Tresc"] = tresc
+    if "ID_Osoby_przypisanej" in data:
+        updates["ID_Osoby_przypisanej"] = data["ID_Osoby_przypisanej"] or None
+    if updates:
+        set_clause = ", ".join(f"{c} = ?" for c in updates)
+        conn.execute(f"UPDATE notatka_punkty SET {set_clause} WHERE ID_Punktu = ?", [*updates.values(), point_id])
+        conn.commit()
+    return jsonify(fetch_row(conn, "notatka_punkty", "ID_Punktu", point_id))
+
+
+@app.route("/api/notatka_punkty/<point_id>/utworz_zadanie", methods=["POST"])
+def notatka_punkt_utworz_zadanie(point_id):
+    # Faza 4 (D1) - "prowadzacy akceptuje i rozdziela na zadania z terminami i przypisaniem
+    # osob": konwersja punktu notatki w zadanie wymaga JAWNEGO wyboru osoby/terminu (w
+    # odroznieniu od checklisty, gdzie C2 chce w pelni automatyczne tworzenie bez dodatkowego
+    # inputu, patrz _generate_checklist_task_if_required) - stad osobny endpoint z payloadem,
+    # nie side-effect przy prostym PUT. "Bez dublowania" - punkt z juz ustawionym ID_Tickietu
+    # odrzuca kolejna probe konwersji.
+    conn = get_db()
+    point = fetch_row(conn, "notatka_punkty", "ID_Punktu", point_id)
+    if point is None:
+        abort(404)
+    if point.get("ID_Tickietu"):
+        return jsonify({"error": "Ten punkt ma już utworzone zadanie."}), 409
+    note = fetch_row(conn, "notatki_spotkan", "ID_Notatki", point["ID_Notatki"])
+    if note is None or not can_write(conn, g.user, "update", "notatki_spotkan", note):
+        abort(403)
+    data = request.get_json(force=True, silent=True) or {}
+    osoba = data.get("ID_Osoby_przypisanej") or point.get("ID_Osoby_przypisanej")
+    termin = data.get("Termin")
+    if not osoba or not termin:
+        return jsonify({"error": "Wskaż osobę i termin, żeby utworzyć zadanie z tego punktu."}), 400
+    tid = next_id(conn, "zadania_tickety", "ID_Tickietu", "TCK", 3)
+    conn.execute(
+        "INSERT INTO zadania_tickety (ID_Tickietu, ID_Projektu, Tytul, ID_Osoby_przypisanej, "
+        "Termin, Data_utworzenia, Priorytet, Status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (tid, note["ID_Projektu"], point["Tresc"], osoba, termin,
+         datetime.datetime.now().isoformat(timespec="seconds"), "Sredni", "Backlog"),
+    )
+    conn.execute(
+        "UPDATE notatka_punkty SET ID_Tickietu = ?, ID_Osoby_przypisanej = ? WHERE ID_Punktu = ?",
+        (tid, osoba, point_id),
+    )
+    conn.commit()
+    return jsonify({
+        "punkt": fetch_row(conn, "notatka_punkty", "ID_Punktu", point_id),
+        "zadanie": prepare_row_for_response(conn, g.user, "zadania_tickety", fetch_row(conn, "zadania_tickety", "ID_Tickietu", tid)),
+    }), 201
 
 
 MENTION_RE = re.compile(r"@\[([^\]]+)\]")

@@ -64,7 +64,13 @@ CREATE TABLE IF NOT EXISTS projekty (
   Opis TEXT,
   Link_do_dokumentacji TEXT,
   Data_ostatniej_aktualizacji TEXT,
-  Komentarz TEXT
+  Komentarz TEXT,
+  -- Faza 4 (C4, warsztat 22.07.2026) - dane z umowy/PFU na poziomie MASTER projektu (nie
+  -- zmienia sie miedzy etapami, w odroznieniu od Termin_nieprzekraczalny per-etap na
+  -- harmonogram, patrz tam). Wolny tekst - format wymagan PFU/planu miejscowego jest zbyt
+  -- rozny miedzy inwestorami/gminami, zeby strukturyzowac go teraz bez wiedzy zespolu.
+  Wymagania_PFU TEXT,
+  Dane_planu_miejscowego TEXT
 );
 
 CREATE TABLE IF NOT EXISTS zespol (
@@ -116,7 +122,15 @@ CREATE TABLE IF NOT EXISTS harmonogram (
   Status TEXT,
   RAG_Status TEXT,
   Priorytet TEXT,
-  Uwagi TEXT
+  Uwagi TEXT,
+  -- Faza 4 (C4/C5, warsztat 22.07.2026) - Termin_nieprzekraczalny: czy Data_koniec_plan TEGO
+  -- etapu jest twardym terminem z umowy (np. "PB 59 dni") - NULL/Nie traktowane jednakowo
+  -- (bezpieczny domyslny brak flagi, ten sam wzorzec co zadania_tickety.Typ_zadania w Fazie 3),
+  -- steruje tym samym mechanizmem alertu "zbliza sie nieprzekraczalny termin" co tam.
+  -- Data_sprawdzenia: OSOBNY, wewnetrzny deadline PRZED Data_koniec_plan - sprawdzajacy ma
+  -- zdazyc przejrzec i wskazac uwagi zanim minie wlasciwy, nieprzekraczalny termin oddania.
+  Termin_nieprzekraczalny TEXT,
+  Data_sprawdzenia TEXT
 );
 
 -- zadania_etapy: tabela laczaca zadania_tickety<->harmonogram (n:n) - zastepuje
@@ -227,18 +241,64 @@ CREATE TABLE IF NOT EXISTS powiadomienia (
 );
 CREATE INDEX IF NOT EXISTS idx_powiadomienia_osoba ON powiadomienia(ID_Osoby);
 
--- Checklisty projektu: prosta lista kontrolna per projekt, czysty mirror kamienie_milowe
--- (project_scoped, generyczna fabryka, zero bespoke route'ow). Swiadomie BEZ systemu
--- szablonow per kategoria projektu (Typ_projektu) - decyzja podjeta wprost z uzytkownikiem,
--- to "miejsce pod checklisty", nie silnik automatycznego wypelniania.
+-- checklista_szablony: uniwersalny, edytowalny szablon checklisty wstepnej (Faza 4, C1,
+-- "Kluczowy, mocno omawiany modul" z warsztatu 22.07.2026) - TA SAMA lista pozycji proponowana
+-- dla kazdego projektu (mirror wzorca etykiety_konfiguracji z Fazy 2/A13: Kolejnosc+Aktywna,
+-- edytowalne z poziomu appki, bez kolejnej migracji przy zmianie tresci). ODWRACA wczesniejsza,
+-- udokumentowana decyzje (checklisty_projektow mialo byc CELOWO bez szablonu) - na wprost,
+-- ponowne zyczenie zespolu z warsztatu (potwierdzone z uzytkownikiem przed wdrozeniem).
+CREATE TABLE IF NOT EXISTS checklista_szablony (
+  ID_Szablonu TEXT PRIMARY KEY NOT NULL,
+  Nazwa TEXT NOT NULL,
+  Opis TEXT,
+  Kolejnosc INTEGER,
+  Aktywna TEXT
+);
+
+-- Checklisty projektu: instancja szablonu per projekt (Faza 1, zawsze auto-tworzona dla
+-- kazdego nowego projektu z aktywnych pozycji checklista_szablony - patrz
+-- _instantiate_checklist_for_new_project w server.py) + nadal miejsce na dowolne pozycje ad-hoc
+-- (ID_Szablonu NULL). Wymagany (C1, "wymagane/niewymagane" per projekt) ODROZNIONY od Wykonano
+-- (czy juz zrobione) - zaznaczenie Wymagany="Tak" auto-tworzy powiazane zadanie (C2, "bez
+-- dublowania" - ID_Tickietu raz ustawiony nigdy nie jest nadpisywany kolejnym zadaniem).
 CREATE TABLE IF NOT EXISTS checklisty_projektow (
   ID_Pozycji TEXT PRIMARY KEY NOT NULL,
   ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  ID_Szablonu TEXT REFERENCES checklista_szablony(ID_Szablonu) ON DELETE SET NULL,
   Tresc TEXT,
+  Wymagany TEXT,
   Wykonano TEXT,
+  ID_Tickietu TEXT REFERENCES zadania_tickety(ID_Tickietu) ON DELETE SET NULL,
   Kolejnosc INTEGER,
   Data_utworzenia TEXT
 );
+
+-- Notatki ze spotkan -> zadania (Faza 4, D1, warsztat 22.07.2026): notatka (spotkanie/telefon)
+-- to opis + lista punktow, kazdy punkt moze stac sie osobnym zadaniem z wlasnym przypisaniem
+-- (ID_Tickietu wypelniane po konwersji, "bez dublowania" - ten sam wzorzec co
+-- checklisty_projektow.ID_Tickietu powyzej). Status notatki (Nowa/Zaakceptowana) - "prowadzacy
+-- akceptuje" z warsztatu; brak osobnej roli-gate na akceptacje (patrz can_write, project_scoped
+-- jak reszta tabel projektu) - kazdy z prawem edycji tego projektu moze zatwierdzic.
+CREATE TABLE IF NOT EXISTS notatki_spotkan (
+  ID_Notatki TEXT PRIMARY KEY NOT NULL,
+  ID_Projektu TEXT NOT NULL REFERENCES projekty(ID_Projektu) ON DELETE CASCADE,
+  Tytul TEXT,
+  Tresc TEXT,
+  Autor TEXT,
+  Status TEXT,
+  Data_utworzenia TEXT
+);
+
+CREATE TABLE IF NOT EXISTS notatka_punkty (
+  ID_Punktu TEXT PRIMARY KEY NOT NULL,
+  ID_Notatki TEXT NOT NULL REFERENCES notatki_spotkan(ID_Notatki) ON DELETE CASCADE,
+  Tresc TEXT,
+  ID_Osoby_przypisanej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
+  ID_Tickietu TEXT REFERENCES zadania_tickety(ID_Tickietu) ON DELETE SET NULL,
+  Kolejnosc INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_notatka_punkty_notatka ON notatka_punkty(ID_Notatki);
+CREATE INDEX IF NOT EXISTS idx_notatki_projekt ON notatki_spotkan(ID_Projektu);
 
 -- Ideapool: zgloszenia wewnetrznych inicjatyw/projektow rozwojowych - kazdy zalogowany moze
 -- zglosic (patrz can_write() w server.py), niezalezne od projekty (plaska lista, nie

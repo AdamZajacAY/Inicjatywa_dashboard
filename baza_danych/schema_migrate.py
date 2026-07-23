@@ -22,6 +22,7 @@ wymaga recznego kroku przez Shell. Bezpieczne do wielokrotnego wywolania: jesli 
 juz zaszla (sprawdzane przez PRAGMA table_info), funkcja natychmiast wraca bez zadnych zmian.
 """
 
+import datetime
 import os
 import re
 import sqlite3
@@ -436,6 +437,124 @@ def ensure_dzialki_table(db_path):
         with open(SCHEMA_PATH, encoding="utf-8") as f:
             schema_sql = f.read()
         for stmt in re.findall(r"CREATE INDEX IF NOT EXISTS idx_dzialki_.*?;", schema_sql):
+            conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_project_contract_columns(db_path):
+    """Dodaje Wymagania_PFU/Dane_planu_miejscowego do projekty w bazach powstalych przed ich
+    wprowadzeniem (Faza 4, C4, warsztat 22.07.2026) - dane z umowy/PFU na poziomie master
+    projektu, wolny tekst (patrz komentarz przy CREATE TABLE w schema.sql)."""
+    _ensure_columns(db_path, "projekty", {"Wymagania_PFU": "TEXT", "Dane_planu_miejscowego": "TEXT"})
+
+
+def ensure_harmonogram_deadline_columns(db_path):
+    """Dodaje Termin_nieprzekraczalny/Data_sprawdzenia do harmonogram w bazach powstalych przed
+    ich wprowadzeniem (Faza 4, C4/C5) - flaga terminu nieprzekraczalnego z umowy per etap +
+    osobny wewnetrzny deadline sprawdzenia PRZED nim."""
+    _ensure_columns(db_path, "harmonogram", {"Termin_nieprzekraczalny": "TEXT", "Data_sprawdzenia": "TEXT"})
+
+
+def ensure_checklista_szablony_table(db_path):
+    """Dodaje tabele checklista_szablony (uniwersalny szablon checklisty wstepnej, Faza 4, C1)
+    do baz powstalych przed jej wprowadzeniem."""
+    _ensure_table(db_path, "checklista_szablony")
+
+
+# Przyklady wprost z notatek warsztatu (22.07.2026, sekcja C1) - startowy, edytowalny zestaw
+# (mirror A13: zasiewa TYLKO przy pierwszym uruchomieniu, dalej w pelni zarzadzane z poziomu
+# appki, patrz ensure_seed_checklista_szablony ponizej). Finalna zawartosc/kategoryzacja (C3,
+# Faza 5) czeka na burze mozgow zespolu - to jest bezpieczny punkt startowy, nie ostateczna lista.
+_SEED_CHECKLISTA_SZABLONY = [
+    "Warunki wodociągowe", "Warunki kanalizacyjne", "Warunki na odprowadzenie wód deszczowych",
+    "Warunki gazowe", "Warunki elektroenergetyczne", "Warunki teletechniczne",
+    "Warunki drogowe / zjazd", "Inwentaryzacja zieleni", "Odrolnienie",
+    "Mapa do celów projektowych", "Mapa zasadnicza", "Wypis i wyrys z rejestru gruntów",
+    "Badania geologiczne", "Pełnomocnictwa",
+]
+
+
+def ensure_seed_checklista_szablony(db_path):
+    """Zasiewa checklista_szablony startowym zestawem TYLKO gdy tabela jest calkowicie pusta
+    (pierwsze uruchomienie po Faza 4) - jesli zespol juz recznie zarzadza szablonem, migracja
+    go nie dotyka (ten sam warunek co ensure_seed_etykiety_konfiguracji)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        if conn.execute("SELECT COUNT(*) FROM checklista_szablony").fetchone()[0] > 0:
+            return
+        for i, nazwa in enumerate(_SEED_CHECKLISTA_SZABLONY):
+            sid = f"SZB{str(i + 1).zfill(3)}"
+            conn.execute(
+                "INSERT INTO checklista_szablony (ID_Szablonu, Nazwa, Kolejnosc, Aktywna) VALUES (?, ?, ?, ?)",
+                (sid, nazwa, i, "Tak"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_checklist_instance_columns(db_path):
+    """Dodaje ID_Szablonu/Wymagany/ID_Tickietu do checklisty_projektow w bazach powstalych przed
+    Faza 4 (C1/C2) - odwraca wczesniejsza decyzje "bez szablonu" (patrz komentarz w schema.sql),
+    na ponowne, wprost zyczenie zespolu z warsztatu."""
+    _ensure_columns(db_path, "checklisty_projektow", {
+        "ID_Szablonu": "TEXT REFERENCES checklista_szablony(ID_Szablonu) ON DELETE SET NULL",
+        "Wymagany": "TEXT", "ID_Tickietu": "TEXT REFERENCES zadania_tickety(ID_Tickietu) ON DELETE SET NULL",
+    })
+
+
+def ensure_checklist_backfill_for_existing_projects(db_path):
+    """Dla kazdego istniejacego projektu, wstawia brakujace pozycje checklisty z AKTYWNYCH
+    wierszy checklista_szablony (dopasowanie po ID_Szablonu) - musi biec PO
+    ensure_checklist_instance_columns/ensure_seed_checklista_szablony (potrzebuje obu). Bez tego
+    tylko NOWO tworzone projekty (przez _instantiate_checklist_for_new_project w server.py)
+    dostawalyby pelna checklist - projekty sprzed Fazy 4 zostalyby z pusta/niepelna lista mimo
+    ze C1 wprost chce "ta sama [checklista] dla kazdego projektu". Idempotentne - dopasowanie
+    po (ID_Projektu, ID_Szablonu) pomija juz istniejace wiersze."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        templates = conn.execute("SELECT * FROM checklista_szablony WHERE Aktywna = 'Tak' ORDER BY Kolejnosc").fetchall()
+        if not templates:
+            return
+        projects = [row[0] for row in conn.execute("SELECT ID_Projektu FROM projekty").fetchall()]
+        existing = {(row[0], row[1]) for row in conn.execute(
+            "SELECT ID_Projektu, ID_Szablonu FROM checklisty_projektow WHERE ID_Szablonu IS NOT NULL"
+        ).fetchall()}
+        max_n = 0
+        for row in conn.execute("SELECT ID_Pozycji FROM checklisty_projektow").fetchall():
+            m = re.match(r"^CHK(\d+)$", row[0] or "")
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        for pid in projects:
+            for t in templates:
+                if (pid, t["ID_Szablonu"]) in existing:
+                    continue
+                max_n += 1
+                cid = f"CHK{str(max_n).zfill(4)}"
+                conn.execute(
+                    "INSERT INTO checklisty_projektow (ID_Pozycji, ID_Projektu, ID_Szablonu, Tresc, "
+                    "Wymagany, Wykonano, Kolejnosc, Data_utworzenia) VALUES (?, ?, ?, ?, 'Nie', 'Nie', ?, ?)",
+                    (cid, pid, t["ID_Szablonu"], t["Nazwa"], t["Kolejnosc"], now),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_notatki_spotkan_tables(db_path):
+    """Dodaje tabele notatki_spotkan/notatka_punkty (Faza 4, D1) do baz powstalych przed ich
+    wprowadzeniem."""
+    _ensure_table(db_path, "notatki_spotkan")
+    _ensure_table(db_path, "notatka_punkty")
+    conn = sqlite3.connect(db_path)
+    try:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            schema_sql = f.read()
+        for stmt in re.findall(r"CREATE INDEX IF NOT EXISTS idx_notat\w+ ON \w+\(\w+\);", schema_sql):
             conn.execute(stmt)
         conn.commit()
     finally:

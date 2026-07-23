@@ -7,7 +7,7 @@ const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
   clients: [], clientContacts: [], checklists: [], notifications: [], taskStages: [], parcels: [],
-  labelConfig: [],
+  labelConfig: [], checklistTemplates: [], meetingNotes: [], notePoints: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(), clientById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -22,6 +22,10 @@ const TABLE_SCOPE = {
   raporty_statusowe: "project_scoped", przypisania_podwykonawcow: "project_scoped", users: "admin_only",
   ideapool: "global", klienci: "global", kontakty_klienta: "global",
   checklisty_projektow: "project_scoped",
+  // Faza 4 (D1) - notatka_punkty (zagniezdzony bespoke resource, jak komentarze_tickety) nie ma
+  // wlasnego wpisu tutaj - jego can() checki reuzywaja "notatki_spotkan" (edycja punktu = edycja
+  // notatki-rodzica, ten sam mirror co server.py).
+  notatki_spotkan: "project_scoped",
 };
 const FULL_ACCESS_ROLES = ["COO", "Admin"];
 // "Pracownik biurowy" ma dokladnie te same uprawnienia co "Architekt" (Specjalista) - mirror
@@ -142,7 +146,7 @@ const DATE_FIELDS = {
   projects: ["Data_rozpoczecia", "Data_zakonczenia_planowana", "Data_zakonczenia_rzeczywista", "Data_go_live", "Data_ostatniej_aktualizacji"],
   team: ["Data_dolaczenia"],
   assignments: ["Data_od", "Data_do"],
-  tasks: ["Data_start_plan", "Data_koniec_plan", "Data_start_rzeczywista", "Data_koniec_rzeczywista"],
+  tasks: ["Data_start_plan", "Data_koniec_plan", "Data_start_rzeczywista", "Data_koniec_rzeczywista", "Data_sprawdzenia"],
   milestones: ["Data_planowana", "Data_rzeczywista"],
   risks: ["Data_identyfikacji", "Data_zamkniecia"],
   statusReports: ["Data_raportu"],
@@ -483,6 +487,8 @@ async function loadFromApi() {
   STATE.taskStages = data.taskStages || [];
   STATE.parcels = data.parcels || [];
   STATE.labelConfig = data.labelConfig || [];
+  STATE.checklistTemplates = data.checklistTemplates || [];
+  STATE.meetingNotes = data.meetingNotes || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
     assignedProjectIds: data.me.assignedProjectIds || [],
@@ -497,6 +503,15 @@ async function loadFromApi() {
   // Powiadomienia sa "moje wlasne" niezaleznie od roli (patrz /api/powiadomienia w server.py) -
   // bespoke endpoint, nie czesc /api/bootstrap, wiec osobne zapytanie tutaj dla kazdej roli.
   STATE.notifications = await apiGet("/api/powiadomienia");
+  // notatka_punkty (Faza 4, D1) nie ma wlasnej tabeli w /api/bootstrap (scoping idzie przez
+  // notatki_spotkan, nie przez wlasna kolumne ID_Projektu - patrz komentarz w server.py), wiec
+  // dociagane osobno, po jednym zapytaniu na kazda widoczna notatke, rownolegle. Wolumen notatek
+  // jest niski (nowa funkcja, nie setki istniejacych rekordow), wiec N rownoleglych zapytan przy
+  // logowaniu jest tanie - prostsze niz budowanie osobnego lazy-load-on-expand mechanizmu
+  // (mirror komentarzy ticketu) dla danych, ktorych i tak jest malo.
+  STATE.notePoints = (await Promise.all(
+    STATE.meetingNotes.map(n => apiGet(`/api/notatki_spotkan/${n.ID_Notatki}/punkty`))
+  )).flat();
   Object.keys(DATE_FIELDS).forEach(key => reviveDates(STATE[key], DATE_FIELDS[key]));
   reindex();
   showDashboard();
@@ -691,6 +706,15 @@ function assignmentsForPerson(oid) { return STATE.assignments.filter(a => a.ID_O
 function tasksForProject(pid) { return STATE.tasks.filter(t => t.ID_Projektu === pid); }
 function milestonesForProject(pid) { return STATE.milestones.filter(m => m.ID_Projektu === pid); }
 function checklistForProject(pid) { return STATE.checklists.filter(c => c.ID_Projektu === pid); }
+function meetingNotesForProject(pid) { return STATE.meetingNotes.filter(n => n.ID_Projektu === pid); }
+function notePointsForNote(noteId) {
+  return STATE.notePoints.filter(p => p.ID_Notatki === noteId).sort((a, b) => (a.Kolejnosc ?? 999) - (b.Kolejnosc ?? 999));
+}
+function meetingNoteStatusBadge(status) {
+  if (status === "Zaakceptowana") return "good";
+  if (status === "Odrzucona") return "critical";
+  return "warning"; // Nowa
+}
 function parcelsForProject(pid) { return STATE.parcels.filter(d => d.ID_Projektu === pid); }
 // Faza 2 (A7): sklada pojedyncze pola lokalizacji urzedowej w jeden czytelny wiersz do wyswietlenia
 // (formularz trzyma je jako osobne pola, ale w widoku detali jeden wiersz jest czytelniejszy).
@@ -886,6 +910,13 @@ function isUrgentAdministrativeTicket(t) {
   const daysLeft = Math.round((t.Termin - today0()) / 86400000);
   return daysLeft >= 0 && daysLeft <= getNotificationThresholdDays();
 }
+// Faza 4 (C4) - etap z twardym terminem z umowy (Termin_nieprzekraczalny="Tak") tez "wala na
+// czerwono" przy zblizaniu sie Data_koniec_plan - ten sam prog/mechanizm co isUrgentAdministrativeTicket.
+function isUrgentContractualStage(t) {
+  if (t.Termin_nieprzekraczalny !== "Tak" || !(t.Data_koniec_plan instanceof Date) || NON_OVERDUE_STAGE_STATUSES.includes(t.Status)) return false;
+  const daysLeft = Math.round((t.Data_koniec_plan - today0()) / 86400000);
+  return daysLeft >= 0 && daysLeft <= getNotificationThresholdDays();
+}
 function getNotifications() {
   const items = [];
   const threshold = getNotificationThresholdDays();
@@ -902,6 +933,8 @@ function getNotifications() {
   STATE.tasks.forEach(t => {
     if (isOverdueStage(t)) {
       items.push({ sev: "critical", pid: t.ID_Projektu, text: `Etap „${t.Nazwa_zadania}” (${projectName(t.ID_Projektu)}) — plan zakończenia minął ${fmtDate(t.Data_koniec_plan)}` });
+    } else if (isUrgentContractualStage(t)) {
+      items.push({ sev: "critical", pid: t.ID_Projektu, text: `Etap „${t.Nazwa_zadania}” (${projectName(t.ID_Projektu)}) — nieprzekraczalny termin z umowy za ${Math.round((t.Data_koniec_plan - today0()) / 86400000)} dni (${fmtDate(t.Data_koniec_plan)})` });
     }
   });
   STATE.milestones.forEach(m => {
@@ -1834,6 +1867,14 @@ function buildGantt(tasks, opts = {}) {
         <span>${esc(t.Nazwa_zadania)}</span>
       </div>`;
   };
+  // Faza 4 (C5) - termin sprawdzenia (wewnetrzny deadline PRZED nieprzekraczalnym terminem
+  // oddania) widoczny na Gancie jako osobny znacznik, odrozniony od kropkowanej linii "dzis".
+  const reviewMarkerFor = (t) => {
+    if (opts.condensed || !(t.Data_sprawdzenia instanceof Date)) return "";
+    const left = (t.Data_sprawdzenia.getTime() - tMin.getTime()) / totalMs * 100;
+    if (left < 0 || left > 100) return "";
+    return `<div class="gantt-review-marker" style="left:${left}%" title="Termin sprawdzenia: ${esc(fmtDate(t.Data_sprawdzenia))}"></div>`;
+  };
 
   const rowsHtml = Array.from(grouped.entries()).map(([key, ptasks]) => {
     ptasks.sort((a, b) => (a.Data_start_plan?.getTime() || 0) - (b.Data_start_plan?.getTime() || 0));
@@ -1860,6 +1901,7 @@ function buildGantt(tasks, opts = {}) {
         <div class="gantt-label-col" title="${esc(t.Nazwa_zadania)}">${toggleHtml}${esc(t.Nazwa_zadania)}${plottable.length ? ` <span class="gantt-stage-count">${plottable.length}</span>` : ""}</div>
         <div class="gantt-track">
           <div class="gantt-today" style="position:absolute;left:${todayPct}%;top:0;bottom:0;border-left:1px dashed var(--status-critical)"></div>
+          ${reviewMarkerFor(t)}
           ${barFor(t)}
         </div>
       </div>`;
@@ -1893,7 +1935,8 @@ function buildGantt(tasks, opts = {}) {
       <span class="item"><span class="swatch status-progress"></span>W trakcie</span>
       <span class="item"><span class="swatch status-done"></span>Zakończone</span>
       <span class="item"><span class="swatch status-delayed"></span>Opóźnione</span>
-      <span class="item">┊ <span style="color:var(--status-critical)">— dziś</span></span>`;
+      <span class="item">┊ <span style="color:var(--status-critical)">— dziś</span></span>
+      <span class="item">┃ <span style="color:var(--accent)">— termin sprawdzenia</span></span>`;
 
   return `
     <div class="gantt-scroll">
@@ -2126,6 +2169,105 @@ async function moveLabel(id, dir) {
   }
 }
 
+// Faza 4 (C1) - szablon checklisty wstepnej, mirror renderLabelAdminSection powyzej (COO/Admin
+// only, ta sama sekcja add/edytuj/reorder/dezaktywuj/usun), tylko bez kategorii - checklista to
+// jedna plaska, uporzadkowana lista, nie kilka niezaleznych slownikow jak Typ_etapu/Segment/
+// Funkcja_biura.
+function renderChecklistTemplateAdminSection() {
+  const items = STATE.checklistTemplates.slice().sort((a, b) => (a.Kolejnosc ?? 999) - (b.Kolejnosc ?? 999));
+  return `
+    <div class="section-head"><h2>Szablon checklisty wstępnej</h2>
+      <button class="icon-btn" data-add-checklist-template="1">+ Dodaj pozycję</button></div>
+    <div class="panel">
+      ${items.map((c, i) => `
+        <div class="dp-list-item" style="opacity:${c.Aktywna === "Nie" ? "0.5" : "1"}">
+          <div class="item-actions">
+            <button class="icon-btn" data-move-checklist-template="${esc(c.ID_Szablonu)}" data-dir="up" ${i === 0 ? "disabled" : ""}>↑</button>
+            <button class="icon-btn" data-move-checklist-template="${esc(c.ID_Szablonu)}" data-dir="down" ${i === items.length - 1 ? "disabled" : ""}>↓</button>
+            <button class="icon-btn" data-edit-checklist-template="${esc(c.ID_Szablonu)}">Edytuj</button>
+            <button class="icon-btn" data-toggle-checklist-template-active="${esc(c.ID_Szablonu)}">${c.Aktywna === "Nie" ? "Aktywuj" : "Dezaktywuj"}</button>
+            <button class="icon-btn danger" data-delete-checklist-template="${esc(c.ID_Szablonu)}">Usuń</button>
+          </div>
+          <div class="title">${esc(c.Nazwa)}</div>
+        </div>`).join("") || `<div class="empty-hint">Brak pozycji szablonu.</div>`}
+    </div>
+  `;
+}
+function openChecklistTemplateForm(id = null) {
+  const c = id ? STATE.checklistTemplates.find(x => x.ID_Szablonu === id) : {};
+  if (id && !requireExisting(c, "pozycja szablonu")) return;
+  const body = `${fInput("Nazwa *", "Nazwa", c.Nazwa, "text", "required")}`;
+  openModal(id ? "Edytuj pozycję szablonu" : "Nowa pozycja szablonu", body, {
+    submitLabel: "Zapisz",
+    onSubmit: (data) => saveChecklistTemplateFromForm(data, id),
+  });
+}
+async function saveChecklistTemplateFromForm(data, id) {
+  if (!data.Nazwa) { alert("Podaj nazwę pozycji."); return; }
+  const isNew = !id;
+  const existing = isNew ? {} : STATE.checklistTemplates.find(x => x.ID_Szablonu === id);
+  if (!isNew && !requireExisting(existing, "pozycja szablonu")) return;
+  const fields = isNew
+    ? { Nazwa: data.Nazwa, Kolejnosc: STATE.checklistTemplates.length, Aktywna: "Tak" }
+    : { Nazwa: data.Nazwa };
+  const saved = await persistEntity({ isNew, endpoint: "/api/checklista_szablony", id, fields, errorLabel: "pozycji szablonu" });
+  if (!saved) return;
+  if (isNew) {
+    // Serwer juz doinstalowal ta pozycje do WSZYSTKICH istniejacych projektow
+    // (_backfill_checklist_for_new_template) - pelny reload, zeby STATE.checklists to widzial
+    // bez czekania na kolejna nawigacje/przeladowanie strony.
+    STATE.checklistTemplates.push(saved);
+    await loadFromApi();
+  } else {
+    Object.assign(existing, saved);
+  }
+  closeModal();
+  renderAll();
+}
+async function deleteChecklistTemplate(id) {
+  if (!confirm("Usunąć tę pozycję szablonu? Projekty, które już jej używają, zachowają ją jako zwykłą, samodzielną pozycję checklisty.")) return;
+  if (!await deleteEntity(`/api/checklista_szablony/${id}`, "pozycji szablonu")) return;
+  STATE.checklistTemplates = STATE.checklistTemplates.filter(c => c.ID_Szablonu !== id);
+  renderAll();
+}
+async function toggleChecklistTemplateActive(id) {
+  const c = STATE.checklistTemplates.find(x => x.ID_Szablonu === id);
+  if (!c) return;
+  const prev = c.Aktywna;
+  c.Aktywna = prev === "Nie" ? "Tak" : "Nie";
+  renderAll();
+  try {
+    const saved = await apiPut(`/api/checklista_szablony/${id}`, { Aktywna: c.Aktywna });
+    Object.assign(c, saved);
+  } catch (err) {
+    c.Aktywna = prev;
+    alert("Nie udało się zaktualizować pozycji szablonu: " + err.message);
+  }
+  renderAll();
+}
+async function moveChecklistTemplate(id, dir) {
+  const c = STATE.checklistTemplates.find(x => x.ID_Szablonu === id);
+  if (!c) return;
+  const siblings = STATE.checklistTemplates.slice().sort((a, b) => (a.Kolejnosc ?? 999) - (b.Kolejnosc ?? 999));
+  const idx = siblings.findIndex(x => x.ID_Szablonu === id);
+  const swapIdx = dir === "up" ? idx - 1 : idx + 1;
+  if (swapIdx < 0 || swapIdx >= siblings.length) return;
+  const other = siblings[swapIdx];
+  const myOrder = c.Kolejnosc, otherOrder = other.Kolejnosc;
+  c.Kolejnosc = otherOrder; other.Kolejnosc = myOrder;
+  renderAll();
+  try {
+    await Promise.all([
+      apiPut(`/api/checklista_szablony/${c.ID_Szablonu}`, { Kolejnosc: c.Kolejnosc }),
+      apiPut(`/api/checklista_szablony/${other.ID_Szablonu}`, { Kolejnosc: other.Kolejnosc }),
+    ]);
+  } catch (err) {
+    c.Kolejnosc = myOrder; other.Kolejnosc = otherOrder;
+    alert("Nie udało się zmienić kolejności: " + err.message);
+    renderAll();
+  }
+}
+
 function renderUsers() {
   $("#view-uzytkownicy").innerHTML = `
     <div class="section-head"><h2>Użytkownicy</h2><button data-add-user="1">+ Dodaj użytkownika</button></div>
@@ -2154,6 +2296,8 @@ function renderUsers() {
     </div>
 
     ${renderLabelAdminSection()}
+
+    ${renderChecklistTemplateAdminSection()}
 
     <div class="section-head"><h2>Backup bazy danych</h2><button data-backup-now="1">Backup teraz</button></div>
     <div class="panel" style="overflow-x:auto">
@@ -2514,6 +2658,10 @@ function openProjectForm(pid = null) {
     ${fInput("Ulica", "Ulica", p.Ulica)}
     ${fInput("Kod pocztowy", "Kod_pocztowy", p.Kod_pocztowy)}
 
+    <div class="form-section-title">Umowa i PFU</div>
+    ${fTextarea("Wymagania z PFU (ilość wydruków/dokumentacji)", "Wymagania_PFU", p.Wymagania_PFU)}
+    ${fTextarea("Dane z planu miejscowego", "Dane_planu_miejscowego", p.Dane_planu_miejscowego)}
+
     <div class="form-section-title">Zakres projektu (karta projektowa)</div>
     ${fTextarea("Opis / zakres", "Opis", p.Opis)}
     ${fTextarea("Komentarz PMO", "Komentarz", p.Komentarz)}
@@ -2577,6 +2725,7 @@ async function saveProjectFromForm(data, pid) {
     Link_do_dokumentacji: existing.Link_do_dokumentacji || "",
     Data_ostatniej_aktualizacji: new Date(),
     Komentarz: data.Komentarz,
+    Wymagania_PFU: data.Wymagania_PFU, Dane_planu_miejscowego: data.Dane_planu_miejscowego,
   };
   const saved = await persistEntity({ isNew, endpoint: "/api/projekty", id: pid, fields, dateFields: DATE_FIELDS.projects, errorLabel: "projekt" });
   if (!saved) return;
@@ -2873,6 +3022,8 @@ function openTaskForm(pid, tid = null) {
     ${fSelect("Odpowiedzialny", "ID_Osoby_odpowiedzialnej", teamOptionsPairs(), t.ID_Osoby_odpowiedzialnej)}
     ${fInput("Start (plan) *", "Data_start_plan", t.Data_start_plan, "date", "required")}
     ${fInput("Koniec (plan) *", "Data_koniec_plan", t.Data_koniec_plan, "date", "required")}
+    ${fSelect("Termin nieprzekraczalny (z umowy)", "Termin_nieprzekraczalny", [["Nie", "Nie"], ["Tak", "Tak"]], t.Termin_nieprzekraczalny || "Nie")}
+    ${fInput("Data sprawdzenia (wewnętrzny deadline przed oddaniem)", "Data_sprawdzenia", t.Data_sprawdzenia, "date")}
     ${fInput("% ukończenia", "Procent_ukonczenia_pct", t.Procent_ukonczenia != null ? Math.round(t.Procent_ukonczenia * 100) : 0, "number", "min=0 max=100")}
     ${fSelect("Status", "Status", pairs(TASK_STATUSES), t.Status || "Nie rozpoczete")}
     ${fSelect("RAG status", "RAG_Status", [["", "— brak —"], ["Zielony", "Zielony"], ["Zolty", "Żółty"], ["Czerwony", "Czerwony"]], t.RAG_Status)}
@@ -2902,6 +3053,8 @@ async function saveTaskFromForm(data, pid, tid) {
     ID_Osoby_odpowiedzialnej: data.ID_Osoby_odpowiedzialnej || null,
     Data_start_plan: parseDateInput(data.Data_start_plan), Data_koniec_plan: parseDateInput(data.Data_koniec_plan),
     Data_start_rzeczywista: existing.Data_start_rzeczywista || null, Data_koniec_rzeczywista: existing.Data_koniec_rzeczywista || null,
+    Termin_nieprzekraczalny: data.Termin_nieprzekraczalny || "Nie",
+    Data_sprawdzenia: parseDateInput(data.Data_sprawdzenia),
     Procent_ukonczenia: num(data.Procent_ukonczenia_pct) / 100,
     ID_Zadania_poprzedzajacego: existing.ID_Zadania_poprzedzajacego || null,
     Kamien_milowy: data.Kamien_milowy, Status: data.Status, RAG_Status: data.RAG_Status || null,
@@ -3379,6 +3532,169 @@ async function toggleChecklistItem(id, pid) {
     item.Wykonano = prev;
     alert("Nie udało się zaktualizować pozycji checklisty: " + e.message);
   }
+  openProjectDetail(pid);
+}
+
+async function toggleChecklistRequired(id, pid) {
+  // Faza 4 (C1/C2) - "wymagane/niewymagane" per projekt, odrebne od Wykonano (mirror
+  // toggleChecklistItem powyzej). Zaznaczenie "wymagane" auto-tworzy powiazane zadanie po
+  // stronie serwera (_generate_checklist_task_if_required) - ID_Tickietu w odpowiedzi PUT
+  // odzwierciedla to natychmiast, ale samego nowego ticketu jeszcze nie ma w STATE.tickets, wiec
+  // pelny reload gdy pojawi sie nowy ID_Tickietu (rzadka akcja, nie warto recznie rekonstruowac
+  // wiersza ticketu tylko z tego, co zwraca ten jeden endpoint).
+  const item = STATE.checklists.find(c => c.ID_Pozycji === id);
+  if (!item) return;
+  if (!can("update", "checklisty_projektow", item)) return;
+  const prev = item.Wymagany;
+  item.Wymagany = prev === "Tak" ? "Nie" : "Tak";
+  openProjectDetail(pid);
+  try {
+    const saved = await apiPut(`/api/checklisty_projektow/${id}`, { Wymagany: item.Wymagany });
+    Object.assign(item, saved);
+    if (saved.ID_Tickietu && !STATE.tickets.some(t => t.ID_Tickietu === saved.ID_Tickietu)) {
+      await loadFromApi();
+      renderAll();
+    }
+  } catch (e) {
+    item.Wymagany = prev;
+    alert("Nie udało się zaktualizować pozycji checklisty: " + e.message);
+  }
+  openProjectDetail(pid);
+}
+
+/* ---------- Formularz: Notatka ze spotkania (Faza 4, D1) ---------- */
+function openMeetingNoteForm(pid, id = null) {
+  const n = id ? STATE.meetingNotes.find(x => x.ID_Notatki === id) : {};
+  if (id && !requireExisting(n, "notatka")) return;
+  const body = `
+    ${fInput("Tytuł *", "Tytul", n.Tytul, "text", "required")}
+    ${fTextarea("Treść / opis spotkania", "Tresc", n.Tresc)}
+    ${!id ? fTextarea("Punkty (jeden na linię, np. „Złożyć wniosek o warunki wodociągowe”)", "Punkty", "") : ""}
+  `;
+  openModal(id ? "Edytuj notatkę" : "Nowa notatka ze spotkania", body, {
+    submitLabel: "Zapisz notatkę",
+    onSubmit: (data) => saveMeetingNoteFromForm(data, pid, id),
+  });
+}
+async function saveMeetingNoteFromForm(data, pid, id) {
+  if (!data.Tytul) { alert("Podaj tytuł notatki."); return; }
+  const isNew = !id;
+  const existing = isNew ? {} : STATE.meetingNotes.find(x => x.ID_Notatki === id);
+  if (!isNew && !requireExisting(existing, "notatka")) return;
+  const fields = isNew
+    ? { ID_Projektu: pid, Tytul: data.Tytul, Tresc: data.Tresc }
+    : { Tytul: data.Tytul, Tresc: data.Tresc };
+  const saved = await persistEntity({ isNew, endpoint: "/api/notatki_spotkan", id, fields, errorLabel: "notatki" });
+  if (!saved) return;
+  if (isNew) {
+    STATE.meetingNotes.push(saved);
+    // Punkty wpisane linia-po-linii w formularzu tworzenia - kazdy osobnym POST-em (bespoke
+    // endpoint, mirror dodawania komentarza ticketu), PO KOLEI (nie Promise.all/rownolegle) -
+    // next_id() skanuje MAX(...) bez blokady (patrz jego docstring w server.py), wiec rownolegle
+    // POST-y do tej samej notatki moglyby odczytac ten sam MAX i wygenerowac kolidujacy
+    // ID_Punktu, cicho gubiac jeden z punktow (jeden z dwoch INSERT-ow dostaje 409, ktorego
+    // Promise.all nie obsluguje inaczej niz odrzuceniem calej reszty).
+    const linie = (data.Punkty || "").split("\n").map(s => s.trim()).filter(Boolean);
+    for (const tresc of linie) {
+      const punkt = await apiPost(`/api/notatki_spotkan/${saved.ID_Notatki}/punkty`, { Tresc: tresc });
+      STATE.notePoints.push(punkt);
+    }
+  } else {
+    Object.assign(existing, saved);
+  }
+  closeModal();
+  renderAll();
+  openProjectDetail(pid);
+}
+async function deleteMeetingNote(id, pid) {
+  if (!confirm("Usunąć tę notatkę wraz ze wszystkimi jej punktami? Zadania już utworzone z tych punktów NIE zostaną usunięte.")) return;
+  if (!await deleteEntity(`/api/notatki_spotkan/${id}`, "notatki")) return;
+  STATE.meetingNotes = STATE.meetingNotes.filter(n => n.ID_Notatki !== id);
+  STATE.notePoints = STATE.notePoints.filter(p => p.ID_Notatki !== id); // mirror ON DELETE CASCADE w schema.sql
+  renderAll();
+  openProjectDetail(pid);
+}
+async function approveMeetingNote(id, pid) {
+  const n = STATE.meetingNotes.find(x => x.ID_Notatki === id);
+  if (!n) return;
+  if (!can("update", "notatki_spotkan", n)) return;
+  try {
+    const saved = await apiPut(`/api/notatki_spotkan/${id}`, { Status: "Zaakceptowana" });
+    Object.assign(n, saved);
+  } catch (e) {
+    alert("Nie udało się zatwierdzić notatki: " + e.message);
+  }
+  renderAll();
+  openProjectDetail(pid);
+}
+
+function openNotePointForm(noteId, pid) {
+  const body = fTextarea("Treść punktu *", "Tresc", "");
+  openModal("Nowy punkt notatki", body, {
+    submitLabel: "Dodaj punkt",
+    onSubmit: (data) => saveNotePointFromForm(data, noteId, pid),
+  });
+}
+async function saveNotePointFromForm(data, noteId, pid) {
+  const tresc = (data.Tresc || "").trim();
+  if (!tresc) { alert("Podaj treść punktu."); return; }
+  let saved;
+  try {
+    saved = await apiPost(`/api/notatki_spotkan/${noteId}/punkty`, { Tresc: tresc });
+  } catch (e) {
+    alert("Nie udało się dodać punktu: " + e.message);
+    return;
+  }
+  STATE.notePoints.push(saved);
+  closeModal();
+  renderAll();
+  openProjectDetail(pid);
+}
+
+async function deleteNotePoint(pointId, pid) {
+  if (!confirm("Usunąć ten punkt notatki?")) return;
+  if (!await deleteEntity(`/api/notatka_punkty/${pointId}`, "punktu notatki")) return;
+  STATE.notePoints = STATE.notePoints.filter(p => p.ID_Punktu !== pointId);
+  renderAll();
+  openProjectDetail(pid);
+}
+
+// Faza 4 (D1) - "prowadzacy akceptuje i rozdziela na zadania z terminami i przypisaniem osob":
+// konwersja wymaga jawnego wyboru osoby/terminu, stad osobny maly formularz zamiast
+// jednoklikowej akcji jak toggleChecklistRequired (tam C2 chce w pelni automatyczne tworzenie).
+function openConvertNotePointForm(pointId, pid) {
+  const pt = STATE.notePoints.find(x => x.ID_Punktu === pointId);
+  if (!requireExisting(pt, "punkt notatki")) return;
+  const body = `
+    ${fSelect("Przypisana osoba *", "ID_Osoby_przypisanej", assignedTeamOptionsPairs(pid, pt.ID_Osoby_przypisanej), pt.ID_Osoby_przypisanej)}
+    ${fInput("Termin *", "Termin", "", "date", "required")}
+  `;
+  openModal("Utwórz zadanie z punktu notatki", body, {
+    submitLabel: "Utwórz zadanie",
+    onSubmit: (data) => saveConvertNotePointFromForm(data, pointId, pid),
+  });
+}
+async function saveConvertNotePointFromForm(data, pointId, pid) {
+  if (!data.ID_Osoby_przypisanej || !data.Termin) {
+    alert("Wskaż osobę i termin.");
+    return;
+  }
+  let result;
+  try {
+    result = await apiPost(`/api/notatka_punkty/${pointId}/utworz_zadanie`, {
+      ID_Osoby_przypisanej: data.ID_Osoby_przypisanej,
+      Termin: dateInputVal(parseDateInput(data.Termin)),
+    });
+  } catch (e) {
+    alert("Nie udało się utworzyć zadania: " + e.message);
+    return;
+  }
+  const pt = STATE.notePoints.find(x => x.ID_Punktu === pointId);
+  if (pt) Object.assign(pt, result.punkt);
+  reviveDates([result.zadanie], DATE_FIELDS.tickets);
+  STATE.tickets.push(result.zadanie);
+  closeModal();
+  renderAll();
   openProjectDetail(pid);
 }
 
@@ -3938,7 +4254,8 @@ function openProjectDetail(pid) {
   if (!p) return;
   const assigns = assignmentsForProject(pid);
   const mstones = milestonesForProject(pid).sort((a, b) => (a.Data_planowana?.getTime() || 0) - (b.Data_planowana?.getTime() || 0));
-  const checklist = checklistForProject(pid);
+  const checklist = checklistForProject(pid).sort((a, b) => (a.Kolejnosc ?? 999) - (b.Kolejnosc ?? 999));
+  const meetingNotes = meetingNotesForProject(pid).sort((a, b) => (b.Data_utworzenia || "").localeCompare(a.Data_utworzenia || ""));
   const risks = risksForProject(pid);
   const reports = reportsForProject(pid).slice(0, 3);
   const tasks = tasksForProject(pid);
@@ -4076,6 +4393,8 @@ function openProjectDetail(pid) {
     </div>
 
     ${p.Opis ? `<div class="dp-section"><h4>Opis / zakres</h4><div style="font-size:13px">${esc(p.Opis)}</div></div>` : ""}
+    ${p.Wymagania_PFU ? `<div class="dp-section"><h4>Wymagania z PFU</h4><div style="font-size:13px;white-space:pre-wrap">${esc(p.Wymagania_PFU)}</div></div>` : ""}
+    ${p.Dane_planu_miejscowego ? `<div class="dp-section"><h4>Dane z planu miejscowego</h4><div style="font-size:13px;white-space:pre-wrap">${esc(p.Dane_planu_miejscowego)}</div></div>` : ""}
 
     <div class="dp-section">
       <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Zespół projektowy (${assigns.length})</h4>
@@ -4139,13 +4458,48 @@ function openProjectDetail(pid) {
       ${checklist.map(c => `
         <div class="dp-list-item">
           <div class="item-actions">
+            ${c.ID_Tickietu ? `<span class="badge badge-muted clickable" data-open-ticket="${esc(c.ID_Tickietu)}" style="cursor:pointer" title="Przejdź do powiązanego zadania">→ zadanie</span>` : ""}
             ${can("delete", "checklisty_projektow", c) ? `<button class="icon-btn danger" data-delete-checklist="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
-          <div style="display:flex;align-items:flex-start;gap:8px">
-            <input type="checkbox" data-toggle-checklist="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}" ${c.Wykonano === "Tak" ? "checked" : ""} ${can("update", "checklisty_projektow", c) ? "" : "disabled"} style="margin-top:3px">
+          <div style="display:flex;align-items:flex-start;gap:10px">
+            <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);white-space:nowrap;margin-top:2px" title="Wymagane dla tego projektu - zaznaczenie tworzy powiązane zadanie">
+              <input type="checkbox" data-toggle-checklist-required="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}" ${c.Wymagany === "Tak" ? "checked" : ""} ${can("update", "checklisty_projektow", c) ? "" : "disabled"}>
+              wymagane
+            </label>
+            <input type="checkbox" data-toggle-checklist="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}" ${c.Wykonano === "Tak" ? "checked" : ""} ${can("update", "checklisty_projektow", c) ? "" : "disabled"} style="margin-top:3px" title="Wykonane">
             <span ${can("update", "checklisty_projektow", c) ? `data-edit-checklist="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}"` : ""} style="${can("update", "checklisty_projektow", c) ? "cursor:pointer;" : ""}${c.Wykonano === "Tak" ? "text-decoration:line-through;color:var(--text-muted)" : ""}">${esc(c.Tresc)}</span>
           </div>
         </div>`).join("") || `<div class="kpi-sub">Brak pozycji checklisty.</div>`}
+    </div>
+
+    <div class="dp-section">
+      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Notatki ze spotkań (${meetingNotes.length})</h4>
+        ${can("create", "notatki_spotkan", { ID_Projektu: pid }) ? `<button class="icon-btn" data-add-meeting-note="${esc(pid)}">+ Nowa notatka</button>` : ""}</div>
+      ${meetingNotes.map(n => {
+        const points = notePointsForNote(n.ID_Notatki);
+        const editableNote = can("update", "notatki_spotkan", n);
+        return `
+        <div class="dp-list-item">
+          <div class="item-actions">
+            ${editableNote && n.Status !== "Zaakceptowana" ? `<button class="icon-btn" data-approve-meeting-note="${esc(n.ID_Notatki)}" data-project="${esc(pid)}">Zatwierdź</button>` : ""}
+            ${can("delete", "notatki_spotkan", n) ? `<button class="icon-btn danger" data-delete-meeting-note="${esc(n.ID_Notatki)}" data-project="${esc(pid)}">Usuń</button>` : ""}
+          </div>
+          <div class="title">${esc(n.Tytul || "Notatka ze spotkania")} ${badge(n.Status, meetingNoteStatusBadge(n.Status))}</div>
+          <div class="meta">${esc(n.Autor || "—")} · ${fmtDateTime(n.Data_utworzenia)}</div>
+          ${n.Tresc ? `<div style="font-size:12.5px;margin-top:4px;white-space:pre-wrap">${esc(n.Tresc)}</div>` : ""}
+          <div style="margin-top:6px;display:flex;flex-direction:column;gap:5px">
+            ${points.map(pt => `
+              <div style="display:flex;align-items:center;gap:8px;font-size:12.5px">
+                <span style="flex:1">• ${esc(pt.Tresc)}${pt.ID_Osoby_przypisanej ? ` — ${esc(personName(pt.ID_Osoby_przypisanej))}` : ""}</span>
+                ${pt.ID_Tickietu
+                  ? `<span class="badge badge-muted clickable" data-open-ticket="${esc(pt.ID_Tickietu)}" style="cursor:pointer">→ zadanie</span>`
+                  : (editableNote ? `<button class="icon-btn" data-convert-note-point="${esc(pt.ID_Punktu)}" data-project="${esc(pid)}">Utwórz zadanie</button>` : "")}
+                ${editableNote && !pt.ID_Tickietu ? `<button class="icon-btn danger" data-delete-note-point="${esc(pt.ID_Punktu)}" data-project="${esc(pid)}">Usuń</button>` : ""}
+              </div>`).join("") || `<div class="kpi-sub">Brak punktów.</div>`}
+          </div>
+          ${editableNote ? `<div style="margin-top:6px"><button class="icon-btn" data-add-note-point="${esc(n.ID_Notatki)}" data-project="${esc(pid)}">+ Dodaj punkt</button></div>` : ""}
+        </div>`;
+      }).join("") || `<div class="kpi-sub">Brak notatek ze spotkań.</div>`}
     </div>
 
     <div class="dp-section">
@@ -4505,6 +4859,8 @@ document.addEventListener("change", (e) => {
   // kazdym razem (ten sam powod co dla focusout/date-input powyzej).
   const checklistCheckbox = e.target.closest && e.target.closest("[data-toggle-checklist]");
   if (checklistCheckbox) { toggleChecklistItem(checklistCheckbox.getAttribute("data-toggle-checklist"), checklistCheckbox.getAttribute("data-project")); return; }
+  const checklistRequiredCheckbox = e.target.closest && e.target.closest("[data-toggle-checklist-required]");
+  if (checklistRequiredCheckbox) { toggleChecklistRequired(checklistRequiredCheckbox.getAttribute("data-toggle-checklist-required"), checklistRequiredCheckbox.getAttribute("data-project")); return; }
   const avatarFile = e.target.closest && e.target.closest("[data-avatar-file]");
   if (avatarFile) {
     const file = avatarFile.files[0];
@@ -4643,6 +4999,20 @@ document.addEventListener("click", (e) => {
   if (deleteChecklistBtn) { deleteChecklistItem(deleteChecklistBtn.getAttribute("data-delete-checklist"), deleteChecklistBtn.getAttribute("data-project")); return; }
   const editChecklist = e.target.closest("[data-edit-checklist]");
   if (editChecklist) { openChecklistItemForm(editChecklist.getAttribute("data-project"), editChecklist.getAttribute("data-edit-checklist")); return; }
+
+  const addMeetingNote = e.target.closest("[data-add-meeting-note]");
+  if (addMeetingNote) { openMeetingNoteForm(addMeetingNote.getAttribute("data-add-meeting-note")); return; }
+  const deleteMeetingNoteBtn = e.target.closest("[data-delete-meeting-note]");
+  if (deleteMeetingNoteBtn) { deleteMeetingNote(deleteMeetingNoteBtn.getAttribute("data-delete-meeting-note"), deleteMeetingNoteBtn.getAttribute("data-project")); return; }
+  const approveMeetingNoteBtn = e.target.closest("[data-approve-meeting-note]");
+  if (approveMeetingNoteBtn) { approveMeetingNote(approveMeetingNoteBtn.getAttribute("data-approve-meeting-note"), approveMeetingNoteBtn.getAttribute("data-project")); return; }
+  const addNotePointBtn = e.target.closest("[data-add-note-point]");
+  if (addNotePointBtn) { openNotePointForm(addNotePointBtn.getAttribute("data-add-note-point"), addNotePointBtn.getAttribute("data-project")); return; }
+  const deleteNotePointBtn = e.target.closest("[data-delete-note-point]");
+  if (deleteNotePointBtn) { deleteNotePoint(deleteNotePointBtn.getAttribute("data-delete-note-point"), deleteNotePointBtn.getAttribute("data-project")); return; }
+  const convertNotePointBtn = e.target.closest("[data-convert-note-point]");
+  if (convertNotePointBtn) { openConvertNotePointForm(convertNotePointBtn.getAttribute("data-convert-note-point"), convertNotePointBtn.getAttribute("data-project")); return; }
+
   const addParcel = e.target.closest("[data-add-parcel]");
   if (addParcel) { openParcelForm(addParcel.getAttribute("data-add-parcel")); return; }
   const editParcel = e.target.closest("[data-edit-parcel]");
@@ -4716,6 +5086,17 @@ document.addEventListener("click", (e) => {
   if (toggleLabelBtn) { toggleLabelActive(toggleLabelBtn.getAttribute("data-toggle-label-active")); return; }
   const moveLabelBtn = e.target.closest("[data-move-label]");
   if (moveLabelBtn) { moveLabel(moveLabelBtn.getAttribute("data-move-label"), moveLabelBtn.getAttribute("data-dir")); return; }
+
+  const addChecklistTemplateBtn = e.target.closest("[data-add-checklist-template]");
+  if (addChecklistTemplateBtn) { openChecklistTemplateForm(); return; }
+  const editChecklistTemplateBtn = e.target.closest("[data-edit-checklist-template]");
+  if (editChecklistTemplateBtn) { openChecklistTemplateForm(editChecklistTemplateBtn.getAttribute("data-edit-checklist-template")); return; }
+  const deleteChecklistTemplateBtn = e.target.closest("[data-delete-checklist-template]");
+  if (deleteChecklistTemplateBtn) { deleteChecklistTemplate(deleteChecklistTemplateBtn.getAttribute("data-delete-checklist-template")); return; }
+  const toggleChecklistTemplateBtn = e.target.closest("[data-toggle-checklist-template-active]");
+  if (toggleChecklistTemplateBtn) { toggleChecklistTemplateActive(toggleChecklistTemplateBtn.getAttribute("data-toggle-checklist-template-active")); return; }
+  const moveChecklistTemplateBtn = e.target.closest("[data-move-checklist-template]");
+  if (moveChecklistTemplateBtn) { moveChecklistTemplate(moveChecklistTemplateBtn.getAttribute("data-move-checklist-template"), moveChecklistTemplateBtn.getAttribute("data-dir")); return; }
 
   // B1 - zwin/rozwin zadania etapu na Gancie. Sprawdzane PRZED data-task-id ponizej, bo przycisk
   // zyje wewnatrz wiersza etapu (data-task-id na tym samym div) - bez tego klik w strzalke
