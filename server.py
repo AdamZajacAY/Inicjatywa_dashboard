@@ -53,6 +53,8 @@ from baza_danych.schema_migrate import (
     ensure_project_reviewer_column, ensure_checklist_konserwator_item,
     ensure_checklist_stage_column,
     ensure_meeting_note_attendee_columns,
+    ensure_tagi_biblioteka_table, ensure_seed_tagi_biblioteka,
+    ensure_harmonogram_archive_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -143,6 +145,9 @@ ensure_project_reviewer_column(DB_PATH)  # jw. - Projektant_sprawdzajacy na proj
 ensure_checklist_konserwator_item(DB_PATH)  # jw. - brakujaca pozycja checklisty (konserwator zabytkow) + backfill na istniejace projekty
 ensure_checklist_stage_column(DB_PATH)  # jw. - ID_Etapu na checklisty_projektow, odrebna checklista per sub-projekt (weekly 23.07.2026)
 ensure_meeting_note_attendee_columns(DB_PATH)  # jw. - Data_spotkania/Uczestnicy na notatki_spotkan
+ensure_tagi_biblioteka_table(DB_PATH)  # jw. - nowa tabela biblioteki tagow
+ensure_seed_tagi_biblioteka(DB_PATH)  # jw. - musi biec PO powyzszej, zasiewa istniejacymi tagami z projekty/zadania_tickety
+ensure_harmonogram_archive_column(DB_PATH)  # jw. - Archiwalny na harmonogram, ukrywa stary etap z checkboxa/chipow, zostawia w Gantcie
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -236,6 +241,7 @@ TABLES = {
     "etykiety_konfiguracji": ("ID_Etykiety", "ETY", 3),
     "checklista_szablony": ("ID_Szablonu", "SZB", 3),
     "notatki_spotkan": ("ID_Notatki", "NOT", 3),
+    "tagi_biblioteka": ("ID_Tagu", "TAG", 3),
 }
 
 # tabela SQL -> klucz w odpowiedzi /api/bootstrap (nazwy pol STATE.* w dashboard/app.js)
@@ -253,7 +259,7 @@ BOOTSTRAP_KEYS = {
     "ideapool": "ideapool", "klienci": "clients", "kontakty_klienta": "clientContacts",
     "checklisty_projektow": "checklists", "zadania_etapy": "taskStages", "dzialki": "parcels",
     "etykiety_konfiguracji": "labelConfig", "checklista_szablony": "checklistTemplates",
-    "notatki_spotkan": "meetingNotes",
+    "notatki_spotkan": "meetingNotes", "tagi_biblioteka": "tagLibrary",
     # notatka_punkty (Faza 4, D1) CELOWO bez wpisu tutaj/w TABLES powyzej - dostepny tylko przez
     # zagniezdzone, bespoke routes (/api/notatki_spotkan/<id>/punkty, mirror komentarze_tickety),
     # bo scoping idzie przez ID_Notatki -> notatki_spotkan.ID_Projektu, nie przez wlasna kolumne
@@ -439,6 +445,7 @@ TABLE_SCOPE = {
     # (potrzebne do wyswietlenia/instancjonowania checklisty na karcie projektu), zapis
     # zarezerwowany dla COO/Admin w can_write().
     "checklista_szablony": "global",
+    "tagi_biblioteka": "global",
     # Faza 4 (D1) - project_scoped jak checklisty_projektow/kamienie_milowe: Specjalista nie
     # zapisuje (jak przy tamtych tabelach), Architekt_PM tylko dla wlasnych projektow, COO/Admin
     # bez ograniczen.
@@ -529,12 +536,13 @@ def can_write(conn, user, action, table, row):
             # czlonkow zarzadu". Odczyt (GET) zostaje portfolio-wide bez zmian (scope "global"),
             # to zawezenie dotyczy wylacznie zapisu.
             return False
-        if table in ("etykiety_konfiguracji", "checklista_szablony"):
-            # Zarzadzanie slownikiem etykiet (Faza 2, A13)/szablonem checklisty (Faza 4, C1) -
-            # zmiana wplywa na WSZYSTKIE projekty/uzytkownikow, wiec zarezerwowane dla COO/Admin
-            # (juz obsluzeni wyzej). Jawny warunek zamiast polegania na domyslnym "return False"
-            # na koncu funkcji - obie tabele nie maja ID_Projektu, wiec generyczny fallback nizej
-            # i tak zwrociłby False, ale jawnosc tutaj czyni to celowa decyzja, nie przypadkiem.
+        if table in ("etykiety_konfiguracji", "checklista_szablony", "tagi_biblioteka"):
+            # Zarzadzanie slownikiem etykiet (Faza 2, A13)/szablonem checklisty (Faza 4, C1)/
+            # biblioteka tagow - zmiana wplywa na WSZYSTKIE projekty/uzytkownikow, wiec
+            # zarezerwowane dla COO/Admin (juz obsluzeni wyzej). Jawny warunek zamiast polegania
+            # na domyslnym "return False" na koncu funkcji - te tabele nie maja ID_Projektu, wiec
+            # generyczny fallback nizej i tak zwrociłby False, ale jawnosc tutaj czyni to celowa
+            # decyzja, nie przypadkiem.
             return False
         if table == "zespol":
             # Architekt prowadzacy moze dodac NOWA osobe do zespolu (np. onboarding czlonka
@@ -911,6 +919,7 @@ TABLE_CREATE_DEFAULTS = {
     ),
     "etykiety_konfiguracji": lambda data, user: data.setdefault("Aktywna", "Tak"),
     "checklista_szablony": lambda data, user: data.setdefault("Aktywna", "Tak"),
+    "tagi_biblioteka": lambda data, user: data.setdefault("Aktywna", "Tak"),
     "notatki_spotkan": lambda data, user: (
         data.setdefault("Status", "Nowa"),
         data.setdefault("Autor", user.get("Imie_i_nazwisko") or user.get("Email")),
@@ -1011,6 +1020,7 @@ ENUM_FIELDS = {
         # Faza 4, C4 - NULL/Nie traktowane jednakowo (bezpieczny domyslny brak flagi), ten sam
         # wzorzec co zadania_tickety.Typ_zadania w Fazie 3.
         "Termin_nieprzekraczalny": {"Tak", "Nie"},
+        "Archiwalny": {"Tak", "Nie"},
     },
     "zadania_tickety": {
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
@@ -1076,6 +1086,9 @@ ENUM_FIELDS = {
         "Aktywna": {"Tak", "Nie"},
     },
     "checklista_szablony": {
+        "Aktywna": {"Tak", "Nie"},
+    },
+    "tagi_biblioteka": {
         "Aktywna": {"Tak", "Nie"},
     },
     "notatki_spotkan": {

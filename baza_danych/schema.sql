@@ -137,7 +137,14 @@ CREATE TABLE IF NOT EXISTS harmonogram (
   -- Data_sprawdzenia: OSOBNY, wewnetrzny deadline PRZED Data_koniec_plan - sprawdzajacy ma
   -- zdazyc przejrzec i wskazac uwagi zanim minie wlasciwy, nieprzekraczalny termin oddania.
   Termin_nieprzekraczalny TEXT,
-  Data_sprawdzenia TEXT
+  Data_sprawdzenia TEXT,
+  -- Archiwalny (uwaga uzytkownika 23.07.2026, po konsolidacji TBS Pomorska: 36 szczegolowych
+  -- wierszy harmonogramu + 5 nowych skonsolidowanych ETAP I-V zamienialo "Powiazane etapy" w
+  -- formularzu ticketu w niesczytelna sciane 41 checkboxow) - "Tak" oznacza etap zachowany
+  -- WYLACZNIE jako historyczny wpis w harmonogramie/Gantcie, ale wyłaczony z checkboxa
+  -- "Powiazane etapy" na formularzu ticketu i z kolorowych chipow filtra na zakladce Zadania
+  -- (patrz stageCheckboxPairs/etap-chips w app.js) - NIE znika z Gantta/karty projektu.
+  Archiwalny TEXT
 );
 
 -- zadania_etapy: tabela laczaca zadania_tickety<->harmonogram (n:n) - zastepuje
@@ -262,6 +269,20 @@ CREATE TABLE IF NOT EXISTS checklista_szablony (
   Nazwa TEXT NOT NULL,
   Opis TEXT,
   Kolejnosc INTEGER,
+  Aktywna TEXT
+);
+
+-- Biblioteka tagow (na zyczenie uzytkownika: "lista powinna byc polaczona z baza tagow") -
+-- dotad filtr "Wszystkie tagi" na zakladce Zadania byl wyliczany ad-hoc z tego, co ktokolwiek
+-- akurat wpisal w projekty.Tagi/zadania_tickety.Tagi (wolny tekst CSV, bez zadnej kanonicznej
+-- listy) - ta tabela to zarzadzalny (COO/Admin, mirror checklista_szablony) rejestr tagow,
+-- z ktorego filtr teraz czerpie. Same pola Tagi na projekty/zadania_tickety ZOSTAJA wolnym
+-- tekstem CSV (nie FK) - biblioteka tylko PODSUWA/ograniczyla widoczne w filtrze wartosci,
+-- nie wymusza wyboru wylacznie z niej przy wpisywaniu (mirror ustalenia "swobodne -> potem
+-- mapowanie" z warsztatu 22.07.2026).
+CREATE TABLE IF NOT EXISTS tagi_biblioteka (
+  ID_Tagu TEXT PRIMARY KEY NOT NULL,
+  Nazwa TEXT NOT NULL UNIQUE,
   Aktywna TEXT
 );
 

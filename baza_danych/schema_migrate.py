@@ -750,6 +750,58 @@ def ensure_checklist_konserwator_item(db_path):
         conn.close()
 
 
+def ensure_harmonogram_archive_column(db_path):
+    """Dodaje Archiwalny do harmonogram w bazach powstalych przed jego wprowadzeniem - pozwala
+    zachowac stary etap jako historyczny wpis w Gantcie, ale ukryc go z checkboxa "Powiazane
+    etapy" na formularzu ticketu i z chipow filtra (patrz komentarz w schema.sql - uwaga
+    uzytkownika po konsolidacji TBS Pomorska, gdzie 41 etapow naraz robilo z tego checkboxa
+    nieczytelna sciane)."""
+    _ensure_columns(db_path, "harmonogram", {"Archiwalny": "TEXT"})
+
+
+def ensure_tagi_biblioteka_table(db_path):
+    """Dodaje tabele tagi_biblioteka (biblioteka tagow, na zyczenie uzytkownika: 'lista powinna
+    byc polaczona z baza tagow') do baz powstalych przed jej wprowadzeniem."""
+    _ensure_table(db_path, "tagi_biblioteka")
+
+
+def ensure_seed_tagi_biblioteka(db_path):
+    """Zasiewa biblioteke tagami JUZ uzywanymi w projekty.Tagi/zadania_tickety.Tagi (wolny tekst
+    CSV) - zeby przejscie filtra na biblioteke nie zgubilo nic z tego, co juz istnieje. Musi biec
+    PO ensure_tagi_biblioteka_table. Idempotentne - pomija tagi juz obecne w bibliotece (po
+    Nazwie), wiec kolejne uruchomienia nie tworza duplikatow ani nie nadpisuja recznych zmian
+    (np. dezaktywacji) zrobionych pozniej przez COO/Admin."""
+    conn = sqlite3.connect(db_path)
+    try:
+        existing = {r[0] for r in conn.execute("SELECT Nazwa FROM tagi_biblioteka").fetchall()}
+        used = set()
+        for table, col in (("projekty", "Tagi"), ("zadania_tickety", "Tagi")):
+            for (csv,) in conn.execute(
+                f"SELECT {col} FROM {table} WHERE {col} IS NOT NULL AND {col} != ''"
+            ).fetchall():
+                for tag in (csv or "").split(","):
+                    tag = tag.strip()
+                    if tag:
+                        used.add(tag)
+        new_tags = sorted(used - existing)
+        if not new_tags:
+            return
+        max_n = 0
+        for (tid,) in conn.execute("SELECT ID_Tagu FROM tagi_biblioteka").fetchall():
+            m = re.match(r"^TAG(\d+)$", tid or "")
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        for tag in new_tags:
+            max_n += 1
+            conn.execute(
+                "INSERT INTO tagi_biblioteka (ID_Tagu, Nazwa, Aktywna) VALUES (?, ?, 'Tak')",
+                (f"TAG{str(max_n).zfill(3)}", tag),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "baza_projektow.db")

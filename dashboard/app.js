@@ -30,7 +30,7 @@ const STATE = {
   projects: [], team: [], assignments: [], tasks: [], milestones: [], risks: [], statusReports: [],
   subcontractors: [], subcontractorAssignments: [], tickets: [], users: [], backups: [], ideapool: [],
   clients: [], clientContacts: [], checklists: [], notifications: [], taskStages: [], parcels: [],
-  labelConfig: [], checklistTemplates: [], meetingNotes: [], notePoints: [],
+  labelConfig: [], checklistTemplates: [], meetingNotes: [], notePoints: [], tagLibrary: [],
   projectById: new Map(), teamById: new Map(), subcontractorById: new Map(), clientById: new Map(),
   me: { role: null, personId: null, assignedProjectIds: [] },
 };
@@ -516,6 +516,7 @@ async function loadFromApi() {
   STATE.parcels = data.parcels || [];
   STATE.labelConfig = data.labelConfig || [];
   STATE.checklistTemplates = data.checklistTemplates || [];
+  STATE.tagLibrary = data.tagLibrary || [];
   STATE.meetingNotes = data.meetingNotes || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
@@ -895,6 +896,14 @@ function allProjectTags() {
 // mechanizm, ten sam fTagsInput() w UI, tylko STATE.tickets zamiast STATE.projects).
 function ticketTags(t) { return (t.Tagi || "").split(",").map(s => s.trim()).filter(Boolean); }
 function allTicketTags() { return Array.from(new Set(STATE.tickets.flatMap(ticketTags))).sort(); }
+// Biblioteka tagow (na zyczenie uzytkownika: "lista powinna byc polaczona z baza tagow") -
+// filtr "Wszystkie tagi" na zakladce Zadania czerpie stad, nie z allTicketTags() (ktore po
+// prostu wylicza, co ktokolwiek akurat wpisal) - Tagi na ticketach/projektach ZOSTAJA wolnym
+// tekstem CSV (fTagsInput dalej pozwala wpisac cokolwiek), biblioteka tylko ustala, co widac
+// w rozwijanym filtrze (mirror allLabelsForCategory - ten sam wzorzec "zarzadzalny slownik").
+function activeTagLibrary() {
+  return STATE.tagLibrary.filter(t => t.Aktywna !== "Nie").map(t => t.Nazwa).sort((a, b) => a.localeCompare(b, "pl"));
+}
 function projectRevenue(p) {
   return num(p.Przychod_rzeczywisty) > 0 ? num(p.Przychod_rzeczywisty) : num(p.Przychod_planowany);
 }
@@ -1663,11 +1672,11 @@ function renderTickets() {
     <div class="filters">
       <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
       <select id="fTkOsoba"><option value="">Wszystkie osoby</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ticketFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
-      <select id="fTkTag"><option value="">Wszystkie tagi</option>${allTicketTags().map(tag => `<option value="${esc(tag)}" ${ticketFilters.tag === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}</select>
+      <select id="fTkTag"><option value="">Wszystkie tagi</option>${activeTagLibrary().map(tag => `<option value="${esc(tag)}" ${ticketFilters.tag === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}</select>
       <select id="fTkTyp"><option value="">Urzędowe i wewnętrzne</option><option value="Urzedowe" ${ticketFilters.typ === "Urzedowe" ? "selected" : ""}>Tylko urzędowe</option><option value="Wewnetrzne" ${ticketFilters.typ === "Wewnetrzne" ? "selected" : ""}>Tylko wewnętrzne</option></select>
       ${ticketFilters.projekt ? `<div class="status-chips" style="width:100%">
         <button type="button" class="status-chip badge badge-muted ${!ticketFilters.etap ? "active" : ""}" data-tk-etap-filter="">Wszystkie etapy</button>
-        ${tasksForProject(ticketFilters.projekt).map(st => {
+        ${filteredStagesForLinking(ticketFilters.projekt).map(st => {
           const slot = labelColor("Typ_etapu", st.Typ_etapu) || TYPE_COLORS[st.Typ_etapu] || "cat-3";
           return `<button type="button" class="status-chip badge badge-${slot} ${ticketFilters.etap === st.ID_Zadania ? "active" : ""}" data-tk-etap-filter="${esc(st.ID_Zadania)}"><span class="dot" style="background:currentColor"></span>${esc(st.Nazwa_zadania)}</button>`;
         }).join("")}
@@ -2129,9 +2138,10 @@ function ganttProjectTaskTableHtml(tasks, opts = {}) {
         <tbody>
           ${sorted.map(t => {
             const stats = stageTicketStats(t.ID_Zadania);
+            const archived = t.Archiwalny === "Tak";
             return `
-            <tr class="clickable" data-task-id="${esc(t.ID_Zadania)}">
-              <td>${esc(t.Nazwa_zadania)}</td>
+            <tr class="clickable" data-task-id="${esc(t.ID_Zadania)}" ${archived ? `style="opacity:0.55"` : ""}>
+              <td>${esc(t.Nazwa_zadania)} ${archived ? badge("Archiwalny", "muted") : ""}</td>
               <td>${esc(t.Kategoria || "—")}</td>
               <td>${fmtDate(t.Data_start_plan)}</td>
               <td>${fmtDate(t.Data_koniec_plan)}</td>
@@ -2415,6 +2425,71 @@ async function moveChecklistTemplate(id, dir) {
   }
 }
 
+// Biblioteka tagow (na zyczenie uzytkownika: "lista powinna byc polaczona z baza tagow") -
+// mirror renderChecklistTemplateAdminSection powyzej, tylko bez Kolejnosc/reorder (tagi
+// sortuja sie alfabetycznie, patrz activeTagLibrary() - nie ma "kolejnosci" do ktorej
+// trzymac sie w UI, w odroznieniu od checklisty).
+function renderTagLibraryAdminSection() {
+  const items = STATE.tagLibrary.slice().sort((a, b) => a.Nazwa.localeCompare(b.Nazwa, "pl"));
+  return `
+    <div class="section-head"><h2>Biblioteka tagów</h2>
+      <button class="icon-btn" data-add-tag-library="1">+ Dodaj tag</button></div>
+    <div class="panel">
+      ${items.map(t => `
+        <div class="dp-list-item" style="opacity:${t.Aktywna === "Nie" ? "0.5" : "1"}">
+          <div class="item-actions">
+            <button class="icon-btn" data-edit-tag-library="${esc(t.ID_Tagu)}">Edytuj</button>
+            <button class="icon-btn" data-toggle-tag-library-active="${esc(t.ID_Tagu)}">${t.Aktywna === "Nie" ? "Aktywuj" : "Dezaktywuj"}</button>
+            <button class="icon-btn danger" data-delete-tag-library="${esc(t.ID_Tagu)}">Usuń</button>
+          </div>
+          <div class="title">${esc(t.Nazwa)}</div>
+        </div>`).join("") || `<div class="empty-hint">Brak tagów w bibliotece.</div>`}
+    </div>
+  `;
+}
+function openTagLibraryForm(id = null) {
+  const t = id ? STATE.tagLibrary.find(x => x.ID_Tagu === id) : {};
+  if (id && !requireExisting(t, "tagu")) return;
+  const body = `${fInput("Nazwa *", "Nazwa", t.Nazwa, "text", "required")}`;
+  openModal(id ? "Edytuj tag" : "Nowy tag", body, {
+    submitLabel: "Zapisz",
+    onSubmit: (data) => saveTagLibraryFromForm(data, id),
+  });
+}
+async function saveTagLibraryFromForm(data, id) {
+  if (!data.Nazwa) { alert("Podaj nazwę tagu."); return; }
+  const isNew = !id;
+  const existing = isNew ? {} : STATE.tagLibrary.find(x => x.ID_Tagu === id);
+  if (!isNew && !requireExisting(existing, "tagu")) return;
+  const fields = isNew ? { Nazwa: data.Nazwa, Aktywna: "Tak" } : { Nazwa: data.Nazwa };
+  const saved = await persistEntity({ isNew, endpoint: "/api/tagi_biblioteka", id, fields, errorLabel: "tagu" });
+  if (!saved) return;
+  if (isNew) STATE.tagLibrary.push(saved); else Object.assign(existing, saved);
+  closeModal();
+  renderAll();
+}
+async function deleteTagLibrary(id) {
+  if (!confirm("Usunąć ten tag z biblioteki? Zadania/projekty, które już go używają, zachowają go jako zwykły tekst, ale nie będzie już podpowiadany/dostępny w filtrze.")) return;
+  if (!await deleteEntity(`/api/tagi_biblioteka/${id}`, "tagu")) return;
+  STATE.tagLibrary = STATE.tagLibrary.filter(t => t.ID_Tagu !== id);
+  renderAll();
+}
+async function toggleTagLibraryActive(id) {
+  const t = STATE.tagLibrary.find(x => x.ID_Tagu === id);
+  if (!t) return;
+  const prev = t.Aktywna;
+  t.Aktywna = prev === "Nie" ? "Tak" : "Nie";
+  renderAll();
+  try {
+    const saved = await apiPut(`/api/tagi_biblioteka/${id}`, { Aktywna: t.Aktywna });
+    Object.assign(t, saved);
+  } catch (err) {
+    t.Aktywna = prev;
+    alert("Nie udało się zaktualizować tagu: " + err.message);
+  }
+  renderAll();
+}
+
 function renderUsers() {
   $("#view-uzytkownicy").innerHTML = `
     <div class="section-head"><h2>Użytkownicy</h2><button data-add-user="1">+ Dodaj użytkownika</button></div>
@@ -2445,6 +2520,8 @@ function renderUsers() {
     ${renderLabelAdminSection()}
 
     ${renderChecklistTemplateAdminSection()}
+
+    ${renderTagLibraryAdminSection()}
 
     <div class="section-head"><h2>Backup bazy danych</h2><button data-backup-now="1">Backup teraz</button></div>
     <div class="panel" style="overflow-x:auto">
@@ -3225,6 +3302,7 @@ function openTaskForm(pid, tid = null) {
     ${fSelect("RAG status", "RAG_Status", [["", "— brak —"], ["Zielony", "Zielony"], ["Zolty", "Żółty"], ["Czerwony", "Czerwony"]], t.RAG_Status)}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), t.Priorytet || "Sredni")}
     ${fSelect("Kamień milowy", "Kamien_milowy", [["Nie", "Nie"], ["Tak", "Tak"]], t.Kamien_milowy || "Nie")}
+    ${fSelect("Archiwalny (ukryty z wyboru etapu przy ticketach, widoczny w Gantcie)", "Archiwalny", [["Nie", "Nie"], ["Tak", "Tak"]], t.Archiwalny || "Nie")}
     ${fTextarea("Uwagi", "Uwagi", t.Uwagi)}
     ${tid ? stageWorkloadSectionHtml(tid, currentPid) : ""}
     ${tid ? stageChecklistSectionHtml(tid, currentPid) : ""}
@@ -3349,7 +3427,7 @@ async function saveTaskFromForm(data, pid, tid) {
     Procent_ukonczenia: num(data.Procent_ukonczenia_pct) / 100,
     ID_Zadania_poprzedzajacego: existing.ID_Zadania_poprzedzajacego || null,
     Kamien_milowy: data.Kamien_milowy, Status: data.Status, RAG_Status: data.RAG_Status || null,
-    Priorytet: data.Priorytet, Uwagi: data.Uwagi,
+    Priorytet: data.Priorytet, Uwagi: data.Uwagi, Archiwalny: data.Archiwalny || "Nie",
   };
   const saved = await persistEntity({ isNew, endpoint: "/api/harmonogram", id: tid, fields, dateFields: DATE_FIELDS.tasks, errorLabel: "etap" });
   if (!saved) return;
@@ -3374,8 +3452,15 @@ async function deleteTask(tid, pid) {
 /* ---------- Formularz: Zadanie (ticket) przypisane do osoby ---------- */
 // Faza 1 (B5): jeden ticket moze byc przypiety do kilku etapow naraz (zadania_etapy, n:n) -
 // zastepuje dawny pojedynczy <select> ID_Etapu (mirror fCheckboxGroup, patrz openTicketForm).
+// Archiwalny (uwaga uzytkownika 23.07.2026, po konsolidacji TBS Pomorska) - etap zachowany w
+// Gantcie jako historia, ale wylaczony z checkboxa "Powiazane etapy" na formularzu ticketu i z
+// chipow filtra na Zadaniach (patrz filteredStagesForLinking ponizej) - inaczej projekt z wieloma
+// starymi, zastapionymi etapami zamienia ten checkbox w nieczytelna sciane.
+function filteredStagesForLinking(pid) {
+  return tasksForProject(pid).filter(t => t.Archiwalny !== "Tak");
+}
 function stageCheckboxPairs(pid) {
-  return tasksForProject(pid).map(t => [t.ID_Zadania, t.Nazwa_zadania]);
+  return filteredStagesForLinking(pid).map(t => [t.ID_Zadania, t.Nazwa_zadania]);
 }
 
 function renderCommentText(tresc) {
@@ -5451,6 +5536,14 @@ document.addEventListener("click", (e) => {
   if (toggleChecklistTemplateBtn) { toggleChecklistTemplateActive(toggleChecklistTemplateBtn.getAttribute("data-toggle-checklist-template-active")); return; }
   const moveChecklistTemplateBtn = e.target.closest("[data-move-checklist-template]");
   if (moveChecklistTemplateBtn) { moveChecklistTemplate(moveChecklistTemplateBtn.getAttribute("data-move-checklist-template"), moveChecklistTemplateBtn.getAttribute("data-dir")); return; }
+  const addTagLibraryBtn = e.target.closest("[data-add-tag-library]");
+  if (addTagLibraryBtn) { openTagLibraryForm(); return; }
+  const editTagLibraryBtn = e.target.closest("[data-edit-tag-library]");
+  if (editTagLibraryBtn) { openTagLibraryForm(editTagLibraryBtn.getAttribute("data-edit-tag-library")); return; }
+  const deleteTagLibraryBtn = e.target.closest("[data-delete-tag-library]");
+  if (deleteTagLibraryBtn) { deleteTagLibrary(deleteTagLibraryBtn.getAttribute("data-delete-tag-library")); return; }
+  const toggleTagLibraryBtn = e.target.closest("[data-toggle-tag-library-active]");
+  if (toggleTagLibraryBtn) { toggleTagLibraryActive(toggleTagLibraryBtn.getAttribute("data-toggle-tag-library-active")); return; }
 
   // B1 - zwin/rozwin zadania etapu na Gancie. Sprawdzane PRZED data-task-id ponizej, bo przycisk
   // zyje wewnatrz wiersza etapu (data-task-id na tym samym div) - bez tego klik w strzalke
