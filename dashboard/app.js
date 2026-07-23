@@ -57,13 +57,13 @@ const SPECJALISTA_ROLES = ["Specjalista", "Pracownik_biurowy"];
 // Architekt_PM ma rowniez pola finansowe zredagowane na odczycie - mirror
 // FINANCIAL_RESTRICTED_ROLES w server.py (SPECJALISTA_ROLES | {"Architekt_PM"}).
 const FINANCIAL_RESTRICTED_ROLES = [...SPECJALISTA_ROLES, "Architekt_PM"];
-// Faza 2 (A15): Architekt_PM dolaczony tutaj rowniez - odwraca wczesniejsza decyzje
-// "portfolio-wide odczyt dla Architekt_PM", na wprost zyczenie zespolu (opoznienia/ryzyka
-// innych projektow tez maja byc niewidoczne, nie tylko finanse). Mirror PORTFOLIO_RESTRICTED_
-// ROLES w server.py - uzywane tu WYLACZNIE do etykiet/podpowiedzi UI ("Twoje projekty" itp.),
-// bo faktyczne ograniczenie WIERSZY dzieje sie serwerowo (scoped_rows()) - STATE.projects/tasks
-// itd. juz przychodzi zawezone z /api/bootstrap, bez potrzeby dodatkowego filtrowania w JS.
-const PORTFOLIO_RESTRICTED_ROLES = [...SPECJALISTA_ROLES, "Architekt_PM"];
+// Faza 2 (A15) dolaczyla tu Architekt_PM, ale weekly 23.07.2026 to odwrocilo - architekci
+// prowadzacy maja znow widziec caly portfel (tylko finanse zostaja ukryte, patrz
+// FINANCIAL_RESTRICTED_ROLES powyzej, NIEZMIENIONE). Mirror PORTFOLIO_RESTRICTED_ROLES w
+// server.py - uzywane tu WYLACZNIE do etykiet/podpowiedzi UI ("Twoje projekty" itp.), bo
+// faktyczne ograniczenie WIERSZY dzieje sie serwerowo (scoped_rows()) - STATE.projects/tasks
+// itd. juz przychodzi zawezone (albo nie) z /api/bootstrap, bez potrzeby filtrowania w JS.
+const PORTFOLIO_RESTRICTED_ROLES = [...SPECJALISTA_ROLES];
 
 function can(action, table, row) {
   const role = STATE.me.role;
@@ -140,9 +140,10 @@ const FAZY = ["Analiza", "Projekt studialny", "Konkurs jednoetapowy", "Konkurs -
   "Przetarg", "Projekt wykonawczy", "Budowa", "Nadzor autorski", "Zakonczenie"];
 const PRIORYTETY = ["Wysoki", "Sredni", "Niski"];
 const DZIALY = ["Architekci", "Specjalisci", "Kierownictwo projektow", "PMO", "Prawny", "Finansowy", "Marketing/Sprzedaz", "Zarzad"];
-// Faza 5 (A17, "kalka jezykowa") - "Owner" -> "Wlasciciel", ta sama polska nazwa co juz uzyta
-// dla ID_Osoby_wlasciciela w ryzykach (kolumna "Właściciel") - usuwa niespojnosc jezykowa,
-// nie wprowadza nowego terminu. Migracja (schema_migrate.py) tlumaczy istniejace wiersze.
+// Rola_w_projekcie (przypisania) - opisuje zaangazowanie osoby w ZESPOLE projektu, osobny
+// wymiar od pol na samym projekcie (Owner="architekt prowadzacy"/Kierownik_projektu=
+// "projektant glowny"/Projektant_sprawdzajacy, patrz openProjectForm). "Wlasciciel" (Faza 5,
+// A17) - migracja (schema_migrate.py) tlumaczy istniejace wiersze z dawnego "Owner".
 const ROLE_W_PROJEKCIE = ["Sponsor", "Wlasciciel", "Kierownik projektu", "Czlonek zespolu", "Wsparcie/Konsultant"];
 // Wstrzymany/Przeglad dopisane w Faza 1 - Status przenosi sie z projekty na sub-projekt (A9),
 // wiec sub-projekt musi umiec reprezentowac te same stany co dawny projekty.Status (STATUSES).
@@ -677,7 +678,7 @@ function showPendingScreen(me) {
 
 /* ---------------------------------------------------------------- eksport do Excela (recznie, migawka) */
 const EXPORT_HEADERS = {
-  Projekty: ["ID_Projektu", "Nazwa", "Sygnatura", "Symbol_projektu", "Nazwa_zamierzenia_budowlanego", "Typ_projektu", "Funkcja_biura", "Segment", "Owner", "Kierownik_projektu", "ID_Osoby_sponsora", "Status", "Faza",
+  Projekty: ["ID_Projektu", "Nazwa", "Sygnatura", "Symbol_projektu", "Nazwa_zamierzenia_budowlanego", "Typ_projektu", "Funkcja_biura", "Segment", "Owner", "Kierownik_projektu", "Projektant_sprawdzajacy", "ID_Osoby_sponsora", "Status", "Faza",
     "Priorytet", "RAG_Status", "Tagi", "Data_rozpoczecia", "Data_zakonczenia_planowana", "Data_zakonczenia_rzeczywista",
     "Procent_postepu", "Budzet_calkowity", "Budzet_wydany", "Waluta", "Przychod_planowany", "Przychod_rzeczywisty",
     "Szacowane_roboczogodziny", "Stawka_godzinowa_srednia", "Lokalizacja_Adres", "Miasto", "Powierzchnia_m2",
@@ -1154,7 +1155,7 @@ function renderProjectsFilters() {
       <input type="text" id="fProjQ" placeholder="Szukaj po nazwie…" value="${esc(projectFilters.q)}">
       <select id="fProjTyp"><option value="">Wszystkie typy</option>${TYPE_ORDER.map(t => `<option ${projectFilters.typ === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
       <select id="fProjStatus"><option value="">Wszystkie statusy</option>${statuses.map(s => `<option ${projectFilters.status === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
-      <select id="fProjOwner"><option value="">Wszyscy właściciele</option>${owners.map(o => `<option ${projectFilters.owner === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
+      <select id="fProjOwner"><option value="">Wszyscy architekci prowadzący</option>${owners.map(o => `<option ${projectFilters.owner === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
       <select id="fProjRag"><option value="">Wszystkie RAG</option>
         <option value="Zielony" ${projectFilters.rag === "Zielony" ? "selected" : ""}>Zielony</option>
         <option value="Zolty" ${projectFilters.rag === "Zolty" ? "selected" : ""}>Żółty</option>
@@ -1219,8 +1220,9 @@ function projectCardHtml(p) {
         </div>
         ${badge(ragLabel(p.RAG_Status), ragClass(p.RAG_Status))}
       </div>
-      <div class="pc-row"><span>Właściciel</span><b>${ownerTagHtml(p.Owner)}</b></div>
-      <div class="pc-row"><span>Kierownik projektu</span><b>${esc(p.Kierownik_projektu)}</b></div>
+      <div class="pc-row"><span>Architekt prowadzący</span><b>${ownerTagHtml(p.Owner)}</b></div>
+      <div class="pc-row"><span>Projektant główny</span><b>${esc(p.Kierownik_projektu)}</b></div>
+      ${p.Projektant_sprawdzajacy ? `<div class="pc-row"><span>Projektant sprawdzający</span><b>${esc(p.Projektant_sprawdzajacy)}</b></div>` : ""}
       ${p.ID_Osoby_sponsora ? `<div class="pc-row"><span>Sponsor</span><b>${esc(personName(p.ID_Osoby_sponsora))}</b></div>` : ""}
       <div class="pc-row"><span>Status</span><b>${esc(p.Status)}</b></div>
       <div class="pc-row"><span>Termin (plan)</span><b>${fmtDate(p.Data_zakonczenia_planowana)}</b></div>
@@ -1235,7 +1237,7 @@ function projectCardHtml(p) {
 function renderProjectsTable(list) {
   const groups = new Map();
   list.forEach(p => {
-    const key = p.Kierownik_projektu || "— bez kierownika projektu —";
+    const key = p.Kierownik_projektu || "— bez projektanta głównego —";
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(p);
   });
@@ -1248,7 +1250,7 @@ function renderProjectsTable(list) {
         <div class="panel" style="overflow-x:auto">
           <table class="data-table">
             <thead><tr>
-              <th>Nazwa</th><th>Właściciel</th><th>Typ</th><th>Status</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
+              <th>Nazwa</th><th>Architekt prowadzący</th><th>Typ</th><th>Status</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
             </tr></thead>
             <tbody>
               ${rows.map(p => `
@@ -1316,7 +1318,7 @@ function projectKanbanCardHtml(p) {
     <div class="kanban-card" data-open-project="${esc(p.ID_Projektu)}">
       <div class="kc-title">${esc(p.Nazwa)}</div>
       <div class="kc-meta">${typeTag(projectPrimaryType(p))} · ${esc(p.Kierownik_projektu || "—")}</div>
-      <div class="kc-meta">Owner: ${ownerTagHtml(p.Owner)}</div>
+      <div class="kc-meta">Architekt prowadzący: ${ownerTagHtml(p.Owner)}</div>
       <div class="kc-meta">Termin: ${fmtDate(p.Data_zakonczenia_planowana)} · ${fmtPctFraction(p.Procent_postepu)}</div>
       ${p.Data_go_live instanceof Date ? `<div class="kc-meta">Go Live: ${fmtDate(p.Data_go_live)}</div>` : ""}
       <div class="kc-foot">
@@ -1931,7 +1933,7 @@ function buildGantt(tasks, opts = {}) {
       const goLiveLabel = t._goLive instanceof Date ? `${MIESIACE_PL[t._goLive.getMonth()]} ${t._goLive.getFullYear()}` : "—";
       const title = [
         t.Nazwa_zadania,
-        `Owner: ${t._owner || "—"}`,
+        `Architekt prowadzący: ${t._owner || "—"}`,
         `Go Live: ${goLiveLabel}`,
         `Tickety: ${t._ticketCount}`,
         `Realizacja: ${Math.round(pct)}%`,
@@ -2695,14 +2697,15 @@ function openProjectForm(pid = null) {
     </div>` : "";
   const body = `
     <div class="form-section-title">Dane podstawowe</div>
-    ${fInput("Nazwa projektu *", "Nazwa", p.Nazwa, "text", "required")}
+    ${fInput("Nazwa projektu * (uzupełnia się z sygnatury+symbolu, dopisz krótki opis)", "Nazwa", p.Nazwa, "text", "required")}
     ${fInput("Sygnatura (numer)", "Sygnatura", p.Sygnatura)}
     ${fInput("Symbol projektu", "Symbol_projektu", p.Symbol_projektu)}
     ${fTextarea("Nazwa zamierzenia budowlanego (oficjalny tytuł z PFU)", "Nazwa_zamierzenia_budowlanego", p.Nazwa_zamierzenia_budowlanego)}
     ${fSelect("Funkcja biura", "Funkcja_biura", labelPairsFor("Funkcja_biura"), p.Funkcja_biura)}
     ${fSelect("Segment", "Segment", labelPairsFor("Segment"), p.Segment)}
-    ${fSelect("Właściciel *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
-    ${fSelect("Kierownik projektu", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu || architektDefaultOwner)}
+    ${fSelect("Architekt prowadzący *", "Owner", teamNamePairs(), p.Owner || architektDefaultOwner)}
+    ${fSelect("Projektant główny", "Kierownik_projektu", teamNamePairs(), p.Kierownik_projektu || architektDefaultOwner)}
+    ${fSelect("Projektant sprawdzający", "Projektant_sprawdzajacy", teamNamePairs(), p.Projektant_sprawdzajacy)}
     ${fSelect("Sponsor (zarząd)", "ID_Osoby_sponsora", boardMemberOptionsPairs(), p.ID_Osoby_sponsora)}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), p.Priorytet || "Sredni")}
     ${fTagsInput("Tagi", "Tagi", p.Tagi, allProjectTags())}
@@ -2767,11 +2770,36 @@ function openProjectForm(pid = null) {
     const parsed = parseDateInput(terminField.value);
     if (parsed) goLiveField.value = dateDisplayVal(parsed);
   });
+  // Auto-uzupelnienie Nazwy z Sygnatury+Symbolu (weekly 23.07.2026 - "nie chce pisac dwa razy
+  // tego samego": sygnatura+symbol wpisywane osobno, a potem znowu recznie w nazwie). TYLKO przy
+  // tworzeniu NOWEGO projektu (!pid) - dla istniejacego Nazwa jest juz swiadomie ustawiona,
+  // przypadkowa edycja Sygnatury/Symbolu przy edycji projektu nie powinna jej nadpisywac.
+  // Naturalny Tab Sygnatura->Symbol odpala focusout Sygnatury, ZANIM uzytkownik zdazy wpisac
+  // Symbol - samo "nadpisuj tylko gdy Nazwa jest pusta" zablokowaloby sie WLASNA, niekompletna
+  // sugestia z tego pierwszego zdarzenia ("116" zamiast "116_JKL"), bo pole przestaje byc puste.
+  // lastAutoNazwa sledzi CO MY OSTATNIO tam wpisalismy - nadpisuje dalej dopoki uzytkownik NIE
+  // zmieni tego recznie (wtedy current !== lastAutoNazwa i przestajemy ingerowac).
+  if (!pid) {
+    const nazwaField = $('#modalForm [name="Nazwa"]');
+    const sygnaturaField = $('#modalForm [name="Sygnatura"]');
+    const symbolField = $('#modalForm [name="Symbol_projektu"]');
+    let lastAutoNazwa = "";
+    const suggestNazwa = () => {
+      if (!nazwaField) return;
+      const current = nazwaField.value.trim();
+      if (current && current !== lastAutoNazwa) return;
+      const parts = [sygnaturaField?.value.trim(), symbolField?.value.trim()].filter(Boolean);
+      lastAutoNazwa = parts.join("_");
+      nazwaField.value = lastAutoNazwa;
+    };
+    sygnaturaField?.addEventListener("focusout", suggestNazwa);
+    symbolField?.addEventListener("focusout", suggestNazwa);
+  }
 }
 
 async function saveProjectFromForm(data, pid) {
   if (!data.Nazwa || !data.Owner || !data.Data_zakonczenia_planowana) {
-    alert("Uzupełnij wymagane pola: nazwa, właściciel, zakończenie (plan).");
+    alert("Uzupełnij wymagane pola: nazwa, architekt prowadzący, zakończenie (plan).");
     return;
   }
   const isNew = !pid;
@@ -2781,7 +2809,8 @@ async function saveProjectFromForm(data, pid) {
     Nazwa: data.Nazwa, Funkcja_biura: data.Funkcja_biura, Segment: data.Segment,
     Sygnatura: data.Sygnatura, Symbol_projektu: data.Symbol_projektu,
     Nazwa_zamierzenia_budowlanego: data.Nazwa_zamierzenia_budowlanego,
-    Owner: data.Owner, Kierownik_projektu: data.Kierownik_projektu, ID_Osoby_sponsora: data.ID_Osoby_sponsora,
+    Owner: data.Owner, Kierownik_projektu: data.Kierownik_projektu,
+    Projektant_sprawdzajacy: data.Projektant_sprawdzajacy || null, ID_Osoby_sponsora: data.ID_Osoby_sponsora,
     Priorytet: data.Priorytet,
     Tagi: data.Tagi,
     // Typ_projektu/Status/Faza/RAG_Status celowo pominiete (Faza 1, A9/A10) - Status/RAG sa
@@ -2835,7 +2864,7 @@ async function saveProjectFromForm(data, pid) {
 async function releaseProject(pid) {
   const p = STATE.projectById.get(pid);
   if (!requireExisting(p, "projekt")) return;
-  if (!confirm(`Zwolnić projekt "${p.Nazwa}"? Usunie to Ciebie jako Ownera/Kierownika projektu i Twoje przypisanie do zespołu - projekt wróci do stanu nieprzypisanego, gotowy dla kogoś innego.`)) return;
+  if (!confirm(`Zwolnić projekt "${p.Nazwa}"? Usunie to Ciebie jako architekta prowadzącego/projektanta głównego i Twoje przypisanie do zespołu - projekt wróci do stanu nieprzypisanego, gotowy dla kogoś innego.`)) return;
   let saved;
   try {
     saved = await apiPost(`/api/projekty/${pid}/zwolnij`, {});
@@ -2855,8 +2884,8 @@ function openAssignProjectForm(pid) {
   const p = STATE.projectById.get(pid);
   if (!requireExisting(p, "projekt")) return;
   const body = `
-    <div class="empty-hint full" style="grid-column:1/-1">Ustawi wskazaną osobę jako Ownera i Kierownika projektu oraz utworzy jej przypisanie (jeśli jeszcze go nie ma). Istniejące przypisanie poprzedniego prowadzącego NIE zostanie usunięte - zrób to osobno w sekcji „Zespół projektu”, jeśli potrzebne.</div>
-    ${fSelect("Nowy Owner / Kierownik projektu *", "ID_Osoby", teamOptionsPairs(), "")}
+    <div class="empty-hint full" style="grid-column:1/-1">Ustawi wskazaną osobę jako architekta prowadzącego i projektanta głównego oraz utworzy jej przypisanie (jeśli jeszcze go nie ma). Istniejące przypisanie poprzedniego prowadzącego NIE zostanie usunięte - zrób to osobno w sekcji „Zespół projektu”, jeśli potrzebne.</div>
+    ${fSelect("Nowy architekt prowadzący / projektant główny *", "ID_Osoby", teamOptionsPairs(), "")}
   `;
   openModal(`Przypisz projekt „${p.Nazwa}”`, body, {
     submitLabel: "Przypisz",
@@ -2868,7 +2897,7 @@ async function saveAssignProjectFromForm(data, pid) {
   if (!data.ID_Osoby) { alert("Wybierz osobę."); return; }
   const p = STATE.projectById.get(pid);
   const personName = STATE.teamById.get(data.ID_Osoby)?.Imie_i_nazwisko || data.ID_Osoby;
-  if (!confirm(`Przypisać projekt „${p.Nazwa}” do „${personName}”? Ustawi ją jako Ownera i Kierownika projektu.`)) return;
+  if (!confirm(`Przypisać projekt „${p.Nazwa}” do „${personName}”? Ustawi ją jako architekta prowadzącego i projektanta głównego.`)) return;
   let saved;
   try {
     saved = await apiPost(`/api/projekty/${pid}/przypisz`, { ID_Osoby: data.ID_Osoby });
@@ -4374,9 +4403,9 @@ function openProjectDetail(pid) {
         <button class="icon-btn" data-goto-gantt="${esc(pid)}" title="Przejdź do Harmonogramu, przefiltrowanego do tego projektu">Harmonogram →</button>
         ${can("update", "projekty", p) ? `<button class="icon-btn" data-edit-project="${esc(pid)}">Edytuj</button>` : ""}
         ${(STATE.me.role === "Architekt_PM" && p.Owner === STATE.me.name) || FULL_ACCESS_ROLES.includes(STATE.me.role)
-          ? `<button class="icon-btn" data-release-project="${esc(pid)}" title="Usuwa Ciebie jako Ownera/Kierownika i zdejmuje Twoje przypisanie - projekt wraca do stanu nieprzypisanego">Zwolnij projekt</button>` : ""}
+          ? `<button class="icon-btn" data-release-project="${esc(pid)}" title="Usuwa Ciebie jako architekta prowadzącego/projektanta głównego i zdejmuje Twoje przypisanie - projekt wraca do stanu nieprzypisanego">Zwolnij projekt</button>` : ""}
         ${FULL_ACCESS_ROLES.includes(STATE.me.role)
-          ? `<button class="icon-btn" data-assign-project="${esc(pid)}" title="Ustawia wskazaną osobę jako Ownera/Kierownika i tworzy jej przypisanie do projektu - np. przy odejściu poprzedniego prowadzącego">Przypisz projekt →</button>` : ""}
+          ? `<button class="icon-btn" data-assign-project="${esc(pid)}" title="Ustawia wskazaną osobę jako architekta prowadzącego/projektanta głównego i tworzy jej przypisanie do projektu - np. przy odejściu poprzedniego prowadzącego">Przypisz projekt →</button>` : ""}
         ${FULL_ACCESS_ROLES.includes(STATE.me.role)
           ? `<button class="icon-btn" data-merge-projects="${esc(pid)}" title="Przenosi wszystkie sub-projekty/zadania/przypisania innych projektów pod ten (master) i usuwa opróżnione wiersze źródłowe - nieodwracalne">Połącz projekty →</button>` : ""}
         ${can("delete", "projekty", p) ? `<button class="icon-btn danger" data-delete-project="${esc(pid)}">Usuń</button>` : ""}
@@ -4433,8 +4462,9 @@ function openProjectDetail(pid) {
         ${p.Symbol_projektu ? `<div><div class="k">Symbol projektu</div><div class="v">${esc(p.Symbol_projektu)}</div></div>` : ""}
         ${p.Nazwa_zamierzenia_budowlanego ? `<div style="grid-column:1/-1"><div class="k">Nazwa zamierzenia budowlanego</div><div class="v">${esc(p.Nazwa_zamierzenia_budowlanego)}</div></div>` : ""}
         <div><div class="k">Funkcja biura</div><div class="v">${p.Funkcja_biura ? esc(p.Funkcja_biura) : "—"}</div></div>
-        <div><div class="k">Właściciel</div><div class="v">${esc(p.Owner)}</div></div>
-        <div><div class="k">Kierownik projektu</div><div class="v">${esc(p.Kierownik_projektu)}</div></div>
+        <div><div class="k">Architekt prowadzący</div><div class="v">${esc(p.Owner)}</div></div>
+        <div><div class="k">Projektant główny</div><div class="v">${esc(p.Kierownik_projektu)}</div></div>
+        ${p.Projektant_sprawdzajacy ? `<div><div class="k">Projektant sprawdzający</div><div class="v">${esc(p.Projektant_sprawdzajacy)}</div></div>` : ""}
         <div><div class="k">Sponsor</div><div class="v">${p.ID_Osoby_sponsora ? esc(personName(p.ID_Osoby_sponsora)) : "—"}</div></div>
         <div><div class="k">Data rozpoczęcia</div><div class="v">${fmtDate(p.Data_rozpoczecia)}</div></div>
         <div><div class="k">Zakończenie (plan)</div><div class="v">${fmtDate(p.Data_zakonczenia_planowana)}</div></div>

@@ -25,8 +25,15 @@ CREATE TABLE IF NOT EXISTS projekty (
   Typ_projektu TEXT,
   Funkcja_biura TEXT,
   Segment TEXT,
+  -- Role branzowe (weekly 23.07.2026): Owner="architekt prowadzacy" (ogolny lead projektu),
+  -- Kierownik_projektu="projektant glowny" (ten, kto sie podpisuje jako pierwszy) - nazwy
+  -- kolumn NIEZMIENIONE (tylko etykiety UI), zeby uniknac migracji/przepiec istniejacych
+  -- odwolan. Projektant_sprawdzajacy - NOWA, osobna rola (sprawdzajacy dokumentacje), wolny
+  -- tekst jak dwie powyzsze (nie FK - ten sam powod co Kierownik_projektu, patrz
+  -- assigned_project_ids() w server.py: przypisania jest jedynym zrodlem prawdy o dostepie).
   Owner TEXT,
   Kierownik_projektu TEXT,
+  Projektant_sprawdzajacy TEXT,
   ID_Osoby_sponsora TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
   Status TEXT,
   Faza TEXT,

@@ -50,6 +50,7 @@ from baza_danych.schema_migrate import (
     ensure_notatki_spotkan_tables,
     ensure_polish_role_translation, ensure_ticket_reactivation_column,
     ensure_stage_split_for_legacy_projects,
+    ensure_project_reviewer_column, ensure_checklist_konserwator_item,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -136,6 +137,8 @@ ensure_notatki_spotkan_tables(DB_PATH)  # jw. - nowe tabele notatek ze spotkan (
 ensure_polish_role_translation(DB_PATH)  # jw. - Rola_w_projekcie "Owner" -> "Wlasciciel" (Faza 5, A17)
 ensure_ticket_reactivation_column(DB_PATH)  # jw. - Liczba_reaktywacji na zadania_tickety (Faza 5, B11/B12)
 ensure_stage_split_for_legacy_projects(DB_PATH)  # jw. - dzieli auto-zmigrowany 1 sub-projekt na etapy, gdy Typ_projektu/Faza wskazuja realna historie (uwaga uzytkownika, 23.07.2026)
+ensure_project_reviewer_column(DB_PATH)  # jw. - Projektant_sprawdzajacy na projekty (weekly 23.07.2026)
+ensure_checklist_konserwator_item(DB_PATH)  # jw. - brakujaca pozycja checklisty (konserwator zabytkow) + backfill na istniejace projekty
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -386,14 +389,17 @@ VALID_ROLES = {None, "Architekt_PM", "COO", "Admin"} | SPECJALISTA_ROLES
 # Role, ktorych odczyt jest zawezony do wlasnych projektow (patrz scoped_rows()) - jedna
 # definicja zamiast wielu niezaleznych porownan do literalu "Specjalista" (audyt: latwo
 # dopisac druga zawezona role w jednym miejscu i przeoczyc drugie).
-# Architekt_PM DOLACZONY tutaj w Faza 2 (A15, warsztat 22.07.2026) - odwraca wczesniejsza,
-# udokumentowana decyzje ("Architekt_PM ma portfolio-wide odczyt") na wprost zyczenie zespolu:
-# "architekci prowadzacy... brak dostepu do... opoznien - rowniez dla innych projektow".
-# SPECJALISTA_ROLES samo w sobie NIE jest zmieniane (dalej rzadzi wezszą galezia can_write()
-# i FINANCIAL_RESTRICTED_ROLES) - to jest TYLKO trzeci, niezalezny wymiar (ktore WIERSZE widac),
-# rozszerzony o Architekt_PM bez dotykania jego szerszych uprawnien zapisu do WLASNYCH projektow
-# (can_write() dla Architekt_PM i tak juz filtruje po assigned_project_ids(), bez zmian tutaj).
-PORTFOLIO_RESTRICTED_ROLES = SPECJALISTA_ROLES | {"Architekt_PM"}
+# Architekt_PM byl tu DOLACZONY w Faza 2 (A15, warsztat 22.07.2026), na wprost zyczenie zespolu
+# z tamtego warsztatu. Nastepnego dnia (weekly 23.07.2026) Adam wprost to odwrocil: "chce zrobic
+# tak zebyscie widzieli wszystkie projekty, wszystkie notatki, wszystkie komentarze, cala
+# dokumentacje... zeby te informacje finansowe byly dla zarzadu" - architekci prowadzacy maja
+# widziec CALY portfel (ryzyka/kamienie milowe/notatki innych projektow wlacznie), TYLKO dane
+# finansowe zostaja ukryte (patrz FINANCIAL_RESTRICTED_ROLES ponizej, NIEZMIENIONE - Architekt_PM
+# tam zostaje). SPECJALISTA_ROLES samo w sobie NIE jest zmieniane (wciaz zawezone do wlasnych
+# projektow) - ten zwrot dotyczy WYLACZNIE Architekt_PM. Uprawnienia ZAPISU (can_write(), ponizej)
+# NIE ulegaja zmianie - architekt nadal edytuje TYLKO wlasne przypisane projekty; to zwiekszenie
+# widocznosci na ODCZYCIE, nie na zapisie.
+PORTFOLIO_RESTRICTED_ROLES = SPECJALISTA_ROLES
 # Role pozbawione pol finansowych (patrz redact_row()) - Architekt_PM byl tu jeszcze PRZED
 # powyzszym rozszerzeniem PORTFOLIO_RESTRICTED_ROLES (Faza 0) - teraz oba zbiory pokrywaja
 # sie dla Architekt_PM, ale to nadal dwa rozne wymiary ograniczenia (ktore WIERSZE vs. ktore

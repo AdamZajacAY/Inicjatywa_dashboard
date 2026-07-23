@@ -473,6 +473,10 @@ _SEED_CHECKLISTA_SZABLONY = [
     "Warunki drogowe / zjazd", "Inwentaryzacja zieleni", "Odrolnienie",
     "Mapa do celów projektowych", "Mapa zasadnicza", "Wypis i wyrys z rejestru gruntów",
     "Badania geologiczne", "Pełnomocnictwa",
+    # Dopisane na weekly 23.07.2026 (Monika, 51:25) - brakujaca pozycja zgloszona wprost przez
+    # zespol. Bazy juz zasiane przed ta zmiana dostaja ja osobno - patrz
+    # ensure_checklist_konserwator_item ponizej (ten sam tekst, musi byc identyczny).
+    "Uzgodnienie z konserwatorem zabytków",
 ]
 
 
@@ -669,6 +673,60 @@ def ensure_stage_split_for_legacy_projects(db_path):
             conn.execute(
                 "UPDATE harmonogram SET Typ_etapu = ?, Nazwa_zadania = ? WHERE ID_Zadania = ?",
                 (nazwa_biezaca, nazwa_biezaca, row["ID_Zadania"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_project_reviewer_column(db_path):
+    """Dodaje Projektant_sprawdzajacy do projekty w bazach powstalych przed jego wprowadzeniem
+    (weekly 23.07.2026) - trzecia, osobna rola obok Owner ("architekt prowadzacy")/
+    Kierownik_projektu ("projektant glowny"), patrz komentarz przy CREATE TABLE w schema.sql."""
+    _ensure_columns(db_path, "projekty", {"Projektant_sprawdzajacy": "TEXT"})
+
+
+# Brakujaca pozycja checklisty zgloszona wprost na weekly 23.07.2026 (Monika, 51:25) - dopisana
+# TYLKO jesli jeszcze nie istnieje (w odroznieniu od ensure_seed_checklista_szablony, ktora
+# zasiewa TYLKO pusta tabele - to dziala tez na juz-zasianych bazach, idempotentne po Nazwa).
+# Backfilluje tez WSZYSTKIE istniejace projekty (mirror _backfill_checklist_for_new_template w
+# server.py, zduplikowane tutaj zamiast importu - schema_migrate.py celowo nie zalezy od
+# server.py, ten sam powod co _PROJECT_STATUS_TO_STAGE_STATUS powyzej).
+def ensure_checklist_konserwator_item(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        nazwa = "Uzgodnienie z konserwatorem zabytków"
+        exists = conn.execute(
+            "SELECT 1 FROM checklista_szablony WHERE Nazwa = ?", (nazwa,)
+        ).fetchone()
+        if exists:
+            return
+        max_n = 0
+        for r in conn.execute("SELECT ID_Szablonu FROM checklista_szablony").fetchall():
+            m = re.match(r"^SZB(\d+)$", r[0] or "")
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        max_kolejnosc = conn.execute("SELECT COALESCE(MAX(Kolejnosc), -1) FROM checklista_szablony").fetchone()[0]
+        sid = f"SZB{str(max_n + 1).zfill(3)}"
+        kolejnosc = max_kolejnosc + 1
+        conn.execute(
+            "INSERT INTO checklista_szablony (ID_Szablonu, Nazwa, Kolejnosc, Aktywna) VALUES (?, ?, ?, ?)",
+            (sid, nazwa, kolejnosc, "Tak"),
+        )
+        max_chk = 0
+        for r in conn.execute("SELECT ID_Pozycji FROM checklisty_projektow").fetchall():
+            m = re.match(r"^CHK(\d+)$", r[0] or "")
+            if m:
+                max_chk = max(max_chk, int(m.group(1)))
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        for p in conn.execute("SELECT ID_Projektu FROM projekty").fetchall():
+            max_chk += 1
+            cid = f"CHK{str(max_chk).zfill(4)}"
+            conn.execute(
+                "INSERT INTO checklisty_projektow (ID_Pozycji, ID_Projektu, ID_Szablonu, Tresc, "
+                "Wymagany, Wykonano, Kolejnosc, Data_utworzenia) VALUES (?, ?, ?, ?, 'Nie', 'Nie', ?, ?)",
+                (cid, p["ID_Projektu"], sid, nazwa, kolejnosc, now),
             )
         conn.commit()
     finally:
