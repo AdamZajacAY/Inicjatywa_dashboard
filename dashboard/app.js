@@ -1638,6 +1638,92 @@ function renderTicketsKanban(list) {
   }).join("")}</div>`;
 }
 
+// Widok Kalendarz (na zyczenie uzytkownika, obok juz istniejacego Kanban/Lista) - miesieczna
+// siatka, zadania wg Terminu. Mirror siatki daty w date-pickerze (ten sam startOffset/
+// daysInMonth/poniedzialek-jako-pierwszy-dzien wzorzec, patrz renderDatePicker) - osobny stan
+// nawigacji (calendarState), nie ticketFilters, bo to czysto widokowa nawigacja miesiaca, nie
+// filtr danych.
+let calendarState = { year: new Date().getFullYear(), month: new Date().getMonth() };
+function renderTicketsCalendar(list) {
+  const { year, month } = calendarState;
+  const byDay = new Map();
+  list.forEach(t => {
+    if (!(t.Termin instanceof Date)) return;
+    const key = `${t.Termin.getFullYear()}-${t.Termin.getMonth()}-${t.Termin.getDate()}`;
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(t);
+  });
+  const noTermin = list.filter(t => !(t.Termin instanceof Date)).length;
+
+  const firstOfMonth = new Date(year, month, 1);
+  const startOffset = (firstOfMonth.getDay() + 6) % 7; // poniedzialek = 0, mirror renderDatePicker
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayD = today0();
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const dayHtml = cells.map(d => {
+    if (!d) return `<div class="tcal-day tcal-day-empty"></div>`;
+    const cellDate = new Date(year, month, d);
+    const isToday = cellDate.getTime() === todayD.getTime();
+    const dayTickets = byDay.get(`${year}-${month}-${d}`) || [];
+    const shown = dayTickets.slice(0, 4);
+    return `
+      <div class="tcal-day ${isToday ? "tcal-day-today" : ""}">
+        <div class="tcal-day-num">${d}</div>
+        ${shown.map(t => {
+          const slot = ticketStatusBadge(ticketEffectiveStatus(t));
+          return `<div class="tcal-ticket badge-${slot}" data-open-ticket="${esc(t.ID_Tickietu)}" title="${esc(t.Tytul)}">${esc(t.Tytul)}</div>`;
+        }).join("")}
+        ${dayTickets.length > shown.length ? `<div class="tcal-more">+${dayTickets.length - shown.length} więcej</div>` : ""}
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="tcal-header">
+      <button type="button" class="dp-nav" data-cal-nav="-1">‹</button>
+      <div class="tcal-month-label">${MIESIACE_PL[month]} ${year}</div>
+      <button type="button" class="dp-nav" data-cal-nav="1">›</button>
+      <button type="button" class="icon-btn" data-cal-today="1">Dziś</button>
+      ${noTermin ? `<span class="kpi-sub">${noTermin} zadań bez terminu (nie pokazane)</span>` : ""}
+    </div>
+    <div class="tcal-weekdays">${DNI_TYG_PL.map(d => `<span>${d}</span>`).join("")}</div>
+    <div class="tcal-grid">${dayHtml}</div>
+  `;
+}
+
+// Konwersja projektu (na zyczenie uzytkownika: "jaka jest konwersja w danym projekcie") - %
+// zadan zrobionych (DONE_TICKET_STATUSES) w calym projekcie + rozbicie per aktywny (nie
+// Archiwalny) etap/sub-projekt, pasek postepu mirror .progress-track uzywanego juz na karcie
+// projektu. Widoczne tylko gdy zawezono do konkretnego projektu (etap/procent bez wybranego
+// projektu nie majaby sensu laczyc miedzy roznymi projektami).
+function projectConversionSummaryHtml(pid) {
+  const stages = filteredStagesForLinking(pid);
+  const allTickets = ticketsForProject(pid);
+  if (!allTickets.length) return "";
+  const totalDone = allTickets.filter(t => DONE_TICKET_STATUSES.includes(t.Status)).length;
+  const overallPct = Math.round(totalDone / allTickets.length * 100);
+  const rows = stages.map(s => {
+    const stageTickets = ticketsForStage(s.ID_Zadania);
+    const done = stageTickets.filter(t => DONE_TICKET_STATUSES.includes(t.Status)).length;
+    const pct = stageTickets.length ? Math.round(done / stageTickets.length * 100) : 0;
+    return `
+      <div class="conv-row">
+        <div class="conv-label">${esc(s.Nazwa_zadania)}</div>
+        <div class="conv-bar-track"><div class="conv-bar-fill" style="width:${pct}%"></div></div>
+        <div class="conv-count">${done}/${stageTickets.length} (${pct}%)</div>
+      </div>`;
+  }).join("");
+  return `
+    <div class="panel" style="margin-bottom:14px">
+      <div class="section-head" style="margin-bottom:6px"><h4 style="margin:0">Konwersja projektu</h4><b style="font-size:15px">${overallPct}%</b></div>
+      <div class="kpi-sub" style="margin-bottom:6px">${totalDone} / ${allTickets.length} zadań zrobionych łącznie</div>
+      ${rows || `<div class="kpi-sub">Brak aktywnych etapów do rozbicia.</div>`}
+    </div>`;
+}
+
 function renderTickets() {
   // Zbior ID_Tickietu dla wybranego etapu policzony RAZ przed petla (nie stageIdsForTicket()
   // per ticket w srodku filter() - to re-skanowaloby caly STATE.taskStages dla kazdego ticketu).
@@ -1665,6 +1751,7 @@ function renderTickets() {
         <div class="view-toggle">
           <button type="button" class="view-toggle-btn ${view === "kanban" ? "active" : ""}" data-tk-view="kanban">Kanban</button>
           <button type="button" class="view-toggle-btn ${view === "lista" ? "active" : ""}" data-tk-view="lista">Lista</button>
+          <button type="button" class="view-toggle-btn ${view === "kalendarz" ? "active" : ""}" data-tk-view="kalendarz">Kalendarz</button>
         </div>
         ${can("create", "zadania_tickety") ? `<button data-add-ticket="">+ Nowy ticket</button>` : ""}
       </div>
@@ -1690,7 +1777,8 @@ function renderTickets() {
       </label>
       <span class="count">${list.length} / ${STATE.tickets.length} zadań</span>
     </div>
-    ${view === "kanban" ? renderTicketsKanban(list) : `
+    ${ticketFilters.projekt ? projectConversionSummaryHtml(ticketFilters.projekt) : ""}
+    ${view === "kanban" ? renderTicketsKanban(list) : view === "kalendarz" ? renderTicketsCalendar(list) : `
     <div class="panel" style="overflow-x:auto">
       <table class="data-table">
         <thead><tr>
@@ -5382,6 +5470,20 @@ document.addEventListener("click", (e) => {
   if (gotoStageTasksBtn) { gotoStageTasks(gotoStageTasksBtn.getAttribute("data-project"), gotoStageTasksBtn.getAttribute("data-goto-stage-tasks")); return; }
   const tkViewBtn = e.target.closest("[data-tk-view]");
   if (tkViewBtn) { ticketFilters.view = tkViewBtn.getAttribute("data-tk-view"); renderTickets(); return; }
+  const calNavBtn = e.target.closest("[data-cal-nav]");
+  if (calNavBtn) {
+    let m = calendarState.month + Number(calNavBtn.getAttribute("data-cal-nav")), y = calendarState.year;
+    if (m < 0) { m = 11; y--; } else if (m > 11) { m = 0; y++; }
+    calendarState.month = m; calendarState.year = y;
+    renderTickets();
+    return;
+  }
+  const calTodayBtn = e.target.closest("[data-cal-today]");
+  if (calTodayBtn) {
+    calendarState = { year: new Date().getFullYear(), month: new Date().getMonth() };
+    renderTickets();
+    return;
+  }
   const tkStatusChip = e.target.closest("[data-tk-status-filter]");
   if (tkStatusChip) {
     const val = tkStatusChip.getAttribute("data-tk-status-filter");
