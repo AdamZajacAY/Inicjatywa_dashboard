@@ -54,7 +54,7 @@ from baza_danych.schema_migrate import (
     ensure_checklist_stage_column,
     ensure_meeting_note_attendee_columns,
     ensure_tagi_biblioteka_table, ensure_seed_tagi_biblioteka,
-    ensure_harmonogram_archive_column,
+    ensure_harmonogram_archive_column, ensure_ticket_pin_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -148,6 +148,7 @@ ensure_meeting_note_attendee_columns(DB_PATH)  # jw. - Data_spotkania/Uczestnicy
 ensure_tagi_biblioteka_table(DB_PATH)  # jw. - nowa tabela biblioteki tagow
 ensure_seed_tagi_biblioteka(DB_PATH)  # jw. - musi biec PO powyzszej, zasiewa istniejacymi tagami z projekty/zadania_tickety
 ensure_harmonogram_archive_column(DB_PATH)  # jw. - Archiwalny na harmonogram, ukrywa stary etap z checkboxa/chipow, zostawia w Gantcie
+ensure_ticket_pin_column(DB_PATH)  # jw. - Data_przypiecia_dzis na zadania_tickety, "Moje zadania"/widok Dzisiaj
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy

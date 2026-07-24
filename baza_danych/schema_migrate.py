@@ -750,6 +750,13 @@ def ensure_checklist_konserwator_item(db_path):
         conn.close()
 
 
+def ensure_ticket_pin_column(db_path):
+    """Dodaje Data_przypiecia_dzis do zadania_tickety w bazach powstalych przed jej
+    wprowadzeniem - "Moje zadania"/widok Dzisiaj (uwaga uzytkownika 24.07.2026), patrz komentarz
+    w schema.sql."""
+    _ensure_columns(db_path, "zadania_tickety", {"Data_przypiecia_dzis": "TEXT"})
+
+
 def ensure_harmonogram_archive_column(db_path):
     """Dodaje Archiwalny do harmonogram w bazach powstalych przed jego wprowadzeniem - pozwala
     zachowac stary etap jako historyczny wpis w Gantcie, ale ukryc go z checkboxa "Powiazane

@@ -1036,6 +1036,90 @@ function onTimeStats() {
   return computeOnTimeStats(STATE.tasks, STATE.tickets);
 }
 
+/* ================================================================== VIEW: MOJE ZADANIA */
+// Na zyczenie uzytkownika (24.07.2026) - osobisty widok TODO: "Dzisiaj" (przypiete na dzis LUB
+// termin dzis LUB opoznione, jeszcze nie zrobione) + reszta wlasnych zadan ponizej. Przypiecie
+// (Data_przypiecia_dzis) to WLASNY wybor "nad tym pracuje dzis", odrebny od Terminu
+// (planowanego deadline'u) - patrz komentarz w schema.sql.
+function myTasksSplit() {
+  const pid = STATE.me.personId;
+  const mine = pid ? ticketsForPerson(pid).filter(t => !DONE_TICKET_STATUSES.includes(t.Status)) : [];
+  const todayStr = dateInputVal(today0());
+  const today = [], rest = [];
+  mine.forEach(t => {
+    const pinnedToday = t.Data_przypiecia_dzis === todayStr;
+    const dueToday = t.Termin instanceof Date && dateInputVal(t.Termin) === todayStr;
+    if (pinnedToday || dueToday || isOverdueTicket(t)) today.push(t); else rest.push(t);
+  });
+  const byTermin = (a, b) => (a.Termin?.getTime() || Infinity) - (b.Termin?.getTime() || Infinity);
+  today.sort(byTermin);
+  rest.sort(byTermin);
+  return { today, rest };
+}
+function myTaskRowHtml(t) {
+  const pinnedToday = t.Data_przypiecia_dzis === dateInputVal(today0());
+  const overdue = isOverdueTicket(t);
+  return `
+    <div class="dp-list-item" style="display:flex;align-items:flex-start;gap:10px">
+      <input type="checkbox" data-mt-done="${esc(t.ID_Tickietu)}" style="margin-top:3px" title="Oznacz jako zrobione">
+      <div style="flex:1;cursor:pointer" data-open-ticket="${esc(t.ID_Tickietu)}">
+        <div class="title">${esc(t.Tytul)}</div>
+        <div class="meta">${esc(projectName(t.ID_Projektu))} · ${fmtDate(t.Termin)} ${overdue ? badge("Opóźnione", "critical") : ""} ${t.Priorytet ? badge(t.Priorytet, priorityBadgeClass(t.Priorytet)) : ""}</div>
+      </div>
+      <button type="button" class="icon-btn ${pinnedToday ? "active" : ""}" data-mt-pin="${esc(t.ID_Tickietu)}" title="${pinnedToday ? "Odepnij od Dzisiaj" : "Przypnij na dziś"}">${pinnedToday ? "📌 Dziś" : "📌"}</button>
+    </div>`;
+}
+function renderMyTasks() {
+  const el = $("#view-mojezadania");
+  if (!el) return;
+  if (!STATE.me.personId) {
+    el.innerHTML = `<div class="section-head"><h2>Moje zadania</h2></div><div class="empty-hint">Twoje konto nie jest powiązane z osobą w zespole — poproś COO/Admin o połączenie konta.</div>`;
+    return;
+  }
+  const { today, rest } = myTasksSplit();
+  el.innerHTML = `
+    <div class="section-head"><h2>Moje zadania</h2></div>
+    <div class="dp-section" style="margin-top:0">
+      <h4>Dzisiaj (${today.length})</h4>
+      ${today.map(myTaskRowHtml).join("") || `<div class="empty-hint">Brak zadań na dziś — przypnij dowolne zadanie poniżej przyciskiem 📌.</div>`}
+    </div>
+    <div class="dp-section">
+      <h4>Pozostałe moje zadania (${rest.length})</h4>
+      ${rest.map(myTaskRowHtml).join("") || `<div class="empty-hint">Brak pozostałych przypisanych zadań.</div>`}
+    </div>
+  `;
+}
+async function togglePinToday(tid) {
+  const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
+  if (!t) return;
+  if (!can("update", "zadania_tickety", t)) return;
+  const todayStr = dateInputVal(today0());
+  const prev = t.Data_przypiecia_dzis;
+  t.Data_przypiecia_dzis = prev === todayStr ? null : todayStr;
+  renderMyTasks();
+  // Szybkie podwojne klikniecie 📌 (zanim pierwszy PUT sie zakonczy) - ten sam wyscig i to samo
+  // zabezpieczenie co ticketMoveSeq w moveTicketToStatus: bez tego wolniejsza odpowiedz
+  // STARSZEGO kliknieca moglaby nadpisac stan ustawiony przez nowsze, np. przypiete->odpiete
+  // wracaloby do przypietego.
+  const seq = (ticketMoveSeq.get(tid) || 0) + 1;
+  ticketMoveSeq.set(tid, seq);
+  try {
+    const saved = await apiPut(`/api/zadania_tickety/${tid}`, { Data_przypiecia_dzis: t.Data_przypiecia_dzis });
+    if (ticketMoveSeq.get(tid) !== seq) return;
+    // reviveDates PRZED Object.assign - inaczej t.Termin (juz Date z reviveDates() na starcie)
+    // zostaje nadpisany surowym stringiem ISO z odpowiedzi API, i kolejny renderMyTasks()
+    // (sortowanie po Terminie) wywala sie na "a.Termin?.getTime is not a function". Mirror
+    // moveTicketToStatus, ktory z tego samego powodu robi to samo PRZED swoim Object.assign.
+    reviveDates([saved], DATE_FIELDS.tickets);
+    Object.assign(t, saved);
+  } catch (e) {
+    if (ticketMoveSeq.get(tid) !== seq) return;
+    t.Data_przypiecia_dzis = prev;
+    alert("Nie udało się zaktualizować przypięcia: " + e.message);
+  }
+  renderMyTasks();
+}
+
 /* ================================================================== VIEW: PRZEGLAD */
 function renderOverview() {
   const P = STATE.projects;
@@ -1820,14 +1904,17 @@ function renderTickets() {
 
 const ticketMoveSeq = new Map(); // ID_Tickietu -> numer najnowszego w locie zadania PUT
 
-async function moveTicketToStatus(tid, newStatus) {
+// onDone: domyslnie renderTickets() (Kanban drag-drop, KANBAN_MOVE_HANDLERS ponizej), ale
+// "Moje zadania" (widok Dzisiaj) tez chce szybkie oznaczenie "Zrobione" z WLASNEGO widoku, nie
+// z Zadan - mirror wzorca callbackow z toggleChecklistItemCore (jeden rdzen, rozne odswiezenie).
+async function moveTicketToStatus(tid, newStatus, onDone = renderTickets) {
   const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
   if (!t || t.Status === newStatus || !KANBAN_KOLUMNY.includes(newStatus)) return;
   if (!can("update", "zadania_tickety", t)) return; // unika bezuzytecznego 403 z proba optymistycznej zmiany
   const prevStatus = t.Status, prevDone = t.Data_zakonczenia;
   t.Status = newStatus;
   t.Data_zakonczenia = deriveTicketCompletionDate(newStatus, t.Data_zakonczenia);
-  renderTickets();
+  onDone();
   // Szybkie podwojne przeciagniecie tego samego ticketu (zanim pierwszy PUT sie zakonczy)
   // odpala dwa rownolegle zadania - stosujemy tylko odpowiedz z NAJNOWSZEGO z nich, zeby
   // wolniejsza odpowiedz starszego przeciagniecia (siegajaca po sieci w dowolnej kolejnosci)
@@ -1845,7 +1932,7 @@ async function moveTicketToStatus(tid, newStatus) {
     t.Status = prevStatus; t.Data_zakonczenia = prevDone;
     alert("Nie udało się zmienić statusu zadania: " + e.message);
   }
-  renderTickets();
+  onDone();
 }
 
 // Faza 5 (B11/B12, warsztat 22.07.2026) - "zakonczone na teraz" != "zamkniete na zawsze"
@@ -5168,6 +5255,7 @@ function gotoProjectGantt(pid) {
 /* ================================================================== RENDER ALL + WIRING */
 function renderAll() {
   renderOverview();
+  renderMyTasks();
   renderProjects();
   renderTeam();
   renderSubcontractors();
@@ -5366,6 +5454,8 @@ document.addEventListener("change", (e) => {
   if (checklistRequiredCheckbox) { toggleChecklistRequired(checklistRequiredCheckbox.getAttribute("data-toggle-checklist-required"), checklistRequiredCheckbox.getAttribute("data-project")); return; }
   const stageChecklistCheckbox = e.target.closest && e.target.closest("[data-toggle-stage-checklist]");
   if (stageChecklistCheckbox) { toggleStageChecklistItem(stageChecklistCheckbox.getAttribute("data-toggle-stage-checklist"), stageChecklistCheckbox.getAttribute("data-stage")); return; }
+  const mtDoneCheckbox = e.target.closest && e.target.closest("[data-mt-done]");
+  if (mtDoneCheckbox) { moveTicketToStatus(mtDoneCheckbox.getAttribute("data-mt-done"), "Zrobione", renderMyTasks); return; }
   const avatarFile = e.target.closest && e.target.closest("[data-avatar-file]");
   if (avatarFile) {
     const file = avatarFile.files[0];
@@ -5484,6 +5574,8 @@ document.addEventListener("click", (e) => {
     renderTickets();
     return;
   }
+  const mtPinBtn = e.target.closest("[data-mt-pin]");
+  if (mtPinBtn) { togglePinToday(mtPinBtn.getAttribute("data-mt-pin")); return; }
   const tkStatusChip = e.target.closest("[data-tk-status-filter]");
   if (tkStatusChip) {
     const val = tkStatusChip.getAttribute("data-tk-status-filter");

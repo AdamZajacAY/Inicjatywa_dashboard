@@ -539,6 +539,7 @@ body.report-mode #execReport {
 }
 .icon-btn:hover { color: var(--text-primary); background: var(--grid); opacity: 1; }
 .icon-btn.danger:hover { color: var(--status-critical); border-color: var(--status-critical); }
+.icon-btn.active { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); border-color: var(--accent); }
 .dp-list-item { position: relative; }
 .dp-list-item .item-actions { position: absolute; top: 8px; right: 8px; }
 

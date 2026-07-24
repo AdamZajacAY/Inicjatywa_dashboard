@@ -228,7 +228,13 @@ CREATE TABLE IF NOT EXISTS zadania_tickety (
   Typ_zadania TEXT,
   -- Faza 5 (B11/B12) - licznik reaktywacji zadania z "Zrobione" z powrotem do pracy (np. dach
   -- rysowany 10x) - rowniez rejestr powtorzen do przyszlej kalibracji estymacji czasu.
-  Liczba_reaktywacji INTEGER
+  Liczba_reaktywacji INTEGER,
+  -- Data_przypiecia_dzis (uwaga uzytkownika 24.07.2026: "Moje zadania"/widok TODO) - data
+  -- (YYYY-MM-DD), na ktora WLASCICIEL zadania przypial je sobie do listy "Dzisiaj" - nie
+  -- Termin (planowany deadline), tylko osobisty wybor "nad tym pracuje dzis". Codziennie
+  -- "wygasa" samo (widok Dzisiaj porownuje z aktualna data), wiec nie zaśmieca listy dnia
+  -- nastepnego bez recznego odpiecia.
+  Data_przypiecia_dzis TEXT
 );
 
 CREATE TABLE IF NOT EXISTS komentarze_tickety (
