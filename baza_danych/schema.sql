@@ -234,7 +234,14 @@ CREATE TABLE IF NOT EXISTS zadania_tickety (
   -- Termin (planowany deadline), tylko osobisty wybor "nad tym pracuje dzis". Codziennie
   -- "wygasa" samo (widok Dzisiaj porownuje z aktualna data), wiec nie zaśmieca listy dnia
   -- nastepnego bez recznego odpiecia.
-  Data_przypiecia_dzis TEXT
+  Data_przypiecia_dzis TEXT,
+  -- Kanban v2 (feedback 10.09.2026): Klasa_uslugi = Standard / Na cito / Termin staly (NULL =
+  -- Standard); Zablokowane = 'Tak' to flaga na karcie (nie kolumna), Powod_blokady - dlaczego;
+  -- Kolejnosc - reczna kolejnosc karty w kolumnie (mniejsza = wyzej).
+  Klasa_uslugi TEXT,
+  Zablokowane TEXT,
+  Powod_blokady TEXT,
+  Kolejnosc REAL
 );
 
 CREATE TABLE IF NOT EXISTS komentarze_tickety (

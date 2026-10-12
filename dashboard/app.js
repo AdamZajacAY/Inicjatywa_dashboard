@@ -163,7 +163,19 @@ const TYPY_WSPOLPRACY = ["Projektant branzowy", "Wykonawca robot", "Dostawca", "
 const OCENY_PODWYKONAWCOW = ["Wysoka", "Srednia", "Niska", "Brak oceny"];
 const STATUSY_PODWYKONAWCOW = ["Aktywny", "Nieaktywny", "Zweryfikowany", "Czarna lista"];
 const STATUSY_PRZYPISANIA_PODW = ["Planowany", "Aktywny", "Zakonczony", "Wstrzymany"];
-const STATUSY_TICKIETOW = ["Backlog", "W tym tygodniu", "W trakcie", "Do przegladu", "Zrobione", "Zablokowane", "Zarchiwizowane"];
+// Kanban v2 (feedback W. Ferfeta 10.09.2026 + praktyki Kanban): status = ETAP pracy, nie horyzont
+// czasu. "W tym tygodniu" -> "Zaplanowane" (horyzont Dzis/Ten tydzien liczy sie automatycznie z dat,
+// patrz ticketHorizon), "Zablokowane" -> flaga na karcie (Zablokowane='Tak'), nie kolumna.
+// Mirror zadania_tickety.Status w server.py (ENUM_FIELDS) + migracja ensure_ticket_kanban_v2.
+const STATUSY_TICKIETOW = ["Backlog", "Zaplanowane", "W trakcie", "Do przegladu", "Zrobione", "Zarchiwizowane"];
+// Klasy uslug (Kanban "classes of service") zamiast priorytetu, ktory wszyscy ustawiali na Wysoki:
+// Na cito = omija kolejke (kilka na raz w calym biurze), Termin staly = nieprzekraczalny termin
+// (urzedowe), Standard = reszta. NULL = Standard (albo Termin staly dla zadan urzedowych).
+const KLASY_USLUG = [["Standard", "Standard"], ["Na cito", "Na cito (omija kolejkę)"], ["Termin staly", "Termin stały (nieprzekraczalny)"]];
+const KLASA_RANK = { "Na cito": 0, "Termin staly": 1, "Standard": 2 };
+// Miekki limit WIP - ile zadan jedna osoba ma naraz "W trakcie" (wszystkie projekty). Przekroczenie
+// nie blokuje przeciagniecia, tylko podswietla osobe na czerwono - sygnal do rozmowy, nie zakaz.
+const WIP_LIMIT_OSOBY = 3;
 const TYP_RYZYKA = ["Ryzyko", "Problem"];
 const KATEGORIE_RYZYK = ["Prawne", "Finansowe", "Techniczne", "Harmonogramowe", "Zasoby", "Srodowiskowe", "Proceduralne/Przetargowe"];
 const STATUS_RYZYKA = ["Otwarte", "W trakcie", "Zamkniete"];
@@ -695,7 +707,8 @@ const EXPORT_HEADERS = {
   Zadania_Tickety: ["ID_Tickietu", "ID_Projektu", "ID_Etapu", "Tytul", "Opis", "ID_Osoby_przypisanej",
     "ID_Podwykonawcy", "Wycena_podwykonawcy",
     "Data_utworzenia", "Termin", "Szacowane_roboczogodziny", "Rzeczywiste_roboczogodziny",
-    "Priorytet", "Status", "Data_zakonczenia"],
+    "Priorytet", "Status", "Data_zakonczenia", "Data_rozpoczecia", "Klasa_uslugi", "Zablokowane",
+    "Powod_blokady", "Kolejnosc"],
   Kamienie_milowe: ["ID_Kamienia", "ID_Projektu", "Nazwa_kamienia", "Data_planowana", "Data_rzeczywista",
     "Status", "ID_Osoby_odpowiedzialnej"],
   Ryzyka_i_Problemy: ["ID", "ID_Projektu", "Typ", "Opis", "Kategoria", "Prawdopodobienstwo", "Wplyw",
@@ -841,12 +854,52 @@ function isOverdueStage(t) {
 function ticketEffectiveStatus(t) { return isOverdueTicket(t) ? "Opoznione" : t.Status; }
 function ticketStatusBadge(status) {
   if (status === "Zrobione") return "good";
-  if (status === "Opoznione" || status === "Zablokowane") return "critical";
+  if (status === "Opoznione") return "critical";
   if (status === "Do przegladu") return "serious";
-  if (status === "W trakcie" || status === "W tym tygodniu") return "warning";
+  if (status === "W trakcie") return "warning";
+  if (status === "Zaplanowane") return "active";
   return "muted"; // Backlog, Zarchiwizowane i kazda inna/brak wartosci
 }
-const KANBAN_KOLUMNY = ["Backlog", "W tym tygodniu", "W trakcie", "Do przegladu", "Zrobione", "Zablokowane", "Zarchiwizowane"];
+// Kolumny tablicy = etapy pracy. Zarchiwizowane nie ma kolumny (to "poza tablica") - widoczne w
+// Liscie przez chip statusu.
+const KANBAN_KOLUMNY = ["Backlog", "Zaplanowane", "W trakcie", "Do przegladu", "Zrobione"];
+function isBlockedTicket(t) { return t.Zablokowane === "Tak"; }
+function ticketServiceClass(t) { return t.Klasa_uslugi || (isUrzedoweTicket(t) ? "Termin staly" : "Standard"); }
+function serviceClassLabel(k) { return k === "Termin staly" ? "Termin stały" : k; }
+function endOfWeek0() { const d = today0(); d.setDate(d.getDate() + (6 - (d.getDay() + 6) % 7)); return d; }
+function startOfWeek0() { const d = today0(); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return d; }
+// Horyzont czasu (swimlane tablicy, filtr) liczony z dat - to jest "samo sie przenosi" z feedbacku:
+// dlugie zadanie "W trakcie" z terminem za 3 tygodnie siedzi w "Pozniej", w ostatnim tygodniu
+// przechodzi do "Ten tydzien", w dniu terminu do "Dzis" - bez zmiany statusu i bez klikania.
+// Zrobione: tylko z biezacego tygodnia (wg Data_zakonczenia), starsze nie zasmiecaja tablicy (null).
+const HORYZONTY = ["Opoznione", "Dzis", "Ten tydzien", "Pozniej", "Bez terminu"];
+const HORYZONT_LABEL = { "Opoznione": "Opóźnione", "Dzis": "Dziś", "Ten tydzien": "Ten tydzień", "Pozniej": "Później", "Bez terminu": "Bez terminu" };
+function ticketHorizon(t) {
+  const today = today0();
+  if (DONE_TICKET_STATUSES.includes(t.Status)) {
+    const d = t.Data_zakonczenia instanceof Date ? new Date(t.Data_zakonczenia.getFullYear(), t.Data_zakonczenia.getMonth(), t.Data_zakonczenia.getDate()) : null;
+    if (!d || d < startOfWeek0()) return null;
+    return d.getTime() === today.getTime() ? "Dzis" : "Ten tydzien";
+  }
+  if (isOverdueTicket(t)) return "Opoznione";
+  if (t.Data_przypiecia_dzis === dateInputVal(today)) return "Dzis";
+  if (!(t.Termin instanceof Date)) return "Bez terminu";
+  if (t.Termin.getTime() === today.getTime()) return "Dzis";
+  if (t.Termin <= endOfWeek0()) return "Ten tydzien";
+  return "Pozniej";
+}
+// Kolejnosc kart w komorce tablicy: klasa uslugi (Na cito na gorze), potem reczna Kolejnosc
+// (przeciaganiem), potem Termin.
+function ticketBoardSort(a, b) {
+  const ka = KLASA_RANK[ticketServiceClass(a)], kb = KLASA_RANK[ticketServiceClass(b)];
+  if (ka !== kb) return ka - kb;
+  const ra = a.Kolejnosc ?? Infinity, rb = b.Kolejnosc ?? Infinity;
+  if (ra !== rb) return ra - rb;
+  return (a.Termin?.getTime() || Infinity) - (b.Termin?.getTime() || Infinity);
+}
+function wipCountForPerson(oid) {
+  return STATE.tickets.filter(t => t.ID_Osoby_przypisanej === oid && t.Status === "W trakcie").length;
+}
 // Mapuje slot badge'a (good/warning/critical/serious/active/muted, patrz ticketStatusBadge/
 // projectStatusClass/priorityBadgeClass powyzej) na zmienna CSS z kolorem - jedno miejsce
 // uzywane zarowno przez tlo kolumny Kanban, jak i tlo karty Kanban (na zyczenie uzytkownika:
@@ -1657,7 +1710,11 @@ function renderSubcontractors() {
 
 /* ================================================================== VIEW: ZADANIA (tickety) */
 let ticketFilters = { projekt: "", osoba: "", statuses: [], onlyOverdue: false, view: "kanban",
-  tag: "", typ: "", sortField: "Termin", sortDir: "asc", etap: "" }; // tag/typ/sort: Faza 3 (B2/B6/B10); etap: weekly 23.07.2026
+  tag: "", typ: "", sortField: "Termin", sortDir: "asc", etap: "",
+  // Feedback 10.09.2026: prowadzacy = wszystkie zadania na projektach, ktorych jest architektem
+  // prowadzacym (projekty.Owner), nie tylko przypisane do siebie. horyzonty/klasa/blokada = szybkie
+  // filtry "Dzis / Ten tydzien / Na cito / Zablokowane..." dzialajace w kazdym widoku.
+  prowadzacy: null, horyzonty: [], tylkoNaCito: false, tylkoZablokowane: false, lanes: "horyzont" }; // tag/typ/sort: Faza 3 (B2/B6/B10); etap: weekly 23.07.2026
 
 // Faza 3 (B2) - wartosc do sortowania listy zadan wg klikanego naglowka kolumny; Termin domyslnie
 // (mirror poprzedniego, na sztywno wpisanego sortowania), reszta pol dopisana obok, nie zamiast.
@@ -1689,15 +1746,18 @@ function ticketCardHtml(t) {
   // input co juz uzywany do lewego akcentu ".overdue" ponizej.
   const cardTintVar = statusColorVar(ticketStatusBadge(ticketEffectiveStatus(t)));
   return `
-    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""}" style="--card-tint:var(${cardTintVar})" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" style="--card-tint:var(${cardTintVar})" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
       <div class="kc-title">${esc(t.Tytul)}</div>
       <div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>
-      <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)}</div>
+      <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${t.Data_rozpoczecia instanceof Date ? `${fmtDateShort(t.Data_rozpoczecia)} → ` : ""}${fmtDate(t.Termin)}</div>
+      ${isBlockedTicket(t) ? `<div class="kc-blocked">⛔ Zablokowane${t.Powod_blokady ? `: ${esc(t.Powod_blokady)}` : ""}</div>` : ""}
       ${t.ID_Osoby_zglaszajacej ? `<div class="kc-meta">zgłosił: ${esc(personName(t.ID_Osoby_zglaszajacej))}</div>` : ""}
       ${ticketTags(t).length ? `<div class="tag-chips" style="margin-top:4px">${ticketTags(t).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join("")}</div>` : ""}
       <div class="kc-foot">
+        ${ticketServiceClass(t) === "Na cito" ? badge("Na cito", "critical") : ticketServiceClass(t) === "Termin staly" ? badge("Termin stały", "serious") : ""}
         ${isSub ? badge("Podwykonawca", "sub") : ""}
         ${isUrzedoweTicket(t) ? badge("Urzędowe", "warning") : ""}
+        ${t.Status === "W trakcie" && t.Data_rozpoczecia instanceof Date && t.Data_rozpoczecia <= today0() ? badge(`w toku ${Math.round((today0() - t.Data_rozpoczecia) / 86400000)} dni`, "muted") : ""}
         ${badge(t.Priorytet || "—", t.Priorytet === "Wysoki" ? "critical" : t.Priorytet === "Niski" ? "muted" : "warning")}
         ${overdue ? badge("Opóźnione", "critical") : urgentAdmin ? badge("Nieprzekraczalny termin blisko", "critical") : ""}
         ${num(t.Liczba_reaktywacji) > 0 ? badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : ""}
@@ -1708,18 +1768,82 @@ function ticketCardHtml(t) {
     </div>`;
 }
 
+// Tablica Kanban v2: kolumny = etap pracy (status, przeciaganiem), wiersze (swimlane'y) = horyzont
+// czasu liczony z dat (domyslnie), osoba albo projekt. Przeciagniecie miedzy kolumnami zmienia
+// status; upuszczenie NA karte ustawia reczna kolejnosc (przed ta karta). Horyzont nie zmienia sie
+// przeciaganiem - wynika z dat (zmiana terminu w formularzu).
+function laneKeyOf(t, mode) {
+  if (mode === "osoba") return t.ID_Osoby_przypisanej || (t.ID_Podwykonawcy ? "sub:" + t.ID_Podwykonawcy : "—");
+  if (mode === "projekt") return t.ID_Projektu;
+  if (mode === "brak") return "all";
+  return ticketHorizon(t);
+}
+function laneLabelHtml(key, mode, items) {
+  if (mode === "osoba") {
+    if (key === "—") return "Nieprzypisane";
+    if (String(key).startsWith("sub:")) return esc(subcontractorName(key.slice(4)));
+    const wip = wipCountForPerson(key);
+    return `${esc(personName(key))}<div class="kb-lane-wip ${wip > WIP_LIMIT_OSOBY ? "over" : ""}">W trakcie: ${wip}/${WIP_LIMIT_OSOBY}</div>`;
+  }
+  if (mode === "projekt") return esc(projectName(key));
+  if (mode === "brak") return "Wszystkie";
+  return esc(HORYZONT_LABEL[key] || key);
+}
+function wipStripHtml(list) {
+  const people = Array.from(new Set(list.map(t => t.ID_Osoby_przypisanej).filter(Boolean)));
+  const rows = people.map(oid => ({ oid, n: wipCountForPerson(oid) })).filter(r => r.n > 0)
+    .sort((a, b) => b.n - a.n);
+  if (!rows.length) return "";
+  return `<div class="wip-strip"><span class="kpi-sub">Limit WIP (${WIP_LIMIT_OSOBY} zadania „W trakcie” na osobę, wszystkie projekty):</span>
+    ${rows.map(r => `<span class="wip-chip ${r.n > WIP_LIMIT_OSOBY ? "over" : ""}" data-open-person="${esc(r.oid)}" title="${r.n > WIP_LIMIT_OSOBY ? "Ponad limit - za dużo rozpoczętych naraz" : "W limicie"}">${esc(personName(r.oid))} · ${r.n}/${WIP_LIMIT_OSOBY}</span>`).join("")}</div>`;
+}
 function renderTicketsKanban(list) {
-  return `<div class="kanban-board">${KANBAN_KOLUMNY.map(status => {
-    const items = list.filter(t => t.Status === status);
+  const mode = ticketFilters.lanes || "horyzont";
+  const onBoard = list.filter(t => KANBAN_KOLUMNY.includes(t.Status) && laneKeyOf(t, mode) !== null);
+  const hiddenDone = list.filter(t => DONE_TICKET_STATUSES.includes(t.Status) && ticketHorizon(t) === null).length;
+  let laneKeys;
+  if (mode === "horyzont") laneKeys = HORYZONTY;
+  else {
+    laneKeys = Array.from(new Set(onBoard.map(t => laneKeyOf(t, mode))));
+    laneKeys.sort((a, b) => String(mode === "projekt" ? projectName(a) : personName(a)).localeCompare(String(mode === "projekt" ? projectName(b) : personName(b)), "pl"));
+  }
+  const byLane = new Map(laneKeys.map(k => [k, []]));
+  onBoard.forEach(t => { const k = laneKeyOf(t, mode); if (byLane.has(k)) byLane.get(k).push(t); });
+  const head = KANBAN_KOLUMNY.map(status => {
+    const n = onBoard.filter(t => t.Status === status).length;
     const tintVar = statusColorVar(ticketStatusBadge(status));
-    return `
-      <div class="kanban-col" data-drop-status="${esc(status)}" style="--col-tint:var(${tintVar})">
-        <div class="kanban-col-head">${esc(status)}<span class="count-pill">${items.length}</span></div>
-        <div class="kanban-col-body">
-          ${items.map(ticketCardHtml).join("") || `<div class="kanban-empty">Brak zadań</div>`}
-        </div>
-      </div>`;
-  }).join("")}</div>`;
+    const note = status === "Zrobione" ? `<span class="kb-col-note">ten tydzień</span>` : "";
+    return `<div class="kb-col-head" style="--col-tint:var(${tintVar})">${esc(status)}${note}<span class="count-pill">${n}</span></div>`;
+  }).join("");
+  const lanes = laneKeys.map(key => {
+    const items = byLane.get(key) || [];
+    if (!items.length) return "";
+    const cells = KANBAN_KOLUMNY.map(status => {
+      const cellItems = items.filter(t => t.Status === status).sort(ticketBoardSort);
+      const tintVar = statusColorVar(ticketStatusBadge(status));
+      return `<div class="kb-cell" data-drop-status="${esc(status)}" style="--col-tint:var(${tintVar})">${cellItems.map(ticketCardHtml).join("")}</div>`;
+    }).join("");
+    const laneCls = mode === "horyzont" ? `kb-lane-${key.replace(/\s+/g, "-").toLowerCase()}` : "";
+    return `<div class="kb-lane-label ${laneCls}">${laneLabelHtml(key, mode, items)}<span class="count-pill">${items.length}</span></div>${cells}`;
+  }).join("");
+  return `
+    <div class="kb-toolbar">
+      <label class="kpi-sub">Wiersze:
+        <select id="fTkLanes">
+          <option value="horyzont" ${mode === "horyzont" ? "selected" : ""}>wg terminu (Opóźnione / Dziś / Ten tydzień / Później)</option>
+          <option value="osoba" ${mode === "osoba" ? "selected" : ""}>wg osoby (z limitem WIP)</option>
+          <option value="projekt" ${mode === "projekt" ? "selected" : ""}>wg projektu</option>
+          <option value="brak" ${mode === "brak" ? "selected" : ""}>bez podziału</option>
+        </select>
+      </label>
+      <span class="kpi-sub">Przeciągnij między kolumnami = zmiana etapu · upuść na kartę = ustaw kolejność · „Na cito” zawsze na górze</span>
+      ${hiddenDone ? `<span class="kpi-sub">${hiddenDone} starszych zrobionych ukryto (widok Lista)</span>` : ""}
+    </div>
+    ${mode !== "osoba" ? wipStripHtml(onBoard) : ""}
+    <div class="kb-scroll"><div class="kb-grid">
+      <div class="kb-corner"></div>${head}
+      ${lanes || `<div class="kanban-empty" style="grid-column:1/-1">Brak zadań na tablicy.</div>`}
+    </div></div>`;
 }
 
 // Widok Kalendarz (na zyczenie uzytkownika, obok juz istniejacego Kanban/Lista) - miesieczna
@@ -1729,40 +1853,52 @@ function renderTicketsKanban(list) {
 // filtr danych.
 let calendarState = { year: new Date().getFullYear(), month: new Date().getMonth() };
 function renderTicketsCalendar(list) {
+  // Feedback 10.09.2026: kalendarz pokazywal tylko Termin, wiec zadanie 11.09 -> 15.09 wygladalo
+  // jak jednodniowe na 15.09. Teraz kazde zadanie to pasek od Data_rozpoczecia (albo samego
+  // Terminu, gdy startu brak) do Terminu, rozlozony na tygodnie; romb ◆ = dzien terminu.
+  // Ukladanie paskow w wierszach: zachlanne pakowanie odcinkow w obrebie tygodnia.
   const { year, month } = calendarState;
-  const byDay = new Map();
-  list.forEach(t => {
-    if (!(t.Termin instanceof Date)) return;
-    const key = `${t.Termin.getFullYear()}-${t.Termin.getMonth()}-${t.Termin.getDate()}`;
-    if (!byDay.has(key)) byDay.set(key, []);
-    byDay.get(key).push(t);
-  });
+  const MAX_LANES = 5;
+  const withTermin = list.filter(t => t.Termin instanceof Date && t.Status !== "Zarchiwizowane");
   const noTermin = list.filter(t => !(t.Termin instanceof Date)).length;
-
+  const dayMs = 86400000;
   const firstOfMonth = new Date(year, month, 1);
-  const startOffset = (firstOfMonth.getDay() + 6) % 7; // poniedzialek = 0, mirror renderDatePicker
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const lastOfMonth = new Date(year, month + 1, 0);
+  const gridStart = new Date(year, month, 1 - (firstOfMonth.getDay() + 6) % 7);
   const todayD = today0();
-  const cells = [];
-  for (let i = 0; i < startOffset; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks = [];
+  for (let ws = new Date(gridStart); ws <= lastOfMonth; ws = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 7)) weeks.push(ws);
 
-  const dayHtml = cells.map(d => {
-    if (!d) return `<div class="tcal-day tcal-day-empty"></div>`;
-    const cellDate = new Date(year, month, d);
-    const isToday = cellDate.getTime() === todayD.getTime();
-    const dayTickets = byDay.get(`${year}-${month}-${d}`) || [];
-    const shown = dayTickets.slice(0, 4);
-    return `
-      <div class="tcal-day ${isToday ? "tcal-day-today" : ""}">
-        <div class="tcal-day-num">${d}</div>
-        ${shown.map(t => {
-          const slot = ticketStatusBadge(ticketEffectiveStatus(t));
-          return `<div class="tcal-ticket badge-${slot}" data-open-ticket="${esc(t.ID_Tickietu)}" title="${esc(t.Tytul)}">${esc(t.Tytul)}</div>`;
-        }).join("")}
-        ${dayTickets.length > shown.length ? `<div class="tcal-more">+${dayTickets.length - shown.length} więcej</div>` : ""}
-      </div>`;
+  const weekHtml = weeks.map(ws => {
+    const we = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 6);
+    const segs = withTermin.map(t => {
+      let start = t.Data_rozpoczecia instanceof Date ? t.Data_rozpoczecia : t.Termin;
+      if (start > t.Termin) start = t.Termin;
+      if (t.Termin < ws || start > we) return null;
+      const s0 = start < ws ? 0 : Math.round((start - ws) / dayMs);
+      const e0 = t.Termin > we ? 6 : Math.round((t.Termin - ws) / dayMs);
+      return { t, s0, e0, contL: start < ws, contR: t.Termin > we };
+    }).filter(Boolean).sort((a, b) => a.s0 - b.s0 || (b.e0 - b.s0) - (a.e0 - a.s0));
+    const laneEnds = [];
+    const hiddenPerDay = Array(7).fill(0);
+    const bars = [];
+    segs.forEach(sg => {
+      let lane = laneEnds.findIndex(end => end < sg.s0);
+      if (lane === -1) { lane = laneEnds.length; laneEnds.push(-1); }
+      if (lane >= MAX_LANES) { for (let d = sg.s0; d <= sg.e0; d++) hiddenPerDay[d]++; return; }
+      laneEnds[lane] = sg.e0;
+      const slot = ticketStatusBadge(ticketEffectiveStatus(sg.t));
+      const deadline = !sg.contR ? " ◆" : "";
+      bars.push(`<div class="tcal-bar badge-${slot} ${sg.contL ? "cont-l" : ""} ${sg.contR ? "cont-r" : ""}" style="grid-column:${sg.s0 + 1} / ${sg.e0 + 2};grid-row:${lane + 2}" data-open-ticket="${esc(sg.t.ID_Tickietu)}" title="${esc(sg.t.Tytul)}&#10;${esc(projectName(sg.t.ID_Projektu))} · ${esc(ticketAssigneeLabel(sg.t))}&#10;${sg.t.Data_rozpoczecia instanceof Date ? fmtDate(sg.t.Data_rozpoczecia) + " → " : "termin "}${fmtDate(sg.t.Termin)}">${sg.contL ? "… " : ""}${esc(sg.t.Tytul)}${deadline}</div>`);
+    });
+    const lanesUsed = Math.min(laneEnds.length, MAX_LANES);
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + i);
+      const outside = d.getMonth() !== month;
+      const isToday = d.getTime() === todayD.getTime();
+      return `<div class="tcal-day ${outside ? "tcal-day-outside" : ""} ${isToday ? "tcal-day-today" : ""}" style="grid-column:${i + 1};grid-row:1 / -1"><div class="tcal-day-num">${d.getDate()}</div>${hiddenPerDay[i] ? `<div class="tcal-more">+${hiddenPerDay[i]} więcej</div>` : ""}</div>`;
+    }).join("");
+    return `<div class="tcal-week" style="grid-template-rows:22px repeat(${lanesUsed}, 22px) 18px">${days}${bars.join("")}</div>`;
   }).join("");
 
   return `
@@ -1771,11 +1907,34 @@ function renderTicketsCalendar(list) {
       <div class="tcal-month-label">${MIESIACE_PL[month]} ${year}</div>
       <button type="button" class="dp-nav" data-cal-nav="1">›</button>
       <button type="button" class="icon-btn" data-cal-today="1">Dziś</button>
-      ${noTermin ? `<span class="kpi-sub">${noTermin} zadań bez terminu (nie pokazane)</span>` : ""}
+      <span class="kpi-sub">Pasek = od rozpoczęcia do terminu · ◆ dzień terminu</span>
+      ${noTermin ? `<span class="kpi-sub">· ${noTermin} zadań bez terminu (nie pokazane)</span>` : ""}
     </div>
     <div class="tcal-weekdays">${DNI_TYG_PL.map(d => `<span>${d}</span>`).join("")}</div>
-    <div class="tcal-grid">${dayHtml}</div>
+    <div class="tcal-weeks">${weekHtml}</div>
   `;
+}
+
+// Widok Gantt w zakladce Zadania (feedback 10.09.2026: "w gownoburzy trzeba sprawdzic globalnie,
+// co kto robi we wszystkich projektach, ktore prowadze") - te same filtry co Kanban/Lista/Kalendarz,
+// wiersze pogrupowane wg osoby. Reuzywa buildGantt (pseudo-etapy z ticketow), klik otwiera ticket.
+function renderTicketsGantt(list) {
+  const rows = list.filter(t => t.Termin instanceof Date && t.Status !== "Zarchiwizowane").map(t => {
+    const start = t.Data_rozpoczecia instanceof Date && t.Data_rozpoczecia <= t.Termin ? t.Data_rozpoczecia : t.Termin;
+    const done = DONE_TICKET_STATUSES.includes(t.Status);
+    return {
+      ID_Zadania: t.ID_Tickietu, ID_Projektu: t.ID_Projektu,
+      Nazwa_zadania: `${t.Tytul} · ${projectName(t.ID_Projektu)}`,
+      Data_start_plan: start, Data_koniec_plan: t.Termin,
+      Status: done ? "Zakonczone" : isOverdueTicket(t) ? "Opoznione" : (t.Status === "Backlog" || t.Status === "Zaplanowane") ? "Nie rozpoczete" : "W trakcie",
+      Procent_ukonczenia: done ? 1 : 0,
+      ID_Osoby_odpowiedzialnej: t.ID_Osoby_przypisanej || "—",
+      _ticketId: t.ID_Tickietu,
+    };
+  });
+  const skipped = list.length - rows.length;
+  return `${skipped ? `<div class="kpi-sub" style="margin-bottom:8px">${skipped} zadań bez terminu albo zarchiwizowanych nie pokazano.</div>` : ""}
+    ${buildGantt(rows, { groupBy: "osoba", ticketRows: true })}`;
 }
 
 // Konwersja projektu (na zyczenie uzytkownika: "jaka jest konwersja w danym projekcie") - %
@@ -1812,7 +1971,18 @@ function renderTickets() {
   // Zbior ID_Tickietu dla wybranego etapu policzony RAZ przed petla (nie stageIdsForTicket()
   // per ticket w srodku filter() - to re-skanowaloby caly STATE.taskStages dla kazdego ticketu).
   const stageTicketIds = ticketFilters.etap ? new Set(ticketIdsForStage(ticketFilters.etap)) : null;
+  const owners = Array.from(new Set(STATE.projects.map(p => p.Owner).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pl"));
+  if (ticketFilters.prowadzacy === null) {
+    // Pierwsze wejscie: Architekt Prowadzacy widzi od razu swoje projekty (jego imie z kartoteki
+    // zespolu musi byc ownerem przynajmniej jednego projektu), reszta - wszystko.
+    const myName = personName(STATE.me.personId);
+    ticketFilters.prowadzacy = STATE.me.role === "Architekt_PM" && owners.includes(myName) ? myName : "";
+  }
   const list = STATE.tickets.filter(t => {
+    if (ticketFilters.prowadzacy && STATE.projectById.get(t.ID_Projektu)?.Owner !== ticketFilters.prowadzacy) return false;
+    if (ticketFilters.horyzonty.length && !ticketFilters.horyzonty.includes(ticketHorizon(t))) return false;
+    if (ticketFilters.tylkoNaCito && ticketServiceClass(t) !== "Na cito") return false;
+    if (ticketFilters.tylkoZablokowane && !isBlockedTicket(t)) return false;
     if (ticketFilters.projekt && t.ID_Projektu !== ticketFilters.projekt) return false;
     if (ticketFilters.osoba && t.ID_Osoby_przypisanej !== ticketFilters.osoba) return false;
     if (ticketFilters.statuses.length && !ticketFilters.statuses.includes(ticketEffectiveStatus(t))) return false;
@@ -1836,12 +2006,14 @@ function renderTickets() {
           <button type="button" class="view-toggle-btn ${view === "kanban" ? "active" : ""}" data-tk-view="kanban">Kanban</button>
           <button type="button" class="view-toggle-btn ${view === "lista" ? "active" : ""}" data-tk-view="lista">Lista</button>
           <button type="button" class="view-toggle-btn ${view === "kalendarz" ? "active" : ""}" data-tk-view="kalendarz">Kalendarz</button>
+          <button type="button" class="view-toggle-btn ${view === "gantt" ? "active" : ""}" data-tk-view="gantt">Gantt</button>
         </div>
-        ${can("create", "zadania_tickety") ? `<button data-add-ticket="">+ Nowy ticket</button>` : ""}
+        ${can("create", "zadania_tickety") ? `<button data-add-ticket-zadania="${esc(ticketFilters.projekt)}">+ Nowy ticket</button>` : ""}
       </div>
     </div>
     <div class="filters">
-      <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
+      <select id="fTkProwadzacy"><option value="">Wszyscy architekci prowadzący</option>${owners.map(o => `<option ${ticketFilters.prowadzacy === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
+      <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.filter(p => !ticketFilters.prowadzacy || p.Owner === ticketFilters.prowadzacy).map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
       <select id="fTkOsoba"><option value="">Wszystkie osoby</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ticketFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
       <select id="fTkTag"><option value="">Wszystkie tagi</option>${activeTagLibrary().map(tag => `<option value="${esc(tag)}" ${ticketFilters.tag === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}</select>
       <select id="fTkTyp"><option value="">Urzędowe i wewnętrzne</option><option value="Urzedowe" ${ticketFilters.typ === "Urzedowe" ? "selected" : ""}>Tylko urzędowe</option><option value="Wewnetrzne" ${ticketFilters.typ === "Wewnetrzne" ? "selected" : ""}>Tylko wewnętrzne</option></select>
@@ -1852,7 +2024,13 @@ function renderTickets() {
           return `<button type="button" class="status-chip badge badge-${slot} ${ticketFilters.etap === st.ID_Zadania ? "active" : ""}" data-tk-etap-filter="${esc(st.ID_Zadania)}"><span class="dot" style="background:currentColor"></span>${esc(st.Nazwa_zadania)}</button>`;
         }).join("")}
       </div>` : `<span class="kpi-sub" style="align-self:center">Wybierz projekt, aby filtrować po etapach/sub-projektach</span>`}
-      ${view === "lista" ? `<div class="status-chips" style="width:100%">
+      <div class="status-chips" style="width:100%">
+        <button type="button" class="status-chip badge badge-muted ${!ticketFilters.horyzonty.length && !ticketFilters.tylkoNaCito && !ticketFilters.tylkoZablokowane ? "active" : ""}" data-tk-horizon-filter="">Każdy termin</button>
+        ${HORYZONTY.map(h => `<button type="button" class="status-chip badge badge-${h === "Opoznione" ? "critical" : h === "Dzis" ? "serious" : h === "Ten tydzien" ? "warning" : "muted"} ${ticketFilters.horyzonty.includes(h) ? "active" : ""}" data-tk-horizon-filter="${esc(h)}"><span class="dot" style="background:currentColor"></span>${esc(HORYZONT_LABEL[h])}</button>`).join("")}
+        <button type="button" class="status-chip badge badge-critical ${ticketFilters.tylkoNaCito ? "active" : ""}" data-tk-flag-filter="tylkoNaCito">Na cito</button>
+        <button type="button" class="status-chip badge badge-muted ${ticketFilters.tylkoZablokowane ? "active" : ""}" data-tk-flag-filter="tylkoZablokowane">⛔ Zablokowane</button>
+      </div>
+      ${view !== "kanban" ? `<div class="status-chips" style="width:100%">
         <button type="button" class="status-chip badge badge-muted ${!ticketFilters.statuses.length ? "active" : ""}" data-tk-status-filter="">Wszystkie</button>
         ${STATUSY_TICKIETOW.map(s => `<button type="button" class="status-chip badge badge-${ticketStatusBadge(s)} ${ticketFilters.statuses.includes(s) ? "active" : ""}" data-tk-status-filter="${esc(s)}"><span class="dot" style="background:currentColor"></span>${esc(s)}</button>`).join("")}
       </div>` : ""}
@@ -1862,7 +2040,7 @@ function renderTickets() {
       <span class="count">${list.length} / ${STATE.tickets.length} zadań</span>
     </div>
     ${ticketFilters.projekt ? projectConversionSummaryHtml(ticketFilters.projekt) : ""}
-    ${view === "kanban" ? renderTicketsKanban(list) : view === "kalendarz" ? renderTicketsCalendar(list) : `
+    ${view === "kanban" ? renderTicketsKanban(list) : view === "kalendarz" ? renderTicketsCalendar(list) : view === "gantt" ? renderTicketsGantt(list) : `
     <div class="panel" style="overflow-x:auto">
       <table class="data-table">
         <thead><tr>
@@ -1889,13 +2067,20 @@ function renderTickets() {
               <td class="num">${t.Szacowane_roboczogodziny ?? "—"}</td>
               <td class="num">${t.Rzeczywiste_roboczogodziny ?? "—"}</td>
               <td>${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))} ${num(t.Liczba_reaktywacji) > 0 ? badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : ""}</td>
-              <td>${isUrzedoweTicket(t) ? badge("Urzędowe", isUrgentAdministrativeTicket(t) ? "critical" : "warning") : "—"}</td>
+              <td>${isUrzedoweTicket(t) ? badge("Urzędowe", isUrgentAdministrativeTicket(t) ? "critical" : "warning") : "—"} ${ticketServiceClass(t) === "Na cito" ? badge("Na cito", "critical") : ""} ${isBlockedTicket(t) ? badge("⛔ Zablokowane", "critical") : ""}</td>
               <td>${ticketTags(t).length ? `<div class="tag-chips">${ticketTags(t).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join("")}</div>` : "—"}</td>
             </tr>`).join("") || `<tr><td colspan="11" class="empty-hint">Brak zadań — dodaj tickety z poziomu karty projektu.</td></tr>`}
         </tbody>
       </table>
     </div>`}`;
   $("#fTkProj").addEventListener("change", e => { ticketFilters.projekt = e.target.value; ticketFilters.etap = ""; renderTickets(); });
+  $("#fTkProwadzacy").addEventListener("change", e => {
+    ticketFilters.prowadzacy = e.target.value;
+    // wybrany projekt spoza portfela nowego prowadzacego - czyscimy, inaczej lista bylaby pusta bez wyjasnienia
+    if (ticketFilters.projekt && e.target.value && STATE.projectById.get(ticketFilters.projekt)?.Owner !== e.target.value) { ticketFilters.projekt = ""; ticketFilters.etap = ""; }
+    renderTickets();
+  });
+  $("#fTkLanes")?.addEventListener("change", e => { ticketFilters.lanes = e.target.value; renderTickets(); });
   $("#fTkOsoba").addEventListener("change", e => { ticketFilters.osoba = e.target.value; renderTickets(); });
   $("#fTkTag").addEventListener("change", e => { ticketFilters.tag = e.target.value; renderTickets(); });
   $("#fTkTyp").addEventListener("change", e => { ticketFilters.typ = e.target.value; renderTickets(); });
@@ -1971,7 +2156,45 @@ async function reactivateTicket(tid) {
 // kopiowanie piatego zestawu listenerow.
 // "project" usuniety z tego rejestru w Faza 1 - Status projektu (master) jest teraz wyliczany
 // z sub-projektow, wiec przeciaganie karty projektu miedzy kolumnami statusu juz nic nie zapisuje.
-const KANBAN_MOVE_HANDLERS = { ticket: moveTicketToStatus };
+const KANBAN_MOVE_HANDLERS = { ticket: (id, status, beforeId, cellEl) => moveTicketOnBoard(id, status, beforeId, cellEl) };
+
+// Kanban v2: przeciagniecie na tablicy = zmiana etapu (kolumny) i/lub recznej kolejnosci w
+// komorce. Kolejnosc numerujemy na nowo (10, 20, 30...) dla wszystkich kart komorki w nowym
+// porzadku i zapisujemy tylko te, ktorym sie zmienila - dzieki temu karty bez Kolejnosci (stare
+// zadania) tez trafiaja dokladnie tam, gdzie je upuszczono.
+async function moveTicketOnBoard(tid, newStatus, beforeId, cellEl) {
+  const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
+  if (!t || !KANBAN_KOLUMNY.includes(newStatus) || !can("update", "zadania_tickety", t)) return;
+  const orderIds = cellEl ? $all(".kanban-card[data-drag-id]", cellEl).map(el => el.getAttribute("data-drag-id")).filter(id => id !== tid) : [];
+  if (beforeId && beforeId !== tid && orderIds.includes(beforeId)) orderIds.splice(orderIds.indexOf(beforeId), 0, tid);
+  else orderIds.push(tid);
+  const updates = [];
+  orderIds.forEach((id, i) => {
+    const tk = STATE.tickets.find(x => x.ID_Tickietu === id);
+    if (!tk || !can("update", "zadania_tickety", tk)) return;
+    const rank = (i + 1) * 10;
+    const patch = {};
+    if (tk.Kolejnosc !== rank) patch.Kolejnosc = rank;
+    if (id === tid && tk.Status !== newStatus) {
+      patch.Status = newStatus;
+      patch.Data_zakonczenia = deriveTicketCompletionDate(newStatus, tk.Data_zakonczenia);
+    }
+    if (Object.keys(patch).length) updates.push({ tk, patch, prev: { Kolejnosc: tk.Kolejnosc, Status: tk.Status, Data_zakonczenia: tk.Data_zakonczenia } });
+  });
+  if (!updates.length) return;
+  updates.forEach(u => Object.assign(u.tk, u.patch));
+  renderTickets();
+  const results = await Promise.allSettled(updates.map(u =>
+    apiPut(`/api/zadania_tickety/${u.tk.ID_Tickietu}`, serializeForApi(u.patch, ["Data_zakonczenia"]))));
+  let failed = 0;
+  results.forEach((r, i) => {
+    const u = updates[i];
+    if (r.status === "fulfilled") { reviveDates([r.value], DATE_FIELDS.tickets); Object.assign(u.tk, r.value); }
+    else { Object.assign(u.tk, u.prev); failed++; }
+  });
+  if (failed) alert(`Nie udało się zapisać ${failed} zmian(y) na tablicy — przywrócono poprzedni stan.`);
+  renderTickets();
+}
 document.addEventListener("dragstart", (e) => {
   const card = e.target.closest("[data-drag-kind]");
   if (!card) return;
@@ -1982,7 +2205,7 @@ document.addEventListener("dragstart", (e) => {
 document.addEventListener("dragend", (e) => {
   const card = e.target.closest("[data-drag-kind]");
   if (card) card.classList.remove("dragging");
-  $all(".kanban-col.drag-over").forEach(c => c.classList.remove("drag-over"));
+  $all("[data-drop-status].drag-over").forEach(c => c.classList.remove("drag-over"));
 });
 document.addEventListener("dragover", (e) => {
   const col = e.target.closest("[data-drop-status]");
@@ -2002,7 +2225,8 @@ document.addEventListener("drop", (e) => {
   col.classList.remove("drag-over");
   const [kind, id] = (e.dataTransfer.getData("text/plain") || "").split("|");
   const handler = KANBAN_MOVE_HANDLERS[kind];
-  if (handler && id) handler(id, col.getAttribute("data-drop-status"));
+  const beforeCard = e.target.closest(".kanban-card[data-drag-id]");
+  if (handler && id) handler(id, col.getAttribute("data-drop-status"), beforeCard?.getAttribute("data-drag-id") || null, col);
 });
 
 /* ================================================================== VIEW: GANTT */
@@ -2032,8 +2256,8 @@ let ganttCollapsedStages = new Set();
 function ticketGanttStatusClass(t) {
   if (DONE_TICKET_STATUSES.includes(t.Status)) return "done";
   if (isOverdueTicket(t)) return "delayed";
-  if (t.Status === "Backlog") return "notstarted";
-  return "progress"; // W tym tygodniu / W trakcie / Do przegladu / Zablokowane
+  if (t.Status === "Backlog" || t.Status === "Zaplanowane") return "notstarted";
+  return "progress"; // W trakcie / Do przegladu
 }
 // Ticket z Data_rozpoczecia (opcjonalna, B3) dostaje prawdziwy pasek; bez niej - tylko Termin
 // jest znany, wiec rysujemy punktowy znacznik (romb, reuse .gantt-milestone) w miejscu terminu
@@ -2098,16 +2322,32 @@ function filteredProjectsForGantt() {
   });
 }
 
+// Rozpietosc projektu na Gancie skroconym: daty projektu ORAZ jego etapow (najwczesniejszy start,
+// najpozniejszy koniec). Etap w toku (np. nadzor autorski bez daty konca) wydluza pasek do dzis -
+// inaczej projekt z zakonczonym PB/PT i trwajacym nadzorem wygladal na skonczony (feedback 10.09.2026).
+function projectSpan(p) {
+  const stages = STATE.tasks.filter(t => t.ID_Projektu === p.ID_Projektu && t.Archiwalny !== "Tak");
+  const starts = [p.Data_rozpoczecia, ...stages.map(t => t.Data_start_plan)].filter(d => d instanceof Date);
+  const ends = [p.Data_zakonczenia_planowana, ...stages.map(t => t.Data_koniec_plan)].filter(d => d instanceof Date);
+  const ongoing = p.Status !== "Zakonczony" && stages.some(t => ["W trakcie", "Przeglad"].includes(t.Status)
+    && !(t.Data_koniec_plan instanceof Date && t.Data_koniec_plan >= today0()));
+  if (ongoing) ends.push(today0());
+  if (!starts.length && !ends.length) return null;
+  const start = new Date(Math.min(...(starts.length ? starts : ends).map(d => d.getTime())));
+  const end = new Date(Math.max(...(ends.length ? ends : starts).map(d => d.getTime())));
+  return { start, end, ongoing };
+}
 function buildGanttCondensed(projects) {
   const pseudoTasks = projects
-    .filter(p => p.Data_rozpoczecia instanceof Date || p.Data_zakonczenia_planowana instanceof Date)
-    .map(p => ({
+    .map(p => ({ p, span: projectSpan(p) }))
+    .filter(x => x.span)
+    .map(({ p, span }) => ({
       ID_Zadania: p.ID_Projektu,
       ID_Projektu: p.ID_Projektu,
-      Nazwa_zadania: p.Nazwa,
-      Data_start_plan: p.Data_rozpoczecia || p.Data_zakonczenia_planowana,
-      Data_koniec_plan: p.Data_zakonczenia_planowana || p.Data_rozpoczecia,
-      Status: projectGanttPseudoStatus(p),
+      Nazwa_zadania: p.Nazwa + (span.ongoing ? " · trwa →" : ""),
+      Data_start_plan: span.start,
+      Data_koniec_plan: span.end,
+      Status: span.ongoing ? "W trakcie" : projectGanttPseudoStatus(p),
       Procent_ukonczenia: p.Procent_postepu,
       ID_Osoby_odpowiedzialnej: null,
       // Dodatkowe pola tylko na potrzeby widoku skroconego (kolor per architekt prowadzacy +
@@ -2121,6 +2361,12 @@ function buildGanttCondensed(projects) {
 }
 
 function buildGantt(tasks, opts = {}) {
+  // Etap w toku bez daty konca (np. nadzor autorski - 1, 2, 3 lata, feedback 10.09.2026) nie
+  // znikal z osi: rysujemy go do dzis z oznaczeniem "trwa →" zamiast pomijac.
+  if (!opts.condensed && !opts.ticketRows) {
+    tasks = tasks.map(t => (t.Data_start_plan instanceof Date && !(t.Data_koniec_plan instanceof Date) && ["W trakcie", "Przeglad"].includes(t.Status))
+      ? { ...t, Data_koniec_plan: t.Data_start_plan > today0() ? t.Data_start_plan : today0(), _ongoing: true } : t);
+  }
   if (!tasks.length) return `<div class="kpi-sub">${opts.condensed ? "Brak projektów z ustawionymi datami." : "Brak zadań spełniających kryteria."}</div>`;
   const starts = tasks.map(t => t.Data_start_plan).filter(d => d instanceof Date);
   const ends = tasks.map(t => t.Data_koniec_plan).filter(d => d instanceof Date);
@@ -2146,7 +2392,7 @@ function buildGantt(tasks, opts = {}) {
 
   const groupBy = opts.groupBy || "projekt";
   const groupKeyOf = (t) => groupBy === "osoba" ? (t.ID_Osoby_odpowiedzialnej || "—") : t.ID_Projektu;
-  const groupLabelOf = (key) => groupBy === "osoba" ? personName(key) : projectName(key);
+  const groupLabelOf = (key) => groupBy === "osoba" ? (key === "—" ? "Nieprzypisane / podwykonawca" : personName(key)) : projectName(key);
   const groupClickAttr = (key) => groupBy === "osoba" ? `data-open-person="${esc(key)}"` : `data-open-project="${esc(key)}"`;
 
   const grouped = new Map();
@@ -2177,17 +2423,17 @@ function buildGantt(tasks, opts = {}) {
         `Tickety: ${t._ticketCount}`,
         `Realizacja: ${Math.round(pct)}%`,
       ].map(esc).join("&#10;");
-      return `<div class="gantt-bar" style="left:${left}%;width:${width}%;background:${bg}"
+      return `<div class="gantt-bar ${t.Nazwa_zadania.endsWith("trwa →") ? "gantt-bar-ongoing" : ""}" style="left:${left}%;width:${width}%;background:${bg}"
           title="${title}">
           <div class="fill-progress" style="width:${pct}%"></div>
           <span>${esc(t.Nazwa_zadania)} — ${esc(t._owner || "—")} · ${Math.round(pct)}%</span>
         </div>`;
     }
     const cls = taskStatusClass(t.Status);
-    return `<div class="gantt-bar status-${cls}" style="left:${left}%;width:${width}%"
+    return `<div class="gantt-bar status-${cls} ${t._ongoing || t._ongoingCondensed ? "gantt-bar-ongoing" : ""}" style="left:${left}%;width:${width}%"
         title="${esc(t.Nazwa_zadania)}&#10;${fmtDate(s)} — ${fmtDate(e)}&#10;${Math.round(pct)}% ukończenia&#10;Odpowiedzialny: ${esc(personName(t.ID_Osoby_odpowiedzialnej))}">
         <div class="fill-progress" style="width:${pct}%"></div>
-        <span>${esc(t.Nazwa_zadania)}</span>
+        <span>${esc(t.Nazwa_zadania)}${t._ongoing ? " · trwa →" : ""}</span>
       </div>`;
   };
   // Faza 4 (C5) - termin sprawdzenia (wewnetrzny deadline PRZED nieprzekraczalnym terminem
@@ -2212,7 +2458,7 @@ function buildGantt(tasks, opts = {}) {
       // widoku skroconego (buildGanttCondensed) maja ID_Zadania = ID projektu, ktore nigdy nie
       // wystapi w zadania_etapy, wiec ponizsze i tak zwrocilyby [] tam nawet bez opts.condensed -
       // ale jawny warunek jest tansi (pomija lookup) i czytelniejszy niz poleganie na tym zbiegu.
-      const stageTickets = opts.condensed ? [] :
+      const stageTickets = (opts.condensed || opts.ticketRows) ? [] :
         ticketIdsForStage(t.ID_Zadania).map(tid => STATE.tickets.find(x => x.ID_Tickietu === tid)).filter(Boolean);
       const plottable = stageTickets.filter(tk => tk.Termin instanceof Date);
       const collapsed = ganttCollapsedStages.has(t.ID_Zadania);
@@ -2220,7 +2466,7 @@ function buildGantt(tasks, opts = {}) {
         ? `<button type="button" class="gantt-stage-toggle" data-toggle-gantt-stage="${esc(t.ID_Zadania)}" title="${collapsed ? "Rozwiń zadania tego etapu" : "Zwiń zadania tego etapu"}">${collapsed ? "▸" : "▾"}</button>`
         : "";
       const stageRow = `
-      <div class="gantt-row" data-task-id="${esc(t.ID_Zadania)}" data-open-project="${esc(t.ID_Projektu)}" title="${opts.condensed ? "Kliknij, aby otworzyć projekt" : "Kliknij, aby edytować etap"}">
+      <div class="gantt-row" ${opts.ticketRows ? `data-open-ticket="${esc(t._ticketId)}" title="Kliknij, aby otworzyć zadanie"` : `data-task-id="${esc(t.ID_Zadania)}" data-open-project="${esc(t.ID_Projektu)}" title="${opts.condensed ? "Kliknij, aby otworzyć projekt" : "Kliknij, aby edytować etap"}"`}>
         <div class="gantt-label-col" title="${esc(t.Nazwa_zadania)}">${toggleHtml}${esc(t.Nazwa_zadania)}${plottable.length ? ` <span class="gantt-stage-count">${plottable.length}</span>` : ""}</div>
         <div class="gantt-track">
           <div class="gantt-today" style="position:absolute;left:${todayPct}%;top:0;bottom:0;border-left:1px dashed var(--status-critical)"></div>
@@ -2339,7 +2585,7 @@ function renderGanttView() {
   const taskTable = condensed && ganttFilters.projekt ? ganttProjectTaskTableHtml(filteredTasks()) : "";
   $("#view-gantt").innerHTML = `${renderGanttFilters()}<div class="panel">${body}</div>${taskTable}`;
   $("#fGanttCount").textContent = condensed
-    ? `${filteredProjectsForGantt().filter(p => p.Data_rozpoczecia instanceof Date || p.Data_zakonczenia_planowana instanceof Date).length} projektów`
+    ? `${filteredProjectsForGantt().filter(p => projectSpan(p)).length} projektów`
     : `${filteredTasks().length} zadań`;
   $("#fGanttProj").addEventListener("change", e => { ganttFilters.projekt = e.target.value; renderGanttView(); });
   $("#fGanttTyp").addEventListener("change", e => { ganttFilters.typ = e.target.value; renderGanttView(); });
@@ -3396,8 +3642,48 @@ async function saveTeamFromForm(data, oid) {
   openPersonDetail(saved.ID_Osoby);
 }
 
+// "Scal osoby" (feedback 10.09.2026) - duplikat tej samej osoby (Gosia/Malgorzata) scalamy, nie
+// usuwamy: serwer przepina wszystkie odwolania (przypisania, tickety, etapy, ryzyka...) na osobe
+// docelowa, robi przed tym backup i dopiero potem usuwa pusty rekord duplikatu.
+function openMergePeopleForm(keepId) {
+  const keep = STATE.teamById.get(keepId);
+  if (!requireExisting(keep, "osoba")) return;
+  const others = STATE.team.filter(p => p.ID_Osoby !== keepId);
+  const body = `
+    <div class="empty-hint full" style="grid-column:1/-1">
+      Wybrany duplikat zostanie scalony w <b>${esc(keep.Imie_i_nazwisko)}</b>: jego przypisania do projektów,
+      zadania, etapy, ryzyka i notatki przejdą na tę osobę, a pusty rekord duplikatu zostanie usunięty.
+      Przed operacją serwer robi kopię zapasową bazy. Operacji nie da się cofnąć z poziomu aplikacji.
+    </div>
+    ${fSelect("Duplikat do scalenia *", "duplikat", [["", "— wybierz —"], ...others.map(p => [p.ID_Osoby, `${p.Imie_i_nazwisko} (${p.ID_Osoby}) · ${assignmentsForPerson(p.ID_Osoby).length} przypisań · ${ticketsForPerson(p.ID_Osoby).length} zadań`])], "")}
+  `;
+  openModal(`Scal duplikat w „${keep.Imie_i_nazwisko}”`, body, {
+    submitLabel: "Scal (nieodwracalne)",
+    onSubmit: (data) => saveMergePeopleFromForm(data, keepId),
+  });
+}
+
+async function saveMergePeopleFromForm(data, keepId) {
+  if (!data.duplikat) { alert("Wybierz duplikat do scalenia."); return; }
+  const keep = STATE.teamById.get(keepId), dup = STATE.teamById.get(data.duplikat);
+  if (!confirm(`Na pewno scalić „${dup?.Imie_i_nazwisko}” w „${keep?.Imie_i_nazwisko}”? Rekord „${dup?.Imie_i_nazwisko}” zostanie usunięty, a jego dane przejdą na „${keep?.Imie_i_nazwisko}”.`)) return;
+  let res;
+  try {
+    res = await apiPost(`/api/zespol/${keepId}/scal`, { duplikat: data.duplikat });
+  } catch (e) {
+    alert("Nie udało się scalić osób: " + e.message);
+    return;
+  }
+  closeModal();
+  await loadFromApi();
+  renderAll();
+  const moved = Object.values(res?.przepiete || {}).reduce((a, b) => a + b, 0);
+  alert(`Scalono. Przepięto ${moved} odwołań na „${keep?.Imie_i_nazwisko}”.`);
+  openPersonDetail(keepId);
+}
+
 async function deleteTeamMember(oid) {
-  if (!confirm("Usunąć osobę? Powiązane przypisania do projektów zostaną również usunięte.")) return;
+  if (!confirm("Usunąć osobę? Jej przypisania do projektów zostaną usunięte, a zadania i etapy zostaną bez przypisanej osoby.\n\nJeśli to duplikat innej osoby - anuluj i użyj „Scal z duplikatem”, żeby niczego nie stracić.")) return;
   if (!await deleteEntity(`/api/zespol/${oid}`, "osoba")) return;
   STATE.team = STATE.team.filter(t => t.ID_Osoby !== oid);
   STATE.assignments = STATE.assignments.filter(a => a.ID_Osoby !== oid);
@@ -3796,7 +4082,7 @@ function pickMentionSuggestion(name) {
   closeMentionSuggestions();
 }
 
-function openTicketForm(pid, tid = null, seed = null) {
+function openTicketForm(pid, tid = null, seed = null, opts = {}) {
   const t = tid ? STATE.tickets.find(x => x.ID_Tickietu === tid) : (seed || {});
   if (!requireExisting(t, "ticket")) return;
   const currentPid = pid || t.ID_Projektu || "";
@@ -3823,7 +4109,10 @@ function openTicketForm(pid, tid = null, seed = null) {
     ${fDaysDateLink("Data_rozpoczecia", "Termin", (t.Data_rozpoczecia instanceof Date && t.Termin instanceof Date) ? Math.round((t.Termin - t.Data_rozpoczecia) / 86400000) : "")}
     ${fCheckboxGroup("Powiązane etapy / sub-projekty", "Etapy", stageCheckboxPairs(currentPid), tid ? stageIdsForTicket(tid) : (seed?._seedStageIds || []))}
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), t.Priorytet || "Sredni")}
-    ${fSelect("Status", "Status", pairs(STATUSY_TICKIETOW), t.Status || "Backlog")}
+    ${fSelect("Etap pracy (kolumna tablicy)", "Status", pairs(STATUSY_TICKIETOW), t.Status || "Backlog")}
+    ${fSelect("Klasa usługi", "Klasa_uslugi", KLASY_USLUG, t.Klasa_uslugi || (isUrzedoweTicket(t) ? "Termin staly" : "Standard"))}
+    ${fSelect("Zablokowane?", "Zablokowane", [["Nie", "Nie"], ["Tak", "Tak — czeka na coś/kogoś"]], t.Zablokowane || "Nie")}
+    ${fInput("Powód blokady (np. czeka na inwestora)", "Powod_blokady", t.Powod_blokady, "text")}
     ${fSelect("Kategoria zadania", "Typ_zadania", [["Wewnetrzne", "Wewnętrzne"], ["Urzedowe", "Urzędowe (nieprzekraczalny termin)"]], t.Typ_zadania || "Wewnetrzne")}
     ${fInput("Szacowane roboczogodziny", "Szacowane_roboczogodziny", t.Szacowane_roboczogodziny, "number", "min=0 step=0.5")}
     ${fInput("Rzeczywiste roboczogodziny", "Rzeczywiste_roboczogodziny", t.Rzeczywiste_roboczogodziny, "number", "min=0 step=0.5")}
@@ -3834,7 +4123,7 @@ function openTicketForm(pid, tid = null, seed = null) {
   openModal(tid ? "Edytuj zadanie (ticket)" : "Nowe zadanie (ticket)", body, {
     wide: true,
     submitLabel: "Zapisz zadanie",
-    onSubmit: (data) => saveTicketFromForm(data, pid, tid),
+    onSubmit: (data) => saveTicketFromForm(data, pid, tid, opts),
   });
   if (tid) loadTicketComments(tid);
   // bez ustalonego projektu (formularz otwarty z zakladki Zadania) - po wybraniu projektu
@@ -3858,7 +4147,7 @@ function openTicketForm(pid, tid = null, seed = null) {
   }
 }
 
-async function saveTicketFromForm(data, pid, tid) {
+async function saveTicketFromForm(data, pid, tid, opts = {}) {
   const finalPid = pid || data.ID_Projektu;
   if (!finalPid || !data.Tytul || !data.Termin || (!data.ID_Osoby_przypisanej && !data.ID_Podwykonawcy)) {
     alert("Uzupełnij projekt, tytuł, termin oraz przypisz osobę z zespołu lub podwykonawcę.");
@@ -3881,7 +4170,13 @@ async function saveTicketFromForm(data, pid, tid) {
     Termin: parseDateInput(data.Termin),
     Szacowane_roboczogodziny: num(data.Szacowane_roboczogodziny),
     Rzeczywiste_roboczogodziny: num(data.Rzeczywiste_roboczogodziny),
-    Priorytet: data.Priorytet, Status: data.Status,
+    Priorytet: data.Priorytet,
+    // Nowe zadanie z terminem nie zostaje w Backlogu - ma date, wiec jest zaplanowane (Kanban:
+    // Backlog = jeszcze nie wiadomo kiedy). Zmiane etapu przy edycji robi czlowiek, nie automat.
+    Status: (isNew && data.Status === "Backlog" && data.Termin) ? "Zaplanowane" : data.Status,
+    Klasa_uslugi: data.Klasa_uslugi || "Standard",
+    Zablokowane: data.Zablokowane === "Tak" ? "Tak" : "Nie",
+    Powod_blokady: data.Zablokowane === "Tak" ? (data.Powod_blokady || null) : null,
     Typ_zadania: data.Typ_zadania || "Wewnetrzne",
     Data_zakonczenia: deriveTicketCompletionDate(data.Status, existing.Data_zakonczenia),
     Etapy: JSON.parse(data.Etapy || "[]"),
@@ -3898,7 +4193,7 @@ async function saveTicketFromForm(data, pid, tid) {
   else Object.assign(existing, saved);
   closeModal();
   renderAll();
-  if (pid) openProjectDetail(pid); else renderTickets();
+  if (pid && !opts.stayInTickets) openProjectDetail(pid); else renderTickets();
 }
 
 async function deleteTicket(tid, pid) {
@@ -5123,6 +5418,7 @@ function openPersonDetail(oid) {
   $("#dpContent").innerHTML = `
     <div style="display:flex;justify-content:flex-end;gap:6px">
       ${can("update", "zespol") ? `<button class="icon-btn" data-edit-team="${esc(oid)}">Edytuj</button>` : ""}
+      ${FULL_ACCESS_ROLES.includes(STATE.me.role) ? `<button class="icon-btn" data-merge-person="${esc(oid)}" title="Duplikat tej samej osoby (np. Gosia / Małgorzata) - przenosi jego przypisania, zadania i etapy na tę osobę, zamiast je tracić przy usuwaniu">Scal z duplikatem →</button>` : ""}
       ${can("delete", "zespol") ? `<button class="icon-btn danger" data-delete-team="${esc(oid)}">Usuń</button>` : ""}
     </div>
     <h2>${esc(person.Imie_i_nazwisko)}</h2>
@@ -5529,6 +5825,8 @@ document.addEventListener("click", (e) => {
   if (addTeamBoard) { openTeamForm(null, "Zarzad"); return; }
   const editTeam = e.target.closest("[data-edit-team]");
   if (editTeam) { openTeamForm(editTeam.getAttribute("data-edit-team")); return; }
+  const mergePersonBtn = e.target.closest("[data-merge-person]");
+  if (mergePersonBtn) { openMergePeopleForm(mergePersonBtn.getAttribute("data-merge-person")); return; }
   const deleteTeamBtn = e.target.closest("[data-delete-team]");
   if (deleteTeamBtn) { deleteTeamMember(deleteTeamBtn.getAttribute("data-delete-team")); return; }
 
@@ -5544,6 +5842,10 @@ document.addEventListener("click", (e) => {
   const deleteTaskBtn = e.target.closest("[data-delete-task]");
   if (deleteTaskBtn) { deleteTask(deleteTaskBtn.getAttribute("data-delete-task"), deleteTaskBtn.getAttribute("data-project")); return; }
 
+  // Feedback 10.09.2026: "+ Nowy ticket" w zakladce Zadania z wybranym projektem nie pyta juz
+  // o projekt (podstawia filtr), a po zapisie zostaje w Zadaniach zamiast skakac w karte projektu.
+  const addTicketZadania = e.target.closest("[data-add-ticket-zadania]");
+  if (addTicketZadania) { openTicketForm(addTicketZadania.getAttribute("data-add-ticket-zadania") || null, null, null, { stayInTickets: true }); return; }
   const addTicket = e.target.closest("[data-add-ticket]");
   if (addTicket) { openTicketForm(addTicket.getAttribute("data-add-ticket")); return; }
   const deleteTicketBtn = e.target.closest("[data-delete-ticket]");
@@ -5590,6 +5892,19 @@ document.addEventListener("click", (e) => {
   // Kolorowe buttony filtrujace po etapie/sub-projekcie (mirror data-tk-status-filter powyzej),
   // ale pojedynczego wyboru (jeden etap na raz), nie multi-select jak statusy - klik na juz
   // aktywny chip zaznacza go ponownie (bez toggle-off), Wszystkie etapy = "" czysci filtr.
+  const tkHorizonChip = e.target.closest("[data-tk-horizon-filter]");
+  if (tkHorizonChip) {
+    const val = tkHorizonChip.getAttribute("data-tk-horizon-filter");
+    if (!val) { ticketFilters.horyzonty = []; ticketFilters.tylkoNaCito = false; ticketFilters.tylkoZablokowane = false; }
+    else {
+      const idx = ticketFilters.horyzonty.indexOf(val);
+      if (idx === -1) ticketFilters.horyzonty.push(val); else ticketFilters.horyzonty.splice(idx, 1);
+    }
+    renderTickets();
+    return;
+  }
+  const tkFlagChip = e.target.closest("[data-tk-flag-filter]");
+  if (tkFlagChip) { const k = tkFlagChip.getAttribute("data-tk-flag-filter"); ticketFilters[k] = !ticketFilters[k]; renderTickets(); return; }
   const tkEtapChip = e.target.closest("[data-tk-etap-filter]");
   if (tkEtapChip) { ticketFilters.etap = tkEtapChip.getAttribute("data-tk-etap-filter"); renderTickets(); return; }
   const tkSortHeader = e.target.closest("[data-tk-sort]");
@@ -5606,7 +5921,7 @@ document.addEventListener("click", (e) => {
   const reactivateBtn = e.target.closest("[data-reactivate-ticket]");
   if (reactivateBtn) { reactivateTicket(reactivateBtn.getAttribute("data-reactivate-ticket")); return; }
   const openTicketRow = e.target.closest("[data-open-ticket]");
-  if (openTicketRow) { const tkid = openTicketRow.getAttribute("data-open-ticket"); const tk = STATE.tickets.find(x => x.ID_Tickietu === tkid); if (tk) { openTicketForm(tk.ID_Projektu, tkid); return; } }
+  if (openTicketRow) { const tkid = openTicketRow.getAttribute("data-open-ticket"); const tk = STATE.tickets.find(x => x.ID_Tickietu === tkid); if (tk) { openTicketForm(tk.ID_Projektu, tkid, null, { stayInTickets: !!openTicketRow.closest("#view-zadania") }); return; } }
 
   const addRisk = e.target.closest("[data-add-risk]");
   if (addRisk) { openRiskForm(addRisk.getAttribute("data-add-risk")); return; }

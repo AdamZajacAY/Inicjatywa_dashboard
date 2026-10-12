@@ -822,3 +822,23 @@ if __name__ == "__main__":
     print(ensure_checklist_table(path) or "checklisty_projektow: OK")
     print(ensure_client_krs_column(path) or "klienci KRS column: OK")
     print(ensure_project_golive_column(path) or "projekty Data_go_live column: OK")
+
+
+def ensure_ticket_kanban_v2(db_path):
+    """Feedback W. Ferfeta (10.09.2026) + praktyki Kanban: kolumny tablicy = ETAP pracy, nie
+    horyzont czasu. "W tym tygodniu" (czas) -> "Zaplanowane" (etap; horyzont Dzis/Ten tydzien
+    liczy sie teraz automatycznie z dat jako swimlane w app.js). "Zablokowane" przestaje byc
+    kolumna - to flaga na karcie (Zablokowane='Tak' + Powod_blokady), zadanie wraca do etapu
+    "W trakcie". Dochodza: Klasa_uslugi (Standard / Na cito / Termin staly - zamiast priorytetu,
+    ktory wszyscy ustawiali na Wysoki) i Kolejnosc (reczna kolejnosc w kolumnie, przeciaganiem).
+    Idempotentne - UPDATE-y nie trafiaja w nic przy kolejnym uruchomieniu."""
+    _ensure_columns(db_path, "zadania_tickety", {
+        "Klasa_uslugi": "TEXT", "Zablokowane": "TEXT", "Powod_blokady": "TEXT", "Kolejnosc": "REAL",
+    })
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE zadania_tickety SET Status = 'Zaplanowane' WHERE Status = 'W tym tygodniu'")
+        conn.execute("UPDATE zadania_tickety SET Status = 'W trakcie', Zablokowane = 'Tak' WHERE Status = 'Zablokowane'")
+        conn.commit()
+    finally:
+        conn.close()

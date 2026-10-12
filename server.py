@@ -54,7 +54,7 @@ from baza_danych.schema_migrate import (
     ensure_checklist_stage_column,
     ensure_meeting_note_attendee_columns,
     ensure_tagi_biblioteka_table, ensure_seed_tagi_biblioteka,
-    ensure_harmonogram_archive_column, ensure_ticket_pin_column,
+    ensure_harmonogram_archive_column, ensure_ticket_pin_column, ensure_ticket_kanban_v2,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -149,6 +149,7 @@ ensure_tagi_biblioteka_table(DB_PATH)  # jw. - nowa tabela biblioteki tagow
 ensure_seed_tagi_biblioteka(DB_PATH)  # jw. - musi biec PO powyzszej, zasiewa istniejacymi tagami z projekty/zadania_tickety
 ensure_harmonogram_archive_column(DB_PATH)  # jw. - Archiwalny na harmonogram, ukrywa stary etap z checkboxa/chipow, zostawia w Gantcie
 ensure_ticket_pin_column(DB_PATH)  # jw. - Data_przypiecia_dzis na zadania_tickety, "Moje zadania"/widok Dzisiaj
+ensure_ticket_kanban_v2(DB_PATH)  # jw. - statusy Kanban v2 + klasa uslugi/blokada/kolejnosc (feedback 10.09.2026)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -1025,8 +1026,11 @@ ENUM_FIELDS = {
     },
     "zadania_tickety": {
         "Priorytet": {"Wysoki", "Sredni", "Niski"},
-        "Status": {"Backlog", "W tym tygodniu", "W trakcie", "Do przegladu", "Zrobione",
-                    "Zablokowane", "Zarchiwizowane"},
+        # Kanban v2 (feedback 10.09.2026) - kolumny = etap pracy. "W tym tygodniu" -> "Zaplanowane"
+        # (horyzont czasu liczony z dat w app.js), "Zablokowane" -> flaga ponizej, nie status.
+        "Status": {"Backlog", "Zaplanowane", "W trakcie", "Do przegladu", "Zrobione", "Zarchiwizowane"},
+        "Klasa_uslugi": {"Standard", "Na cito", "Termin staly"},
+        "Zablokowane": {"Tak", "Nie"},
         # Faza 3, B10 - urzedowe (wnioski/uzupelnienia, nieprzekraczalny termin) vs wewnetrzne.
         # NULL (zadania sprzed tego pola) traktowany jak "Wewnetrzne" wszedzie w app.js/server.py -
         # bezpieczny domyslny brak czerwonej flagi terminu nieprzekraczalnego.
@@ -1731,6 +1735,72 @@ def merge_projects(master_id):
         conn.execute("DELETE FROM projekty WHERE ID_Projektu = ?", (sid,))
     conn.commit()
     return jsonify(prepare_row_for_response(conn, g.user, "projekty", fetch_row(conn, "projekty", "ID_Projektu", master_id)))
+
+
+# Pola tekstowe (nie FK) przechowujace IMIE osoby zamiast jej ID - przy scalaniu poprawiane po
+# dokladnym dopasowaniu nazwy duplikatu (patrz merge_people).
+PERSON_NAME_TEXT_FIELDS = {"projekty": ["Owner", "Kierownik_projektu"]}
+
+
+@app.route("/api/zespol/<keep_id>/scal", methods=["POST"])
+def merge_people(keep_id):
+    # "Scal osoby" (feedback 10.09.2026) - zamiast USUWANIA duplikatu w zakladce Zespol, ktore
+    # kasuje jego przypisania (ON DELETE CASCADE) i odpina jego tickety/etapy (ON DELETE SET NULL),
+    # przepina WSZYSTKIE odwolania do duplikatu na osobe docelowa, potem usuwa pusty juz rekord.
+    # Kolumny odwolujace sie do zespol sa wykrywane z PRAGMA foreign_key_list (nie z recznie
+    # utrzymywanej listy), wiec nowa tabela z FK do zespol jest objeta automatycznie.
+    # COO/Admin only; przed zmiana robimy kopie zapasowa bazy - operacja jest nieodwracalna.
+    if g.user["Rola"] not in FULL_ACCESS_ROLES:
+        abort(403)
+    conn = get_db()
+    keep = fetch_row(conn, "zespol", "ID_Osoby", keep_id)
+    if keep is None:
+        abort(404)
+    payload = request.get_json(force=True, silent=True) or {}
+    dup_id = payload.get("duplikat")
+    if not dup_id or dup_id == keep_id:
+        return jsonify({"error": "Wskaż inną osobę (duplikat) do scalenia."}), 400
+    dup = fetch_row(conn, "zespol", "ID_Osoby", dup_id)
+    if dup is None:
+        return jsonify({"error": "Osoba do scalenia nie istnieje."}), 404
+    # users.ID_Osoby jest UNIQUE - dwa konta logowania nie moga wskazywac jednej osoby.
+    both_have_accounts = conn.execute(
+        "SELECT COUNT(DISTINCT ID_Osoby) FROM users WHERE ID_Osoby IN (?, ?)", (keep_id, dup_id)).fetchone()[0] == 2
+    if both_have_accounts:
+        return jsonify({"error": "Obie osoby mają konta logowania. Najpierw odłącz konto duplikatu w zakładce Użytkownicy."}), 409
+    try:
+        create_backup()
+    except Exception as e:
+        print(f"Blad backupu przed scaleniem osob: {e}")
+        return jsonify({"error": "Nie udało się utworzyć kopii zapasowej przed scaleniem — operacja przerwana."}), 500
+
+    counts = {}
+    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+    for table in tables:
+        for fk in conn.execute(f"PRAGMA foreign_key_list({table})").fetchall():
+            if fk["table"] != "zespol":
+                continue
+            col = fk["from"]
+            if table == "przypisania":
+                # Ten sam projekt przypisany obu osobom -> zostaje jedno przypisanie (osoby docelowej),
+                # drugie byloby duplikatem tej samej osoby na tym samym projekcie.
+                conn.execute(
+                    "DELETE FROM przypisania WHERE ID_Osoby = ? AND ID_Projektu IN "
+                    "(SELECT ID_Projektu FROM przypisania WHERE ID_Osoby = ?)", (dup_id, keep_id))
+            n = conn.execute(f"UPDATE {table} SET {col} = ? WHERE {col} = ?", (keep_id, dup_id)).rowcount
+            if n:
+                counts[f"{table}.{col}"] = n
+    dup_name, keep_name = dup.get("Imie_i_nazwisko"), keep.get("Imie_i_nazwisko")
+    if dup_name and keep_name:
+        for table, cols in PERSON_NAME_TEXT_FIELDS.items():
+            for col in cols:
+                n = conn.execute(f"UPDATE {table} SET {col} = ? WHERE {col} = ?", (keep_name, dup_name)).rowcount
+                if n:
+                    counts[f"{table}.{col}"] = n
+    conn.execute("DELETE FROM zespol WHERE ID_Osoby = ?", (dup_id,))
+    conn.commit()
+    _remove_existing_avatar_files(dup_id)
+    return jsonify({"zachowana": keep_id, "usunieta": dup_id, "przepiete": counts})
 
 
 @app.route("/api/zadania_tickety/<ticket_id>/komentarze", methods=["GET", "POST"])

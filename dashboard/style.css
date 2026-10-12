@@ -709,3 +709,61 @@ body.report-mode #execReport {
   padding: 6px 8px; border-radius: 7px; font: inherit; font-size: 12.5px; color: var(--text-primary);
 }
 .mention-suggestion:hover, .mention-suggestion.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
+/* ---------- Kanban v2 (feedback 10.09.2026): kolumny = etap pracy, wiersze = horyzont/osoba/projekt */
+.kb-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 8px; }
+.kb-toolbar select { margin-left: 6px; }
+.kb-scroll { overflow-x: auto; padding-bottom: 6px; }
+.kb-grid { display: grid; grid-template-columns: 150px repeat(5, minmax(220px, 1fr)); gap: 6px; min-width: 1250px; }
+.kb-corner { position: sticky; left: 0; background: var(--page); z-index: 2; }
+.kb-col-head {
+  display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--text-primary);
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--col-tint, transparent) 12%, var(--surface-1));
+  position: sticky; top: 0; z-index: 1;
+}
+.kb-col-note { font-size: 10.5px; font-weight: 500; color: var(--text-muted); }
+.kb-col-head .count-pill { margin-left: auto; }
+.kb-lane-label {
+  position: sticky; left: 0; z-index: 1; background: var(--page);
+  font-size: 12.5px; font-weight: 700; color: var(--text-primary); padding: 10px 8px 10px 10px;
+  border-left: 3px solid var(--border); display: flex; flex-direction: column; gap: 4px; align-items: flex-start;
+}
+.kb-lane-label .count-pill { font-weight: 600; }
+.kb-lane-opoznione { border-left-color: var(--status-critical); color: var(--status-critical); }
+.kb-lane-dzis { border-left-color: var(--status-serious); }
+.kb-lane-ten-tydzien { border-left-color: var(--status-warning); }
+.kb-lane-pozniej { border-left-color: var(--status-active); }
+.kb-lane-wip { font-size: 10.5px; font-weight: 600; color: var(--text-muted); }
+.kb-lane-wip.over { color: var(--status-critical); }
+.kb-cell {
+  min-height: 64px; padding: 8px; display: flex; flex-direction: column; gap: 8px;
+  background: color-mix(in srgb, var(--col-tint, transparent) 5%, var(--surface-1));
+  border: 1px solid var(--border); border-radius: var(--radius); transition: background .12s, border-color .12s;
+}
+.kb-cell.drag-over { background: color-mix(in srgb, var(--accent) 8%, var(--surface-1)); border-color: var(--accent); }
+.kanban-card.blocked { border-right: 3px solid var(--status-critical); }
+.kanban-card .kc-blocked { font-size: 11px; font-weight: 600; color: var(--status-critical); margin: 2px 0; }
+.wip-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+.wip-chip {
+  font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent); color: var(--text-secondary);
+}
+.wip-chip.over { background: color-mix(in srgb, var(--status-critical) 16%, transparent); color: var(--status-critical); }
+
+/* ---------- Kalendarz zadan: paski od rozpoczecia do terminu, tydzien = jedna siatka 7 kolumn */
+.tcal-weeks { display: flex; flex-direction: column; gap: 4px; }
+.tcal-week { display: grid; grid-template-columns: repeat(7, 1fr); column-gap: 4px; row-gap: 2px; min-height: 92px; }
+.tcal-week .tcal-day { min-height: 0; z-index: 0; justify-content: space-between; }
+.tcal-day-outside { opacity: .45; }
+.tcal-bar {
+  z-index: 1; align-self: center; margin: 0 3px; font-size: 10.5px; font-weight: 600; line-height: 18px;
+  padding: 0 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tcal-bar.cont-l { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: 0; }
+.tcal-bar.cont-r { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: 0; }
+.tcal-bar:hover { filter: brightness(1.12); }
+.tcal-week .tcal-more { margin-top: auto; }
+
+/* ---------- Gantt: etap/projekt w toku bez daty konca (np. nadzor autorski) */
+.gantt-bar-ongoing { border-right: 3px dashed rgba(255,255,255,.85); border-top-right-radius: 0; border-bottom-right-radius: 0; }
