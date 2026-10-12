@@ -1469,6 +1469,18 @@ def bootstrap():
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
         rows = scoped_rows(conn, g.user, table, rows, allowed=allowed_projects)
         result[key] = [prepare_row_for_response(conn, g.user, table, dict(r)) for r in rows]
+    # Punkty notatek ze spotkan w tym samym zapytaniu (audyt 12.10.2026) - wczesniej frontend
+    # pobieral je osobnym GET /api/notatki_spotkan/<id>/punkty na KAZDA notatke przy starcie,
+    # wiec czas ladowania rosl liniowo z liczba notatek. Zakres = punkty notatek, ktore ta osoba
+    # i tak widzi (meetingNotes powyzej juz przeszly scoped_rows), czyli ta sama regula co GET punkty.
+    visible_notes = [n["ID_Notatki"] for n in result.get("meetingNotes", [])]
+    if visible_notes:
+        placeholders = ",".join("?" * len(visible_notes))
+        result["notePoints"] = [dict(r) for r in conn.execute(
+            f"SELECT * FROM notatka_punkty WHERE ID_Notatki IN ({placeholders}) ORDER BY ID_Notatki, Kolejnosc",
+            visible_notes).fetchall()]
+    else:
+        result["notePoints"] = []
     result["me"] = public_user(g.user)
     result["me"]["assignedProjectIds"] = sorted(allowed_projects)
     return jsonify(result)

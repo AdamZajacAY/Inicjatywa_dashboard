@@ -544,15 +544,8 @@ async function loadFromApi() {
   // Powiadomienia sa "moje wlasne" niezaleznie od roli (patrz /api/powiadomienia w server.py) -
   // bespoke endpoint, nie czesc /api/bootstrap, wiec osobne zapytanie tutaj dla kazdej roli.
   STATE.notifications = await apiGet("/api/powiadomienia");
-  // notatka_punkty (Faza 4, D1) nie ma wlasnej tabeli w /api/bootstrap (scoping idzie przez
-  // notatki_spotkan, nie przez wlasna kolumne ID_Projektu - patrz komentarz w server.py), wiec
-  // dociagane osobno, po jednym zapytaniu na kazda widoczna notatke, rownolegle. Wolumen notatek
-  // jest niski (nowa funkcja, nie setki istniejacych rekordow), wiec N rownoleglych zapytan przy
-  // logowaniu jest tanie - prostsze niz budowanie osobnego lazy-load-on-expand mechanizmu
-  // (mirror komentarzy ticketu) dla danych, ktorych i tak jest malo.
-  STATE.notePoints = (await Promise.all(
-    STATE.meetingNotes.map(n => apiGet(`/api/notatki_spotkan/${n.ID_Notatki}/punkty`))
-  )).flat();
+  // Punkty notatek przychodza w /api/bootstrap (jedno zapytanie zamiast osobnego na kazda notatke).
+  STATE.notePoints = data.notePoints || [];
   Object.keys(DATE_FIELDS).forEach(key => reviveDates(STATE[key], DATE_FIELDS[key]));
   reindex();
   showDashboard();
@@ -1826,6 +1819,24 @@ function wipStripHtml(list) {
   return `<div class="wip-strip"><span class="kpi-sub">Limit WIP (${WIP_LIMIT_OSOBY} zadania „W trakcie” na osobę, wszystkie projekty):</span>
     ${rows.map(r => `<span class="wip-chip ${r.n > WIP_LIMIT_OSOBY ? "over" : ""}" data-open-person="${esc(r.oid)}" title="${r.n > WIP_LIMIT_OSOBY ? "Ponad limit - za dużo rozpoczętych naraz" : "W limicie"}">${esc(personName(r.oid))} · ${r.n}/${WIP_LIMIT_OSOBY}</span>`).join("")}</div>`;
 }
+// Szybkie dodanie z tablicy (audyt klikniec 12.10.2026): klik "+ zadanie" w komorce otwiera
+// formularz z podstawionym etapem (kolumna) i - zaleznie od wierszy - terminem (Dzis = dzis,
+// Ten tydzien = piatek), osoba albo projektem. Zostaje wpisac tytul i Enter.
+const QUICK_ADD_STATUSES = ["Backlog", "Zaplanowane", "W trakcie"];
+function quickAddFromBoard(status, laneKey) {
+  const mode = ticketFilters.lanes || "horyzont";
+  const seed = { Status: status };
+  if (mode === "horyzont") {
+    if (laneKey === "Dzis") seed.Termin = today0();
+    if (laneKey === "Ten tydzien") {
+      const fri = startOfWeek0(); fri.setDate(fri.getDate() + 4);
+      seed.Termin = fri >= today0() ? fri : endOfWeek0();
+    }
+  }
+  const pid = ticketFilters.projekt || (mode === "projekt" ? laneKey : null);
+  const assignee = mode === "osoba" && laneKey && laneKey !== "—" && !String(laneKey).startsWith("sub:") ? laneKey : undefined;
+  openTicketForm(pid || null, null, seed, { stayInTickets: true, assignee });
+}
 function renderTicketsKanban(list) {
   const mode = ticketFilters.lanes || "horyzont";
   const onBoard = list.filter(t => KANBAN_KOLUMNY.includes(t.Status) && laneKeyOf(t, mode) !== null);
@@ -1837,6 +1848,7 @@ function renderTicketsKanban(list) {
     laneKeys.sort((a, b) => String(mode === "projekt" ? projectName(a) : personName(a)).localeCompare(String(mode === "projekt" ? projectName(b) : personName(b)), "pl"));
   }
   const byLane = new Map(laneKeys.map(k => [k, []]));
+  const canAdd = can("create", "zadania_tickety");
   onBoard.forEach(t => { const k = laneKeyOf(t, mode); if (byLane.has(k)) byLane.get(k).push(t); });
   const head = KANBAN_KOLUMNY.map(status => {
     const n = onBoard.filter(t => t.Status === status).length;
@@ -1846,11 +1858,13 @@ function renderTicketsKanban(list) {
   }).join("");
   const lanes = laneKeys.map(key => {
     const items = byLane.get(key) || [];
-    if (!items.length) return "";
+    if (!items.length && !(mode === "horyzont" && canAdd && ["Dzis", "Ten tydzien"].includes(key))) return "";
     const cells = KANBAN_KOLUMNY.map(status => {
       const cellItems = items.filter(t => t.Status === status).sort(ticketBoardSort);
       const tintVar = statusColorVar(ticketStatusBadge(status));
-      return `<div class="kb-cell" data-drop-status="${esc(status)}" style="--col-tint:var(${tintVar})">${cellItems.map(ticketCardHtml).join("")}</div>`;
+      const addBtn = canAdd && QUICK_ADD_STATUSES.includes(status) && !(mode === "horyzont" && key === "Opoznione")
+        ? `<button type="button" class="kb-add" data-kb-add="${esc(status)}" data-lane="${esc(key)}" title="Nowe zadanie w tej komórce - etap, termin, osoba lub projekt podstawione z wiersza">+ zadanie</button>` : "";
+      return `<div class="kb-cell" data-drop-status="${esc(status)}" style="--col-tint:var(${tintVar})">${cellItems.map(ticketCardHtml).join("")}${addBtn}</div>`;
     }).join("");
     const laneCls = mode === "horyzont" ? `kb-lane-${key.replace(/\s+/g, "-").toLowerCase()}` : "";
     return `<div class="kb-lane-label ${laneCls}">${laneLabelHtml(key, mode, items)}<span class="count-pill">${items.length}</span></div>${cells}`;
@@ -1865,7 +1879,7 @@ function renderTicketsKanban(list) {
           <option value="brak" ${mode === "brak" ? "selected" : ""}>bez podziału</option>
         </select>
       </label>
-      <span class="kpi-sub">Przeciągnij między kolumnami = zmiana etapu · upuść na kartę = ustaw kolejność · „Na cito” zawsze na górze</span>
+      <span class="kpi-sub">Przeciągnij między kolumnami = zmiana etapu · upuść na kartę = ustaw kolejność · „Na cito” zawsze na górze · skróty: <kbd>N</kbd> nowe zadanie, <kbd>?</kbd> pomoc</span>
       ${hiddenDone ? `<span class="kpi-sub">${hiddenDone} starszych zrobionych ukryto (widok Lista)</span>` : ""}
     </div>
     ${mode !== "osoba" ? wipStripHtml(onBoard) : ""}
@@ -1996,6 +2010,54 @@ function projectConversionSummaryHtml(pid) {
     </div>`;
 }
 
+// Edycja wielu zadan naraz (audyt klikniec 12.10.2026) - w widoku Lista zaznaczasz kilka zadan
+// i jednym wyborem zmieniasz etap / osobe / klase albo przesuwasz termin (razem z data startu).
+// Zaznaczenie przezywa zmiane filtrow do czasu "Odznacz"; zadania bez prawa edycji nie maja checkboxa.
+const ticketSelection = new Set();
+function bulkBarHtml() {
+  // zaznaczenie moglo zawierac zadania, ktore w miedzyczasie usunieto
+  Array.from(ticketSelection).forEach(id => { if (!STATE.tickets.some(t => t.ID_Tickietu === id)) ticketSelection.delete(id); });
+  if (!ticketSelection.size) return "";
+  return `<div class="bulk-bar">
+    <b>Zaznaczono: ${ticketSelection.size}</b>
+    <select data-bulk-field="Status"><option value="">Zmień etap…</option>${STATUSY_TICKIETOW.map(st => `<option value="${esc(st)}">${esc(st)}</option>`).join("")}</select>
+    <select data-bulk-field="ID_Osoby_przypisanej"><option value="">Przypisz osobę…</option>${STATE.team.map(p => `<option value="${esc(p.ID_Osoby)}">${esc(p.Imie_i_nazwisko)}</option>`).join("")}</select>
+    <select data-bulk-field="Klasa_uslugi"><option value="">Klasa usługi…</option>${KLASY_USLUG.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("")}</select>
+    <button type="button" class="icon-btn" data-bulk-shift="1">Termin +1 dzień</button>
+    <button type="button" class="icon-btn" data-bulk-shift="7">Termin +7 dni</button>
+    <button type="button" class="icon-btn" data-bulk-clear="1">Odznacz</button>
+  </div>`;
+}
+async function applyBulk(patchFor, label) {
+  const targets = STATE.tickets.filter(t => ticketSelection.has(t.ID_Tickietu) && can("update", "zadania_tickety", t));
+  const updates = targets.map(t => ({ t, patch: patchFor(t) })).filter(u => u.patch && Object.keys(u.patch).length);
+  if (!updates.length) return;
+  if (!confirm(`${label} — ${updates.length} zadań. Kontynuować?`)) return;
+  const prev = updates.map(u => Object.fromEntries(Object.keys(u.patch).map(k => [k, u.t[k]])));
+  updates.forEach(u => Object.assign(u.t, u.patch));
+  renderAll();
+  const results = await Promise.allSettled(updates.map(u =>
+    apiPut(`/api/zadania_tickety/${u.t.ID_Tickietu}`, serializeForApi(u.patch, DATE_FIELDS.tickets))));
+  let failed = 0;
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") { reviveDates([r.value], DATE_FIELDS.tickets); Object.assign(updates[i].t, r.value); }
+    else { Object.assign(updates[i].t, prev[i]); failed++; }
+  });
+  if (failed) alert(`Nie udało się zapisać ${failed} z ${updates.length} zadań — przywrócono ich poprzedni stan.`);
+  renderAll();
+}
+function bulkPatchForField(field, value) {
+  return (t) => {
+    if (t[field] === value) return null;
+    const patch = { [field]: value };
+    if (field === "Status") {
+      patch.Data_zakonczenia = deriveTicketCompletionDate(value, t.Data_zakonczenia);
+      if (value === "W trakcie" && !(t.Data_rozpoczecia instanceof Date)) patch.Data_rozpoczecia = today0();
+    }
+    return patch;
+  };
+}
+function shiftDate(d, days) { return d instanceof Date ? new Date(d.getFullYear(), d.getMonth(), d.getDate() + days) : d; }
 function renderTickets() {
   // Zbior ID_Tickietu dla wybranego etapu policzony RAZ przed petla (nie stageIdsForTicket()
   // per ticket w srodku filter() - to re-skanowaloby caly STATE.taskStages dla kazdego ticketu).
@@ -2071,9 +2133,11 @@ function renderTickets() {
     </div>
     ${ticketFilters.projekt ? projectConversionSummaryHtml(ticketFilters.projekt) : ""}
     ${view === "kanban" ? renderTicketsKanban(list) : view === "kalendarz" ? renderTicketsCalendar(list) : view === "gantt" ? renderTicketsGantt(list) : `
+    ${bulkBarHtml()}
     <div class="panel" style="overflow-x:auto">
       <table class="data-table">
         <thead><tr>
+          <th class="tk-sel"><input type="checkbox" data-tk-select-all="1" title="Zaznacz wszystkie widoczne" ${list.length && list.every(t => ticketSelection.has(t.ID_Tickietu)) ? "checked" : ""}></th>
           <th>ID</th>
           <th class="clickable" data-tk-sort="Tytul">Tytuł${tkSortIndicator("Tytul")}</th>
           <th class="clickable" data-tk-sort="Projekt">Projekt${tkSortIndicator("Projekt")}</th>
@@ -2088,6 +2152,7 @@ function renderTickets() {
         <tbody>
           ${list.map(t => `
             <tr ${can("update", "zadania_tickety", t) ? `class="clickable" data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+              <td class="tk-sel">${can("update", "zadania_tickety", t) ? `<input type="checkbox" data-tk-select="${esc(t.ID_Tickietu)}" ${ticketSelection.has(t.ID_Tickietu) ? "checked" : ""}>` : ""}</td>
               <td>${esc(t.ID_Tickietu)}</td>
               <td>${esc(t.Tytul)}</td>
               <td>${esc(projectName(t.ID_Projektu))}</td>
@@ -2099,7 +2164,7 @@ function renderTickets() {
               <td>${badge(ticketEffectiveStatus(t), ticketStatusBadge(ticketEffectiveStatus(t)))} ${num(t.Liczba_reaktywacji) > 0 ? badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : ""}</td>
               <td>${isUrzedoweTicket(t) ? badge("Urzędowe", isUrgentAdministrativeTicket(t) ? "critical" : "warning") : "—"} ${ticketServiceClass(t) === "Na cito" ? badge("Na cito", "critical") : ""} ${isBlockedTicket(t) ? badge("⛔ Zablokowane", "critical") : ""}</td>
               <td>${ticketTags(t).length ? `<div class="tag-chips">${ticketTags(t).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join("")}</div>` : "—"}</td>
-            </tr>`).join("") || `<tr><td colspan="11" class="empty-hint">Brak zadań — dodaj tickety z poziomu karty projektu.</td></tr>`}
+            </tr>`).join("") || `<tr><td colspan="12" class="empty-hint">Brak zadań — dodaj tickety z poziomu karty projektu.</td></tr>`}
         </tbody>
       </table>
     </div>`}`;
@@ -5794,12 +5859,50 @@ function addTagFromInput(input) {
   syncTagsHiddenInput(field);
 }
 
+// Skroty klawiszowe (audyt klikniec 12.10.2026). Dzialaja tylko poza polami formularza i gdy
+// nie jest otwarte okno formularza - nie przeszkadzaja w pisaniu.
+const SHORTCUTS_HELP = [
+  ["N", "nowe zadanie (w Zadaniach z wybranym projektem)"],
+  ["K / L / C / G", "Zadania: Kanban / Lista / Kalendarz / Gantt"],
+  ["Z", "zakładka Zadania"], ["M", "zakładka Moje zadania"], ["P", "zakładka Projekty"],
+  ["?", "ta pomoc"],
+];
+function handleShortcut(e) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return false;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (["input", "textarea", "select"].includes(tag) || e.target.isContentEditable) return false;
+  if ($("#modalBox")?.classList.contains("open")) return false;
+  const key = e.key.toLowerCase();
+  const inZadania = $("#view-zadania")?.classList.contains("active");
+  const tabVisible = (v) => $all(".tab-btn").some(b => b.dataset.view === v && b.style.display !== "none");
+  const goTab = (v) => { if (!tabVisible(v)) return false; switchToView(v); if (v === "zadania") renderTickets(); return true; };
+  if (key === "n" && can("create", "zadania_tickety")) {
+    e.preventDefault();
+    openTicketForm(inZadania ? (ticketFilters.projekt || null) : null, null, null, { stayInTickets: inZadania });
+    return true;
+  }
+  if (inZadania && { k: "kanban", l: "lista", c: "kalendarz", g: "gantt" }[key]) {
+    ticketFilters.view = { k: "kanban", l: "lista", c: "kalendarz", g: "gantt" }[key];
+    renderTickets();
+    return true;
+  }
+  if (key === "z") return goTab("zadania");
+  if (key === "m") return goTab("mojezadania");
+  if (key === "p") return goTab("projekty");
+  if (e.key === "?") {
+    openModal("Skróty klawiszowe", `<div class="full" style="grid-column:1/-1">${SHORTCUTS_HELP.map(([k, d]) => `<div class="shortcut-row"><kbd>${esc(k)}</kbd> ${esc(d)}</div>`).join("")}</div>`,
+      { submitLabel: "OK", onSubmit: () => closeModal() });
+    return true;
+  }
+  return false;
+}
 document.addEventListener("keydown", (e) => {
   // Pole daty jest teraz zwyklym polem tekstowym (mozna wpisac date recznie) - zadna klawisza
   // nie powinna byc przechwytywana do otwierania pickera, zeby nie kolidowac z pisaniem
   // (probne "Spacja otwiera picker" psulo pisanie dowolnego tekstu zawierajacego spacje -
   // zweryfikowane bezposrednio). Klik nadal otwiera picker (myszka), Escape nadal zamyka.
   if (e.key === "Escape") { closeDatePicker(); closeMentionSuggestions(); }
+  if (handleShortcut(e)) return;
   const tagInput = e.target.closest && e.target.closest(".tag-chip-input");
   if (tagInput && (e.key === "Enter" || e.key === ",")) { e.preventDefault(); addTagFromInput(tagInput); return; }
   if (mentionState.textarea && e.target === mentionState.textarea && mentionState.matches.length) {
@@ -5807,6 +5910,14 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowUp") { e.preventDefault(); mentionState.activeIndex = (mentionState.activeIndex - 1 + mentionState.matches.length) % mentionState.matches.length; renderMentionSuggestions(); return; }
     if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickMentionSuggestion(mentionState.matches[mentionState.activeIndex].Imie_i_nazwisko); return; }
   }
+});
+document.addEventListener("change", (e) => {
+  const bulkSel = e.target.closest && e.target.closest("[data-bulk-field]");
+  if (!bulkSel || !bulkSel.value) return;
+  const field = bulkSel.getAttribute("data-bulk-field"), value = bulkSel.value;
+  const label = field === "Status" ? `Zmiana etapu na „${value}”` : field === "Klasa_uslugi" ? `Klasa usługi: ${serviceClassLabel(value)}` : `Przypisanie do: ${personName(value)}`;
+  bulkSel.value = "";
+  applyBulk(bulkPatchForField(field, value), label);
 });
 document.addEventListener("input", (e) => {
   const commentInput = e.target.closest && e.target.closest("[data-comment-input]");
@@ -5981,6 +6092,29 @@ document.addEventListener("click", (e) => {
   // Kolorowe buttony filtrujace po etapie/sub-projekcie (mirror data-tk-status-filter powyzej),
   // ale pojedynczego wyboru (jeden etap na raz), nie multi-select jak statusy - klik na juz
   // aktywny chip zaznacza go ponownie (bez toggle-off), Wszystkie etapy = "" czysci filtr.
+  const tkSelect = e.target.closest("[data-tk-select]");
+  if (tkSelect) {
+    const id = tkSelect.getAttribute("data-tk-select");
+    if (tkSelect.checked) ticketSelection.add(id); else ticketSelection.delete(id);
+    renderTickets();
+    return;
+  }
+  const tkSelectAll = e.target.closest("[data-tk-select-all]");
+  if (tkSelectAll) {
+    $all("[data-tk-select]").forEach(cb => { const id = cb.getAttribute("data-tk-select"); if (tkSelectAll.checked) ticketSelection.add(id); else ticketSelection.delete(id); });
+    renderTickets();
+    return;
+  }
+  const bulkShift = e.target.closest("[data-bulk-shift]");
+  if (bulkShift) {
+    const n = Number(bulkShift.getAttribute("data-bulk-shift"));
+    applyBulk(t => t.Termin instanceof Date ? { Termin: shiftDate(t.Termin, n), ...(t.Data_rozpoczecia instanceof Date ? { Data_rozpoczecia: shiftDate(t.Data_rozpoczecia, n) } : {}) } : null,
+      `Przesunięcie terminu (i daty rozpoczęcia) o ${n} dni`);
+    return;
+  }
+  if (e.target.closest("[data-bulk-clear]")) { ticketSelection.clear(); renderTickets(); return; }
+  const kbAddBtn = e.target.closest("[data-kb-add]");
+  if (kbAddBtn) { quickAddFromBoard(kbAddBtn.getAttribute("data-kb-add"), kbAddBtn.getAttribute("data-lane")); return; }
   const tkNextBtn = e.target.closest("[data-tk-next]");
   if (tkNextBtn) { e.stopPropagation(); advanceTicket(tkNextBtn.getAttribute("data-tk-next")); return; }
   const tkHorizonChip = e.target.closest("[data-tk-horizon-filter]");

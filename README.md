@@ -7,7 +7,7 @@ Jeden proces (`server.py`) serwuje zarówno stronę, jak i REST API — baza ży
 `baza_danych/baza_projektow.db`, współdzielonym przez wszystkich, którzy łączą się z tym samym
 serwerem (patrz „Architektura” niżej, jeśli wcześniej znałeś tę wersję z Excelem jako bazą).
 
-Dostęp wymaga **logowania** — konta i role (Architekt / Architekt Prowadzący / COO / Admin) opisane
+Dostęp wymaga **logowania** — konta i role (Architekt / Pracownik biurowy / Architekt Prowadzący / COO / Admin) opisane
 w sekcji „Konta, role i logowanie” niżej. Nawigacja żyje w lewym sidebarze, nie w górnym menu.
 
 ## Struktura pakietu
@@ -22,12 +22,16 @@ analiza/
   Analiza_systemu_PMO.md      <- pełna analiza PMO: co i dlaczego jest w systemie
 baza_danych/
   baza_projektow.db            <- BAZA DANYCH (SQLite) - tu żyją wszystkie dane (poza gitem)
-  schema.sql                   <- struktura tabel (11 tabel, w tym `users` - konta/role)
+  schema.sql                   <- struktura tabel (24 tabele, w tym `users` - konta/role)
+  schema_migrate.py            <- migracje przyrostowe (ensure_*), uruchamiane przy kazdym starcie serwera
+  pobierz_backup_produkcji.py  <- sciaga swieza kopie bazy z Render do backups_produkcja/ (konto COO/Admin)
+  audyt_danych.py              <- raport jakosci danych, TYLKO ODCZYT (testowe rekordy, duplikaty osob, ...)
   excel_to_sqlite.py            <- jednorazowy migrator Baza_Projektow.xlsx -> baza_projektow.db
   create_admin.py              <- tworzy pierwsze konto COO/Admin (potrzebne po instalacji)
   backup_db.py                  <- backup bazy (recznie albo cron/launchd) - patrz sekcja Backup
   migrate_to_remote.py          <- przenosi lokalne dane na wdrozona instancje (np. Render) przez API
-  backups/                      <- kopie zapasowe bazy (poza gitem)
+  backups/                      <- kopie zapasowe bazy (poza gitem; lokalnie nigdy nie sa usuwane)
+  backups_produkcja/            <- kopie bazy pobrane z Render (poza gitem)
   Baza_Projektow.xlsx          <- historyczny plik Excela (źródło pierwszej migracji, realne dane)
   generuj_baze.py             <- skrypt, który generuje/odtwarza ten plik xlsx od zera
 dashboard/
@@ -88,7 +92,8 @@ ma dostępu do żadnych danych, dopóki COO albo Admin nie nada mu jednej z 3 r�
 | Rola | Zakres |
 |---|---|
 | **Architekt** (dawniej „Specjalista” — wartość `Specjalista` w bazie, nazwa wyświetlana zmieniona) | Podgląd **wyłącznie projektów, do których jest przypisany** (nie całego portfela — zawężone celowo, żeby np. nazwa klienta czy opis ryzyka projektu, przy którym dana osoba nie pracuje, nie były widoczne), bez danych finansowych (budżet/marża/stawki godzinowe są ukryte). Zgłaszanie i edycja własnych ticketów w tych projektach. Zespół i biblioteka podwykonawców zostają widoczne w całości (to współdzielone rejestry, nie dane "należące" do jednego projektu). |
-| **Architekt Prowadzący** (dawniej „Architekt/PM” — wartość `Architekt_PM` w bazie) | Pełne zarządzanie (dodawanie/edycja etapów, ticketów, ryzyk, zespołu) na projektach, do których jest przypisany (przez zakładkę „+ Dodaj do zespołu”) — na pozostałych projektach ma tylko podgląd. Może zakładać nowe projekty i dodawać/edytować podwykonawców, ale nie usuwać projektów ani podwykonawców. |
+| **Pracownik biurowy** (wartość `Pracownik_biurowy`) | Dokładnie te same uprawnienia co Architekt. |
+| **Architekt Prowadzący** (dawniej „Architekt/PM” — wartość `Architekt_PM` w bazie) | Podgląd **całego portfela** (od weekly 23.07.2026), pola finansowe ukryte. Pełne zarządzanie (dodawanie/edycja etapów, ticketów, ryzyk, zespołu) na projektach, do których jest przypisany (przez zakładkę „+ Dodaj do zespołu”) — na pozostałych projektach ma tylko podgląd. Może zakładać nowe projekty i dodawać/edytować podwykonawców, ale nie usuwać projektów ani podwykonawców. |
 | **COO / Admin** | Pełny dostęp do wszystkiego, łącznie z zarządzaniem kontami/rolami i backupami. Te dwie role mają identyczne uprawnienia — różnią się tylko etykietą. |
 
 Uprawnienia są egzekwowane **po stronie serwera** (`server.py`) niezależnie od tego, co pokazuje
@@ -157,6 +162,14 @@ skali.
 timestampem, bezpieczne w trakcie działania serwera — używa `sqlite3.Connection.backup()`, nie
 zwykłego kopiowania pliku). Trzy sposoby uruchomienia:
 
+**Lokalnie kopie nigdy nie są usuwane** (retencja działa wyłącznie na Render, gdzie dysk ma 1 GB —
+12.10.2026 automatyczna retencja przy ręcznym backupie skasowała 129 lokalnych kopii, stąd zmiana).
+
+**Kopia produkcji na tym komputerze:** przycisk „⬇ Pobierz kopię na komputer” w zakładce Użytkownicy
+(COO/Admin) albo `python3 baza_danych/pobierz_backup_produkcji.py --url https://<appka>.onrender.com --email <admin>`
+(zapis do `baza_danych/backups_produkcja/`, ze sprawdzeniem `integrity_check`; pod cron hasło przez
+`IP_BACKUP_PASSWORD`). Raport jakości danych na pobranej kopii: `python3 baza_danych/audyt_danych.py`.
+
 - **Automatycznie przy starcie** `python3 server.py` — jedna kopia na każde uruchomienie serwera.
 - **Ręcznie z dashboardu** — przycisk „Backup teraz” w zakładce Użytkownicy (COO/Admin).
 - **Samodzielnie** — `python3 baza_danych/backup_db.py` (opcje `--keep N` dla retencji,
@@ -193,7 +206,9 @@ To jest teraz **główne narzędzie pracy PMO**, nie tylko podgląd. Wprost w da
   „Edytuj” / „Usuń” — w karcie projektu (po kliknięciu w kafelek).
 - **+ Dodaj osobę** (zakładka Zespół) — imię i nazwisko, stanowisko, **grupa funkcyjna** (nie
   sztywny dział korporacyjny — np. Architekci, Specjaliści, Kierownictwo projektów, PMO...),
-  kontakt, dostępność (FTE %). „Edytuj” / „Usuń” — po kliknięciu w osobę.
+  kontakt, dostępność (FTE %). „Edytuj” / „Usuń” — po kliknięciu w osobę. **Duplikat tej samej
+  osoby (np. Gosia / Małgorzata) — „Scal z duplikatem →”** (COO/Admin), nie „Usuń”: usunięcie kasuje
+  przypisania osoby i odpina jej zadania, scalenie przenosi wszystko na właściwy rekord (z backupem).
 - **+ Dodaj do zespołu** (w karcie projektu) — przypisuje osobę do projektu z rolą (Owner,
   Kierownik projektu, Członek zespołu, Wsparcie, Sponsor) i % zaangażowania; stąd też edycja i
   usuwanie przypisań. To jest sedno logiki zespołowej: **zespół przypisuje się do projektu**
@@ -276,12 +291,20 @@ Tabele SQLite (`baza_danych/schema.sql`) odpowiadają 1:1 dawnym arkuszom Excela
 | `przypisania_podwykonawcow` | które konkretne przypisanie podwykonawcy do projektu (zakres prac, daty, wartość umowy, status) |
 | `ryzyka_i_problemy` | rejestr ryzyk i problemów z planem mitygacji |
 | `raporty_statusowe` | historia cyklicznych statusów (trend RAG/budżetu w czasie) |
+| `zadania_etapy` | powiązanie ticket ↔ etap (wiele do wielu) — zapis tylko przy zapisie ticketu |
+| `checklista_szablony` / `checklisty_projektow` | szablony checklisty i jej pozycje instancjonowane per projekt/etap |
+| `notatki_spotkan` / `notatka_punkty` | notatki ze spotkań i ich punkty, konwertowalne na zadania |
+| `komentarze_tickety` / `powiadomienia` | komentarze pod zadaniami (@wzmianki) i powiadomienia |
+| `klienci` / `kontakty_klienta` | inwestorzy i osoby kontaktowe |
+| `etykiety_konfiguracji` / `tagi_biblioteka` | edytowalne słowniki (typy, segmenty, kolory) i biblioteka tagów |
+| `dzialki` | działki ewidencyjne projektu (link do geoportalu) |
+| `ideapool` | zgłoszone pomysły |
 
 (`Pulpit`, `Karta_Projektu` i `Slowniki` istniały tylko w Excelu jako pomoce — formuły KPI,
 wzór karty do druku i listy rozwijane — i nie mają odpowiednika w SQLite; ich rolę w pełni
 przejął dashboard.)
 
-Jedenasta tabela, `users` (konta/role/logowanie), nie pochodzi z Excela — to nowa tabela
+Tabela `users` (konta/role/logowanie) nie pochodzi z Excela — to nowa tabela
 systemowa opisana w sekcji „Konta, role i logowanie” wyżej, nie część domenowych danych biura.
 
 Baza zawiera **realne dane zebrane z notatek zespołu i uporządkowane w `Propozycja_Macierzy_Projektow.xlsx`**,
@@ -311,8 +334,22 @@ zespół w dashboardzie.
   lista jej projektów **i przypisanych zadań/ticketów** z terminami.
 - **Podwykonawcy** — biblioteka branżystów/podwykonawców niezależna od projektów, filtrowalna
   po branży i statusie; klik w kartę pokazuje wszystkie projekty, do których jest przypisany.
-- **Zadania** — wszystkie tickety całego portfela w jednej tabeli, filtrowane po projekcie,
-  osobie, statusie i „tylko opóźnione” — przegląd obciążenia i zaległości zespołu.
+- **Moje zadania** — osobista lista „Dzisiaj” (przypięte na dziś, termin dziś, opóźnione) + reszta
+  własnych zadań. Ekran startowy dla Architekta i Pracownika biurowego.
+- **Zadania** — wszystkie tickety portfela w 4 widokach: **Kanban**, **Lista**, **Kalendarz**, **Gantt**
+  (wg osoby). Ekran startowy Architekta Prowadzącego. Model Kanban (feedback W. Ferfeta, 10.09.2026):
+  - kolumny = **etap pracy**: Backlog → Zaplanowane → W trakcie → Do przeglądu → Zrobione
+    (Zarchiwizowane poza tablicą); „Zablokowane” to flaga na karcie z powodem, nie kolumna;
+  - wiersze liczone **automatycznie z dat**: Opóźnione / Dziś / Ten tydzień / Później / Bez terminu
+    (albo wg osoby z limitem WIP 3 zadań „W trakcie”, albo wg projektu);
+  - **klasa usługi**: Na cito (zawsze na górze) / Termin stały (urzędowe) / Standard;
+  - na karcie przycisk następnego etapu (**▶ Zaczynam** → **✓ Do przeglądu** → **✓ Zrobione**),
+    ręczna kolejność przeciąganiem, „+ zadanie” w komórce (etap/termin/osoba podstawione z wiersza);
+  - filtr **architekta prowadzącego** i szybkie filtry (Dziś / Ten tydzień / Na cito / Zablokowane)
+    we wszystkich widokach; w Liście zaznaczanie wielu zadań i zmiana etapu/osoby/klasy/terminu naraz;
+  - zakładka i filtry zapamiętywane w przeglądarce; skróty: `N` nowe zadanie, `K/L/C/G` widoki,
+    `Z/M/P` zakładki, `?` pomoc.
+- **Ideapool** — zgłaszanie pomysłów (każda rola). **Inwestorzy** — klienci i kontakty, pobieranie z CEIDG/KRS.
 - **Harmonogram / Gantt** — oś czasu etapów, **grupowana wg projektu lub wg osoby** (przełącznik),
   filtrowana po typie/odpowiedzialnym; kliknięcie w etap otwiera go do edycji.
 - **Ryzyka i problemy** — tabela z filtrami, priorytetami i statusami.
