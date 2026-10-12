@@ -560,6 +560,7 @@ async function loadFromApi() {
   updateUserMenu();
   renderAll();
   renderNotificationBell();
+  applyInitialView();
 }
 
 async function refreshNotifications() {
@@ -863,6 +864,33 @@ function ticketStatusBadge(status) {
 // Kolumny tablicy = etapy pracy. Zarchiwizowane nie ma kolumny (to "poza tablica") - widoczne w
 // Liscie przez chip statusu.
 const KANBAN_KOLUMNY = ["Backlog", "Zaplanowane", "W trakcie", "Do przegladu", "Zrobione"];
+// Jeden klik = nastepny etap pracy (audyt klikniec 12.10.2026). "Zaczynam" ustawia tez date
+// rozpoczecia na dzis, jesli jej nie bylo - kalendarz/Gantt od razu pokazuja realny start.
+const NEXT_STEP = {
+  "Backlog": { to: "W trakcie", label: "▶ Zaczynam", hint: "Przenieś do „W trakcie” (start dziś)" },
+  "Zaplanowane": { to: "W trakcie", label: "▶ Zaczynam", hint: "Przenieś do „W trakcie” (start dziś)" },
+  "W trakcie": { to: "Do przegladu", label: "✓ Do przeglądu", hint: "Gotowe po mojej stronie - do sprawdzenia" },
+  "Do przegladu": { to: "Zrobione", label: "✓ Zrobione", hint: "Sprawdzone - zamknij zadanie" },
+};
+async function advanceTicket(tid) {
+  const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
+  const step = t && NEXT_STEP[t.Status];
+  if (!step || !can("update", "zadania_tickety", t)) return;
+  const patch = { Status: step.to, Data_zakonczenia: deriveTicketCompletionDate(step.to, t.Data_zakonczenia) };
+  if (step.to === "W trakcie" && !(t.Data_rozpoczecia instanceof Date)) patch.Data_rozpoczecia = today0();
+  const prev = { Status: t.Status, Data_zakonczenia: t.Data_zakonczenia, Data_rozpoczecia: t.Data_rozpoczecia };
+  Object.assign(t, patch);
+  renderAll();
+  try {
+    const saved = await apiPut(`/api/zadania_tickety/${tid}`, serializeForApi(patch, DATE_FIELDS.tickets));
+    reviveDates([saved], DATE_FIELDS.tickets);
+    Object.assign(t, saved);
+  } catch (e) {
+    Object.assign(t, prev);
+    alert("Nie udało się zmienić etapu zadania: " + e.message);
+  }
+  renderAll();
+}
 function isBlockedTicket(t) { return t.Zablokowane === "Tak"; }
 function ticketServiceClass(t) { return t.Klasa_uslugi || (isUrzedoweTicket(t) ? "Termin staly" : "Standard"); }
 function serviceClassLabel(k) { return k === "Termin staly" ? "Termin stały" : k; }
@@ -1762,6 +1790,7 @@ function ticketCardHtml(t) {
         ${overdue ? badge("Opóźnione", "critical") : urgentAdmin ? badge("Nieprzekraczalny termin blisko", "critical") : ""}
         ${num(t.Liczba_reaktywacji) > 0 ? badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : ""}
       </div>
+      ${editable && NEXT_STEP[t.Status] ? `<button type="button" class="kc-next" data-tk-next="${esc(t.ID_Tickietu)}" title="${esc(NEXT_STEP[t.Status].hint)}">${esc(NEXT_STEP[t.Status].label)}</button>` : ""}
       ${DONE_TICKET_STATUSES.includes(t.Status) && editable
         ? `<button type="button" class="icon-btn" data-reactivate-ticket="${esc(t.ID_Tickietu)}" style="margin-top:6px;width:100%" title="Zadanie wraca do pracy (status „Do przeglądu”) zamiast tworzenia od nowa">↻ Reaktywuj</button>`
         : ""}
@@ -1970,6 +1999,7 @@ function projectConversionSummaryHtml(pid) {
 function renderTickets() {
   // Zbior ID_Tickietu dla wybranego etapu policzony RAZ przed petla (nie stageIdsForTicket()
   // per ticket w srodku filter() - to re-skanowaloby caly STATE.taskStages dla kazdego ticketu).
+  persistTicketFilters();
   const stageTicketIds = ticketFilters.etap ? new Set(ticketIdsForStage(ticketFilters.etap)) : null;
   const owners = Array.from(new Set(STATE.projects.map(p => p.Owner).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pl"));
   if (ticketFilters.prowadzacy === null) {
@@ -2944,7 +2974,7 @@ function renderUsers() {
 
     ${renderTagLibraryAdminSection()}
 
-    <div class="section-head"><h2>Backup bazy danych</h2><button data-backup-now="1">Backup teraz</button></div>
+    <div class="section-head"><h2>Backup bazy danych</h2><div style="display:flex;gap:8px"><a class="icon-btn" href="/api/backup/pobierz" download title="Świeża kopia całej bazy na ten komputer (plik .db)">⬇ Pobierz kopię na komputer</a><button data-backup-now="1">Backup teraz</button></div></div>
     <div class="panel" style="overflow-x:auto">
       <table class="data-table">
         <thead><tr><th>Plik</th><th>Rozmiar</th></tr></thead>
@@ -4091,6 +4121,21 @@ function openTicketForm(pid, tid = null, seed = null, opts = {}) {
   // zostaje pusty - edycja starego ticketu nie powinna po cichu "przypisywac" go do osoby,
   // ktora akurat teraz go otwiera.
   const zglaszajacyDefault = tid ? t.ID_Osoby_zglaszajacej : STATE.me.personId;
+  // Audyt klikniec (12.10.2026): madre domyslne zamiast pustych pol.
+  // - osoba: istniejaca; przy "dodaj kolejne" ta sama co poprzednio; architekt (zespol) - on sam,
+  //   jesli jest w zespole projektu; projekt z jedna osoba w zespole - ta osoba.
+  // - etapy: jeden aktywny etap -> zaznaczony (i bez checkboxa); filtr etapu w Zadaniach -> ten etap.
+  const teamOfProject = currentPid ? assignmentsForProject(currentPid).map(a => a.ID_Osoby) : [];
+  const assigneeDefault = t.ID_Osoby_przypisanej || opts.assignee
+    || (SPECJALISTA_ROLES.includes(STATE.me.role) && teamOfProject.includes(STATE.me.personId) ? STATE.me.personId : "")
+    || (new Set(teamOfProject).size === 1 ? teamOfProject[0] : "");
+  const stagePairs = stageCheckboxPairs(currentPid);
+  const stageDefault = tid ? stageIdsForTicket(tid)
+    : (seed?._seedStageIds || opts.stages
+      || (ticketFilters.etap && stagePairs.some(([id]) => id === ticketFilters.etap) ? [ticketFilters.etap] : null)
+      || (stagePairs.length === 1 ? [stagePairs[0][0]] : []));
+  const advancedFilled = !!(tid && (t.ID_Osoby_wspomagajacej || t.ID_Podwykonawcy || t.Zablokowane === "Tak"
+    || t.Szacowane_roboczogodziny || t.Rzeczywiste_roboczogodziny || t.Tagi));
   const body = `
     ${tid && can("create", "zadania_tickety", { ID_Projektu: t.ID_Projektu }) ? `<div style="grid-column:1/-1;text-align:right;margin-bottom:-8px">
       <button type="button" class="icon-btn" data-duplicate-ticket="${esc(tid)}">📋 Duplikuj to zadanie</button>
@@ -4099,25 +4144,31 @@ function openTicketForm(pid, tid = null, seed = null, opts = {}) {
         ...STATE.projects.filter(p => can("create", "zadania_tickety", { ID_Projektu: p.ID_Projektu })).map(p => [p.ID_Projektu, p.Nazwa])],
         currentPid) : ""}
     ${fInput("Tytuł *", "Tytul", t.Tytul, "text", "required")}
-    ${fSelect("Zgłaszający", "ID_Osoby_zglaszajacej", teamOptionsPairs(), zglaszajacyDefault)}
-    ${fSelect("Przypisana osoba (zespół wewnętrzny)", "ID_Osoby_przypisanej", assignedTeamOptionsPairs(currentPid, t.ID_Osoby_przypisanej), t.ID_Osoby_przypisanej)}
-    ${fSelect("Wspomagający (opcjonalnie)", "ID_Osoby_wspomagajacej", assignedTeamOptionsPairs(currentPid, t.ID_Osoby_wspomagajacej), t.ID_Osoby_wspomagajacej)}
-    ${fSelect("Podwykonawca (jeśli zlecone branżyście)", "ID_Podwykonawcy", subcontractorOptionsPairs(), t.ID_Podwykonawcy)}
-    ${fInput("Wycena podwykonawcy", "Wycena_podwykonawcy", t.Wycena_podwykonawcy, "number", "min=0 step=0.01")}
+    ${fSelect("Przypisana osoba *", "ID_Osoby_przypisanej", assignedTeamOptionsPairs(currentPid, assigneeDefault), assigneeDefault)}
     ${fInput("Data rozpoczęcia (opcjonalnie)", "Data_rozpoczecia", t.Data_rozpoczecia, "date")}
     ${fInput("Termin *", "Termin", t.Termin, "date", "required")}
     ${fDaysDateLink("Data_rozpoczecia", "Termin", (t.Data_rozpoczecia instanceof Date && t.Termin instanceof Date) ? Math.round((t.Termin - t.Data_rozpoczecia) / 86400000) : "")}
-    ${fCheckboxGroup("Powiązane etapy / sub-projekty", "Etapy", stageCheckboxPairs(currentPid), tid ? stageIdsForTicket(tid) : (seed?._seedStageIds || []))}
-    ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), t.Priorytet || "Sredni")}
-    ${fSelect("Etap pracy (kolumna tablicy)", "Status", pairs(STATUSY_TICKIETOW), t.Status || "Backlog")}
     ${fSelect("Klasa usługi", "Klasa_uslugi", KLASY_USLUG, t.Klasa_uslugi || (isUrzedoweTicket(t) ? "Termin staly" : "Standard"))}
-    ${fSelect("Zablokowane?", "Zablokowane", [["Nie", "Nie"], ["Tak", "Tak — czeka na coś/kogoś"]], t.Zablokowane || "Nie")}
-    ${fInput("Powód blokady (np. czeka na inwestora)", "Powod_blokady", t.Powod_blokady, "text")}
     ${fSelect("Kategoria zadania", "Typ_zadania", [["Wewnetrzne", "Wewnętrzne"], ["Urzedowe", "Urzędowe (nieprzekraczalny termin)"]], t.Typ_zadania || "Wewnetrzne")}
-    ${fInput("Szacowane roboczogodziny", "Szacowane_roboczogodziny", t.Szacowane_roboczogodziny, "number", "min=0 step=0.5")}
-    ${fInput("Rzeczywiste roboczogodziny", "Rzeczywiste_roboczogodziny", t.Rzeczywiste_roboczogodziny, "number", "min=0 step=0.5")}
-    ${fTagsInput("Tagi", "Tagi", t.Tagi, allTicketTags())}
+    ${stagePairs.length > 1 ? fCheckboxGroup("Powiązane etapy / sub-projekty", "Etapy", stagePairs, stageDefault) : `<input type="hidden" name="Etapy" value="${esc(JSON.stringify(stageDefault))}">`}
     ${fTextarea("Opis zadania", "Opis", t.Opis)}
+    <details class="form-more" ${advancedFilled ? "open" : ""}>
+      <summary>Więcej: etap pracy, blokada, zgłaszający, wspomagający, podwykonawca, godziny, tagi</summary>
+      <div class="form-grid">
+        ${fSelect("Etap pracy (kolumna tablicy)", "Status", pairs(STATUSY_TICKIETOW), t.Status || "Backlog")}
+        ${fSelect("Zablokowane?", "Zablokowane", [["Nie", "Nie"], ["Tak", "Tak — czeka na coś/kogoś"]], t.Zablokowane || "Nie")}
+        ${fInput("Powód blokady (np. czeka na inwestora)", "Powod_blokady", t.Powod_blokady, "text")}
+        ${fSelect("Zgłaszający", "ID_Osoby_zglaszajacej", teamOptionsPairs(), zglaszajacyDefault)}
+        ${fSelect("Wspomagający (opcjonalnie)", "ID_Osoby_wspomagajacej", assignedTeamOptionsPairs(currentPid, t.ID_Osoby_wspomagajacej), t.ID_Osoby_wspomagajacej)}
+        ${fSelect("Podwykonawca (jeśli zlecone branżyście)", "ID_Podwykonawcy", subcontractorOptionsPairs(), t.ID_Podwykonawcy)}
+        ${fInput("Wycena podwykonawcy", "Wycena_podwykonawcy", t.Wycena_podwykonawcy, "number", "min=0 step=0.01")}
+        ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), t.Priorytet || "Sredni")}
+        ${fInput("Szacowane roboczogodziny", "Szacowane_roboczogodziny", t.Szacowane_roboczogodziny, "number", "min=0 step=0.5")}
+        ${fInput("Rzeczywiste roboczogodziny", "Rzeczywiste_roboczogodziny", t.Rzeczywiste_roboczogodziny, "number", "min=0 step=0.5")}
+        ${fTagsInput("Tagi", "Tagi", t.Tagi, allTicketTags())}
+      </div>
+    </details>
+    ${!tid ? `<label class="f-label full form-again"><span><input type="checkbox" name="_dodajKolejne" ${opts.again ? "checked" : ""}> Po zapisie dodaj kolejne zadanie w tym projekcie (ta sama osoba i etapy)</span></label>` : ""}
     ${ticketCommentsSectionHtml(t, tid)}
   `;
   openModal(tid ? "Edytuj zadanie (ticket)" : "Nowe zadanie (ticket)", body, {
@@ -4142,7 +4193,14 @@ function openTicketForm(pid, tid = null, seed = null, opts = {}) {
       wspomagajacySelect.innerHTML = optionsHtml(assignedTeamOptionsPairs(chosenPid, wspomagajacySelect.value), wspomagajacySelect.value);
       // Zaznaczone etapy naleza do POPRZEDNIEGO projektu - reset do pustego zaznaczenia zamiast
       // proby zachowania (innego projektu ID_Zadania i tak by tu nie pasowaly).
-      if (etapGroup) etapGroup.outerHTML = fCheckboxGroup("Powiązane etapy / sub-projekty", "Etapy", stageCheckboxPairs(chosenPid), []);
+      const newPairs = stageCheckboxPairs(chosenPid);
+      const hiddenEtapy = $('#modalForm input[type="hidden"][name="Etapy"]');
+      const html = newPairs.length > 1 ? fCheckboxGroup("Powiązane etapy / sub-projekty", "Etapy", newPairs, [])
+        : `<input type="hidden" name="Etapy" value="${esc(JSON.stringify(newPairs.length === 1 ? [newPairs[0][0]] : []))}">`;
+      if (etapGroup) etapGroup.outerHTML = html; else if (hiddenEtapy) hiddenEtapy.outerHTML = html;
+      // jedna osoba w zespole nowego projektu - wybierz ja od razu
+      const teamIds = Array.from(new Set(assignmentsForProject(chosenPid).map(a => a.ID_Osoby)));
+      if (!osobaSelect.value && teamIds.length === 1) osobaSelect.value = teamIds[0];
     });
   }
 }
@@ -4193,6 +4251,12 @@ async function saveTicketFromForm(data, pid, tid, opts = {}) {
   else Object.assign(existing, saved);
   closeModal();
   renderAll();
+  if (isNew && data._dodajKolejne) {
+    // "Zapisz i dodaj kolejne" - prowadzacy wpisuje serie zadan z glowy bez zamykania/otwierania
+    // formularza i ponownego wybierania projektu, osoby i etapow.
+    openTicketForm(finalPid, null, null, { ...opts, again: true, assignee: fields.ID_Osoby_przypisanej, stages: fields.Etapy });
+    return;
+  }
   if (pid && !opts.stayInTickets) openProjectDetail(pid); else renderTickets();
 }
 
@@ -5518,7 +5582,32 @@ function closeDetail() {
   $("#detailPanel").classList.remove("open");
 }
 
+// Audyt klikniec (12.10.2026): zakladka i filtry Zadan zapamietane per przegladarka - nie trzeba
+// po kazdym wejsciu od nowa wybierac "Zadania" -> "Wojtek F" -> "wg osoby". Pierwsze wejscie:
+// widok wg roli (zespol -> Moje zadania, prowadzacy -> Zadania, zarzad -> Przeglad).
+const UI_PREFS_KEY = "ip_ui_prefs_v1";
+function loadUiPrefs() { try { return JSON.parse(localStorage.getItem(UI_PREFS_KEY) || "{}"); } catch { return {}; } }
+function saveUiPrefs(patch) { try { localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ ...loadUiPrefs(), ...patch })); } catch { /* prywatne okno - bez pamieci */ } }
+const PERSISTED_TICKET_FILTERS = ["view", "lanes", "prowadzacy", "horyzonty", "tylkoNaCito", "tylkoZablokowane", "typ"];
+function persistTicketFilters() {
+  if (!initialViewApplied) return; // pierwszy renderAll() biegnie PRZED odtworzeniem filtrow - nie nadpisuj zapisanych domyslnymi
+  saveUiPrefs({ ticketFilters: Object.fromEntries(PERSISTED_TICKET_FILTERS.map(k => [k, ticketFilters[k]])) });
+}
+let initialViewApplied = false;
+function applyInitialView() {
+  if (initialViewApplied) return;
+  initialViewApplied = true;
+  const prefs = loadUiPrefs();
+  if (prefs.ticketFilters) PERSISTED_TICKET_FILTERS.forEach(k => { if (prefs.ticketFilters[k] !== undefined) ticketFilters[k] = prefs.ticketFilters[k]; });
+  const role = STATE.me.role;
+  const byRole = SPECJALISTA_ROLES.includes(role) ? "mojezadania" : role === "Architekt_PM" ? "zadania" : "przeglad";
+  const wanted = prefs.view || byRole;
+  const btn = $all(".tab-btn").find(b => b.dataset.view === wanted && b.style.display !== "none");
+  switchToView(btn ? wanted : "przeglad");
+  renderTickets(); // z odtworzonymi filtrami
+}
 function switchToView(viewName) {
+  saveUiPrefs({ view: viewName });
   // Programowy odpowiednik klikniecia zakladki (patrz delegowany handler .tab-btn nizej) -
   // potrzebny dla "szybkich sciezek" z panelu szczegolow projektu, ktore maja przelaczyc
   // zakladke BEZ symulowania klikniecia w konkretny przycisk DOM.
@@ -5892,6 +5981,8 @@ document.addEventListener("click", (e) => {
   // Kolorowe buttony filtrujace po etapie/sub-projekcie (mirror data-tk-status-filter powyzej),
   // ale pojedynczego wyboru (jeden etap na raz), nie multi-select jak statusy - klik na juz
   // aktywny chip zaznacza go ponownie (bez toggle-off), Wszystkie etapy = "" czysci filtr.
+  const tkNextBtn = e.target.closest("[data-tk-next]");
+  if (tkNextBtn) { e.stopPropagation(); advanceTicket(tkNextBtn.getAttribute("data-tk-next")); return; }
   const tkHorizonChip = e.target.closest("[data-tk-horizon-filter]");
   if (tkHorizonChip) {
     const val = tkHorizonChip.getAttribute("data-tk-horizon-filter");
@@ -6087,6 +6178,7 @@ document.addEventListener("click", (e) => {
     tabBtn.classList.add("active");
     $all(".view").forEach(v => v.classList.remove("active"));
     $(`#view-${tabBtn.dataset.view}`).classList.add("active");
+    saveUiPrefs({ view: tabBtn.dataset.view });
     return;
   }
   if (e.target.id === "overlay" || e.target.id === "dpClose") { closeDetail(); return; }

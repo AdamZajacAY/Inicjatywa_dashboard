@@ -25,3 +25,4 @@ baza_danych/oauth_config.json
 
 # Stan lokalny Claude Code
 .claude/
+baza_danych/backups_produkcja/

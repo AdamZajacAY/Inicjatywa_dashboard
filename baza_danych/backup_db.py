@@ -18,6 +18,8 @@ backup), wiec przy kilku deployach dziennie retencja liczona samym "ostatnie
 N kopii" potrafila w kilka dni wyprzec kopie starsze niz tydzien, mimo
 nominalnie sporego zapasu.
 
+Retencja dziala TYLKO na wdrozeniu (ustawione DATABASE_PATH) - lokalnie kopie nie sa nigdy usuwane.
+
 Uruchomienie:
   python3 baza_danych/backup_db.py                  # backup + retencja, z komunikatem
   python3 baza_danych/backup_db.py --quiet           # jak wyzej, bez wypisywania (cron/launchd)
@@ -106,6 +108,11 @@ def _backup_timestamp(name):
 def enforce_retention(keep_days=DEFAULT_KEEP_DAYS, keep_min=DEFAULT_KEEP_MIN, backups_dir=BACKUPS_DIR):
     """Usuwa kopie starsze niz `keep_days` dni, ale nigdy nie schodzi ponizej `keep_min`
     najnowszych (patrz uzasadnienie w docstringu modulu). Zwraca liste usunietych plikow."""
+    # Lokalnie (brak DATABASE_PATH = nie Render) kopie NIGDY nie sa usuwane - kazda wazy ok. 0,5 MB,
+    # a 12.10.2026 automatyczna retencja przy recznym backupie skasowala 129 lokalnych kopii z lipca.
+    # Retencja dziala wylacznie na wdrozeniu (dysk Render ma 1 GB).
+    if not os.environ.get("DATABASE_PATH"):
+        return []
     backups = list_backups(backups_dir)  # najnowsze pierwsze
     cutoff = datetime.datetime.now() - datetime.timedelta(days=keep_days)
     removed = []

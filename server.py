@@ -2037,6 +2037,22 @@ def backup():
     return jsonify({"name": os.path.basename(dest_path), "removed": removed}), 201
 
 
+@app.route("/api/backup/pobierz", methods=["GET"])
+def backup_download():
+    # Swieza kopia CALEJ bazy do pobrania (COO/Admin) - zeby produkcyjna baza z Render byla zawsze
+    # takze lokalnie (decyzja uzytkownika 12.10.2026). Tylko odczyt: kopia powstaje przez ten sam
+    # create_backup() (online-backup + integrity_check) co przycisk "Backup teraz".
+    if g.user["Rola"] not in FULL_ACCESS_ROLES:
+        abort(403)
+    try:
+        dest_path = create_backup()
+    except Exception as e:
+        print(f"Blad przy tworzeniu backupu do pobrania: {e}")
+        return jsonify({"error": "Nie udało się utworzyć kopii zapasowej. Sprawdź logi serwera."}), 500
+    return send_from_directory(os.path.dirname(dest_path), os.path.basename(dest_path),
+                               as_attachment=True, mimetype="application/x-sqlite3")
+
+
 @app.route("/api/users/<item_id>/reset-password", methods=["POST"])
 def admin_reset_password(item_id):
     if g.user["Rola"] not in FULL_ACCESS_ROLES:
