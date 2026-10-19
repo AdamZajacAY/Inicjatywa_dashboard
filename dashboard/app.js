@@ -1580,7 +1580,9 @@ function renderOverview() {
 }
 
 /* ================================================================== VIEW: PROJEKTY */
-let projectFilters = { typ: "", status: "", owner: "", rag: "", q: "", tag: "", terminOd: "", terminDo: "", sort: "priorytet", view: "cards" };
+// Domyslny widok Projektow: "Tabela wg architekta" (decyzja Adama 19.10.2026); wybor innego widoku
+// zapamietywany na koncie (projectsView w preferencjach).
+let projectFilters = { typ: "", status: "", owner: "", rag: "", q: "", tag: "", terminOd: "", terminDo: "", sort: "priorytet", view: "tabela" };
 const PRIORITY_RANK = { "Wysoki": 0, "Sredni": 1, "Niski": 2 };
 
 function renderProjectsFilters() {
@@ -1712,14 +1714,14 @@ function renderProjectsTable(list) {
 
 function renderProjects() {
   const list = filteredProjects();
-  const view = projectFilters.view || "cards";
+  const view = projectFilters.view || "tabela";
   $("#view-projekty").innerHTML = `
     <div class="section-head">
       <h2>Projekty</h2>
       <div style="display:flex;align-items:center;gap:10px">
         <div class="view-toggle">
-          <button type="button" class="view-toggle-btn ${view === "cards" ? "active" : ""}" data-proj-view="cards">Karty</button>
           <button type="button" class="view-toggle-btn ${view === "tabela" ? "active" : ""}" data-proj-view="tabela">Tabela wg architekta</button>
+          <button type="button" class="view-toggle-btn ${view === "cards" ? "active" : ""}" data-proj-view="cards">Karty</button>
           <button type="button" class="view-toggle-btn ${view === "kanban" ? "active" : ""}" data-proj-view="kanban">Kanban</button>
         </div>
         ${can("create", "projekty") ? `<button data-add-project="1">+ Nowy projekt</button>` : ""}
@@ -6204,6 +6206,7 @@ function applyInitialView() {
     } catch { /* prywatne okno */ }
   }
   const prefs = loadUiPrefs();
+  if (["tabela", "cards", "kanban"].includes(prefs.projectsView)) projectFilters.view = prefs.projectsView;
   if (prefs.ticketFilters) PERSISTED_TICKET_FILTERS.forEach(k => { if (prefs.ticketFilters[k] !== undefined) ticketFilters[k] = prefs.ticketFilters[k]; });
   if (!["osoba", "projekt"].includes(ticketFilters.lanes)) ticketFilters.lanes = "brak"; // dawne wiersze wg terminu wycofane 19.10.2026
   const role = STATE.me.role;
@@ -6212,6 +6215,7 @@ function applyInitialView() {
   const btn = $all(".tab-btn").find(b => b.dataset.view === wanted && b.style.display !== "none");
   switchToView(btn ? wanted : "przeglad");
   renderTickets(); // z odtworzonymi filtrami
+  renderProjects(); // z odtworzonym widokiem (domyslnie tabela wg architekta)
 }
 function switchToView(viewName) {
   saveUiPrefs({ view: viewName });
@@ -6553,7 +6557,7 @@ document.addEventListener("click", (e) => {
   const addProject = e.target.closest("[data-add-project]");
   if (addProject) { openProjectForm(); return; }
   const projViewBtn = e.target.closest("[data-proj-view]");
-  if (projViewBtn) { projectFilters.view = projViewBtn.getAttribute("data-proj-view"); renderProjects(); return; }
+  if (projViewBtn) { projectFilters.view = projViewBtn.getAttribute("data-proj-view"); saveUiPrefs({ projectsView: projectFilters.view }); renderProjects(); return; }
   const ganttViewBtn = e.target.closest("[data-gantt-view]");
   if (ganttViewBtn) { ganttFilters.view = ganttViewBtn.getAttribute("data-gantt-view"); renderGanttView(); return; }
   const teamViewBtn = e.target.closest("[data-team-view]");
