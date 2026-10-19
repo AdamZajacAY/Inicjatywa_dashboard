@@ -340,11 +340,12 @@ zespół w dashboardzie.
   (wg osoby). Ekran startowy Architekta Prowadzącego. Model Kanban (feedback W. Ferfeta, 10.09.2026):
   - kolumny = **etap pracy**: Backlog → Zaplanowane → W trakcie → Do przeglądu → Zrobione
     (Zarchiwizowane poza tablicą); „Zablokowane” to flaga na karcie z powodem, nie kolumna;
-  - wiersze liczone **automatycznie z dat**: Opóźnione / Dziś / Ten tydzień / Później / Bez terminu
-    (albo wg osoby z limitem WIP 3 zadań „W trakcie”, albo wg projektu);
+  - w każdej kolumnie **najbliższy termin na górze** (zaległe na samej górze, bez terminu na dole),
+    na karcie etykieta „termin dziś / jutro / za 3 dni / 2 dni po terminie”; opcjonalne grupowanie
+    wg osoby (z limitem WIP 3 zadań „W trakcie”) albo wg projektu; „Zrobione” z ostatnich 7 dni;
   - **klasa usługi**: Na cito (zawsze na górze) / Termin stały (urzędowe) / Standard;
   - na karcie przycisk następnego etapu (**▶ Zaczynam** → **✓ Do przeglądu** → **✓ Zrobione**),
-    ręczna kolejność przeciąganiem, „+ zadanie” w komórce (etap/termin/osoba podstawione z wiersza);
+    „+ zadanie” w kolumnie;
   - filtr **architekta prowadzącego** i szybkie filtry (Dziś / Ten tydzień / Na cito / Zablokowane)
     we wszystkich widokach; w Liście zaznaczanie wielu zadań i zmiana etapu/osoby/klasy/terminu naraz;
   - zakładka i filtry zapamiętywane w przeglądarce; skróty: `N` nowe zadanie, `K/L/C/G` widoki,
@@ -362,6 +363,13 @@ zespół w dashboardzie.
   „+ zadanie” w etapie, „⧉ Kopiuj zadania z projektu…” — dowolny projekt jako szablon, z dopasowaniem
   etapów po nazwie i przesunięciem dat) oraz **Karta projektu** (dane podstawowe, działki, zespół,
   podwykonawcy, finanse, checklista, notatki, ryzyka, szczegóły etapów z dokumentacji).
+- **Powiadomienia (dzwonek w prawym górnym rogu)** — oprócz @wzmianek: moje zadania po terminie, na dziś
+  i z terminem w ciągu 1–7 dni (próg do wyboru w panelu), zadania do zatwierdzenia, a dla architekta
+  prowadzącego zaległości i terminy dziś na jego projektach. Nowe powiadomienia pokazują licznik i dymek
+  przy starcie; otwarcie panelu oznacza je jako zobaczone. Alerty całego portfela są na Przeglądzie.
+- Sekcje karty projektu są **zwijane** (stan zapamiętywany w przeglądarce); Eksport, Druk i Raport dla
+  zarządu są w menu „⋯ Więcej” w nagłówku; na telefonie filtry Zadań chowają się pod „Filtry”, a Kanban
+  zastępuje Lista.
 - **Ideapool** — zgłaszanie pomysłów (każda rola). **Inwestorzy** — klienci i kontakty, pobieranie z CEIDG/KRS.
 - **Harmonogram / Gantt** — oś czasu etapów, **grupowana wg projektu lub wg osoby** (przełącznik),
   filtrowana po typie/odpowiedzialnym; kliknięcie w etap otwiera go do edycji.

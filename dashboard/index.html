@@ -19,9 +19,15 @@
   </div>
   <div class="header-right">
     <span class="file-info" id="fileInfo">Łączenie z serwerem…</span>
-    <button class="secondary" id="btnExport" style="display:none" data-roles="COO,Admin">Eksportuj do Excela</button>
-    <button class="secondary" id="btnPrint" style="display:none" data-roles="COO,Admin">Drukuj widok</button>
-    <button class="secondary" id="btnExecReport" style="display:none" data-roles="COO,Admin" title="Generuje podsumowanie portfela projektów do wydruku / zapisu jako PDF (przez okno drukowania przeglądarki)">📄 Raport dla zarządu (PDF)</button>
+    <!-- Audyt UX 19.10.2026: rzadko uzywane akcje zarzadu w jednym menu "Wiecej" - naglowek miesci sie w jednym rzedzie -->
+    <div class="more-menu-wrap" id="moreMenuWrap" style="display:none" data-roles="COO,Admin">
+      <button class="secondary" id="btnMore" aria-haspopup="true" aria-expanded="false" aria-label="Więcej: raport, eksport, druk">⋯<span class="more-label"> Więcej</span></button>
+      <div class="more-menu" id="moreMenu" role="menu">
+        <button class="more-menu-item" id="btnExecReport" role="menuitem" title="Podsumowanie portfela do wydruku / zapisu jako PDF">📄 Raport dla zarządu (PDF)</button>
+        <button class="more-menu-item" id="btnExport" role="menuitem">⬇ Eksportuj do Excela</button>
+        <button class="more-menu-item" id="btnPrint" role="menuitem">🖨 Drukuj widok</button>
+      </div>
+    </div>
     <button class="icon-btn" id="btnThemeToggle" aria-label="Przełącz motyw jasny/ciemny" title="Przełącz motyw jasny/ciemny">🌙</button>
     <div class="notif-bell-wrap" id="notifBellWrap" style="display:none">
       <button class="icon-btn notif-bell" id="notifBellBtn" aria-label="Powiadomienia">

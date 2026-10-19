@@ -496,9 +496,6 @@ function showDashboard() {
   $("#emptyState").style.display = "none";
   $("#tabs").style.display = "flex";
   $("#footerNote").style.display = "block";
-  $("#btnPrint").style.display = "inline-block";
-  $("#btnExport").style.display = "inline-block";
-  $("#btnExecReport").style.display = "inline-block";
   $("#notifBellWrap").style.display = "block";
   $("#userMenu").style.display = "flex";
 }
@@ -575,34 +572,132 @@ function notificationItemHtml(n) {
   </button>`;
 }
 
+// ---------- Powiadomienia o terminach (prosba Adama 19.10.2026): dzwonek w prawym gornym rogu
+// pokazuje nie tylko @wzmianki, ale tez MOJE zadania z terminem dzis/po terminie/w ciagu N dni,
+// zadania czekajace na moje zatwierdzenie oraz - dla architekta prowadzacego - zaleglosci i
+// terminy dzis na projektach, ktore prowadzi. Liczone w przegladarce z danych, ktore i tak ma.
+// "Nowe" = jeszcze nieogladane (klucz: rodzaj + zadanie + termin) - zmiana terminu albo przejscie
+// z "za 2 dni" na "dzis" daje nowe powiadomienie. Otwarcie panelu oznacza je jako zobaczone.
+const DEADLINE_DAYS_KEY = "ip_deadline_notif_days";
+const DEADLINE_SEEN_KEY = "ip_deadline_notif_seen_v1";
+function getDeadlineNotifDays() { const v = Math.round(Number(localStorage.getItem(DEADLINE_DAYS_KEY))); return v >= 1 && v <= 14 ? v : 2; }
+function loadSeenDeadline() { try { return new Set(JSON.parse(localStorage.getItem(DEADLINE_SEEN_KEY) || "[]")); } catch { return new Set(); } }
+function saveSeenDeadline(set) { try { localStorage.setItem(DEADLINE_SEEN_KEY, JSON.stringify(Array.from(set).slice(-500))); } catch { /* bez pamieci */ } }
+function deadlineNotifications() {
+  const me = STATE.me.personId;
+  if (!me) return [];
+  const myName = personName(me), days = getDeadlineNotifDays(), today = today0();
+  const isLead = STATE.me.role === "Architekt_PM" || FULL_ACCESS_ROLES.includes(STATE.me.role);
+  const items = [];
+  const add = (kind, sev, t, text) => items.push({ key: `${kind}:${t.ID_Tickietu}:${t.Termin instanceof Date ? dateInputVal(t.Termin) : ""}`, kind, sev, t, text });
+  STATE.tickets.forEach(t => {
+    if (DONE_TICKET_STATUSES.includes(t.Status) || isAwaitingApproval(t) || !(t.Termin instanceof Date)) return;
+    const d = Math.round((t.Termin - today) / 86400000);
+    const mine = t.ID_Osoby_przypisanej === me || t.ID_Osoby_wspomagajacej === me;
+    if (mine) {
+      if (d < 0) add("po-terminie", "critical", t, `${-d} ${-d === 1 ? "dzień" : "dni"} po terminie`);
+      else if (d === 0) add("dzis", "critical", t, "termin dziś");
+      else if (d <= days) add("wkrotce", "warning", t, d === 1 ? "termin jutro" : `termin za ${d} dni`);
+      return;
+    }
+    if (isLead && STATE.projectById.get(t.ID_Projektu)?.Owner === myName) {
+      if (d < 0) add("zespol-po-terminie", "critical", t, `zespół: ${-d} ${-d === 1 ? "dzień" : "dni"} po terminie`);
+      else if (d === 0) add("zespol-dzis", "serious", t, "zespół: termin dziś");
+      else if (isUrgentAdministrativeTicket(t)) add("zespol-urzedowe", "critical", t, `urzędowe: nieprzekraczalny termin za ${d} dni`);
+    }
+  });
+  ticketsToApproveForMe().forEach(t => items.push({ key: `zatwierdz:${t.ID_Tickietu}:${dateInputVal(t.Data_wykonania)}`, kind: "zatwierdz", sev: "serious", t, text: "do zatwierdzenia" }));
+  const sevRank = { critical: 0, serious: 1, warning: 2 };
+  return items.sort((a, b) => sevRank[a.sev] - sevRank[b.sev] || (a.t.Termin?.getTime() || 0) - (b.t.Termin?.getTime() || 0));
+}
+function unseenDeadlineCount(items = deadlineNotifications()) {
+  const seen = loadSeenDeadline();
+  return items.filter(i => !seen.has(i.key)).length;
+}
+function deadlineItemHtml(i, seen) {
+  return `<button type="button" class="notif-item ${seen.has(i.key) ? "" : "unread"}" data-dn-open="${esc(i.t.ID_Tickietu)}">
+    <div class="notif-line"><span class="notif-sev notif-sev-${i.sev}"></span><b>${esc(i.text)}</b> · ${esc(fmtDate(i.t.Termin))}</div>
+    <div class="notif-line">${esc(i.t.Tytul)}</div>
+    <div class="notif-meta">${esc(projectName(i.t.ID_Projektu))} · ${esc(ticketAssigneeLabel(i.t))}</div>
+  </button>`;
+}
 function renderNotificationPanel() {
   const panel = $("#notifPanel");
   if (!panel) return;
   const unreadCount = STATE.notifications.filter(n => n.Przeczytane !== "Tak").length;
+  const items = deadlineNotifications();
+  const seen = loadSeenDeadline();
+  const days = getDeadlineNotifDays();
+  const approve = items.filter(i => i.kind === "zatwierdz"), deadlines = items.filter(i => i.kind !== "zatwierdz");
   panel.innerHTML = `
     <div class="notif-panel-head">
       <h4>Powiadomienia</h4>
-      ${unreadCount ? `<button type="button" class="notif-mark-all" data-notif-mark-all>Oznacz wszystkie jako przeczytane</button>` : ""}
+      ${unreadCount ? `<button type="button" class="notif-mark-all" data-notif-mark-all>Oznacz wzmianki jako przeczytane</button>` : ""}
     </div>
-    ${STATE.notifications.length ? STATE.notifications.map(notificationItemHtml).join("") : `<div class="notif-empty">Brak powiadomień.</div>`}
+    <div class="notif-group-title">Terminy (${deadlines.length})
+      <label class="notif-days">przypominaj <select data-dn-days>${[1, 2, 3, 5, 7].map(n => `<option value="${n}" ${n === days ? "selected" : ""}>${n} ${n === 1 ? "dzień" : "dni"}</option>`).join("")}</select> przed</label>
+    </div>
+    ${deadlines.map(i => deadlineItemHtml(i, seen)).join("") || `<div class="notif-empty">Brak zbliżających się terminów.</div>`}
+    ${approve.length ? `<div class="notif-group-title">Do zatwierdzenia (${approve.length})</div>${approve.map(i => deadlineItemHtml(i, seen)).join("")}` : ""}
+    <div class="notif-group-title">Wzmianki (${STATE.notifications.length})</div>
+    ${STATE.notifications.length ? STATE.notifications.map(notificationItemHtml).join("") : `<div class="notif-empty">Brak wzmianek.</div>`}
   `;
 }
 
 function renderNotificationBell() {
   const wrap = $("#notifBellWrap");
   if (!wrap) return;
-  const unreadCount = STATE.notifications.filter(n => n.Przeczytane !== "Tak").length;
+  const items = deadlineNotifications();
+  const unreadCount = STATE.notifications.filter(n => n.Przeczytane !== "Tak").length + unseenDeadlineCount(items);
   const badge = $("#notifBadge");
   badge.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
   badge.style.display = unreadCount ? "flex" : "none";
+  const urgent = items.some(i => i.sev === "critical" && !loadSeenDeadline().has(i.key));
+  $("#notifBellBtn")?.classList.toggle("urgent", urgent);
+  $("#notifBellBtn")?.setAttribute("aria-label", unreadCount ? `Powiadomienia: ${unreadCount} nowych` : "Powiadomienia");
   if ($("#notifPanel").classList.contains("open")) renderNotificationPanel();
+  maybeShowDeadlineToast(items);
+}
+
+// Dymek w prawym gornym rogu (pod dzwonkiem) - raz na sesje dla danego zestawu nowych powiadomien.
+function maybeShowDeadlineToast(items) {
+  const seen = loadSeenDeadline();
+  const fresh = items.filter(i => !seen.has(i.key) && i.kind !== "zatwierdz");
+  let shown;
+  try { shown = new Set(JSON.parse(sessionStorage.getItem("ip_toast_shown") || "[]")); } catch { shown = new Set(); }
+  const toShow = fresh.filter(i => !shown.has(i.key));
+  if (!toShow.length) return;
+  fresh.forEach(i => shown.add(i.key));
+  try { sessionStorage.setItem("ip_toast_shown", JSON.stringify(Array.from(shown))); } catch { /* bez pamieci */ }
+  const late = fresh.filter(i => i.kind === "po-terminie").length, today = fresh.filter(i => i.kind === "dzis").length;
+  const soon = fresh.filter(i => i.kind === "wkrotce").length, team = fresh.filter(i => i.kind.startsWith("zespol")).length;
+  const parts = [late && `${late} po terminie`, today && `${today} na dziś`, soon && `${soon} wkrótce`, team && `${team} w Twoich projektach`].filter(Boolean);
+  let toast = $("#deadlineToast");
+  if (!toast) { toast = document.createElement("div"); toast.id = "deadlineToast"; toast.className = "deadline-toast"; toast.setAttribute("role", "status"); document.body.appendChild(toast); }
+  toast.className = `deadline-toast ${late || today ? "critical" : ""}`;
+  toast.innerHTML = `<div><b>⏰ Terminy zadań</b><div>${esc(parts.join(" · "))}</div></div>
+    <button type="button" class="icon-btn" data-toast-open="1">Pokaż</button>
+    <button type="button" class="toast-close" data-toast-close="1" aria-label="Zamknij">×</button>`;
+  toast.classList.add("open");
+  clearTimeout(maybeShowDeadlineToast._t);
+  maybeShowDeadlineToast._t = setTimeout(() => toast.classList.remove("open"), 12000);
 }
 
 function toggleNotificationPanel() {
   const panel = $("#notifPanel");
   const opening = !panel.classList.contains("open");
   panel.classList.toggle("open", opening);
-  if (opening) renderNotificationPanel();
+  if (opening) {
+    renderNotificationPanel(); // najpierw render z wyroznieniem nowych, potem oznacz jako zobaczone
+    const seen = loadSeenDeadline();
+    deadlineNotifications().forEach(i => seen.add(i.key));
+    saveSeenDeadline(seen);
+    const unread = STATE.notifications.filter(n => n.Przeczytane !== "Tak").length;
+    $("#notifBadge").textContent = String(unread);
+    $("#notifBadge").style.display = unread ? "flex" : "none";
+    $("#notifBellBtn")?.classList.remove("urgent");
+    $("#deadlineToast")?.classList.remove("open");
+  }
 }
 
 function closeNotificationPanel() {
@@ -988,12 +1083,33 @@ function ticketHorizon(t) {
 }
 // Kolejnosc kart w komorce tablicy: klasa uslugi (Na cito na gorze), potem reczna Kolejnosc
 // (przeciaganiem), potem Termin.
+// Decyzja Adama (19.10.2026): bez wierszy "Dzis/Ten tydzien/Pozniej" - w kazdej kolumnie zadania
+// najblizej terminu sa najwyzej (zalegle naturalnie na samej gorze), bez terminu na dole. Przy tym
+// samym terminie: Na cito przed reszta. Zrobione: ostatnio zakonczone na gorze.
 function ticketBoardSort(a, b) {
-  const ka = KLASA_RANK[ticketServiceClass(a)], kb = KLASA_RANK[ticketServiceClass(b)];
-  if (ka !== kb) return ka - kb;
-  const ra = a.Kolejnosc ?? Infinity, rb = b.Kolejnosc ?? Infinity;
-  if (ra !== rb) return ra - rb;
-  return (a.Termin?.getTime() || Infinity) - (b.Termin?.getTime() || Infinity);
+  if (DONE_TICKET_STATUSES.includes(a.Status) && DONE_TICKET_STATUSES.includes(b.Status))
+    return (b.Data_zakonczenia?.getTime() || 0) - (a.Data_zakonczenia?.getTime() || 0);
+  const ta = a.Termin instanceof Date ? a.Termin.getTime() : Infinity, tb = b.Termin instanceof Date ? b.Termin.getTime() : Infinity;
+  if (ta !== tb) return ta - tb;
+  return KLASA_RANK[ticketServiceClass(a)] - KLASA_RANK[ticketServiceClass(b)];
+}
+// Ile dni do terminu - czytelna etykieta na karcie ("dziś", "jutro", "za 3 dni", "2 dni po terminie").
+function dueInfo(t) {
+  if (!(t.Termin instanceof Date) || DONE_TICKET_STATUSES.includes(t.Status) || isAwaitingApproval(t)) return null;
+  const d = Math.round((t.Termin - today0()) / 86400000);
+  if (d < 0) return { text: `${-d} ${-d === 1 ? "dzień" : "dni"} po terminie`, cls: "critical" };
+  if (d === 0) return { text: "termin dziś", cls: "critical" };
+  if (d === 1) return { text: "termin jutro", cls: "serious" };
+  if (d <= 7) return { text: `za ${d} dni`, cls: "warning" };
+  return { text: `za ${d} dni`, cls: "muted" };
+}
+function dueChipHtml(t) { const i = dueInfo(t); return i ? `<span class="due-chip due-${i.cls}">${esc(i.text)}</span>` : ""; }
+// Zrobione na tablicy: tylko ostatnie 7 dni - starsze sa w widoku Lista.
+const BOARD_DONE_DAYS = 7;
+function isRecentlyDone(t) {
+  if (!DONE_TICKET_STATUSES.includes(t.Status)) return true;
+  const d = t.Data_zakonczenia instanceof Date ? t.Data_zakonczenia : null;
+  return !!d && (today0() - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000 <= BOARD_DONE_DAYS;
 }
 function wipCountForPerson(oid) {
   return STATE.tickets.filter(t => t.ID_Osoby_przypisanej === oid && t.Status === "W trakcie").length;
@@ -1358,7 +1474,7 @@ function renderOverview() {
 
     <div class="panel">
       <div class="section-head" style="margin-bottom:4px">
-        <h3 style="margin:0">🔔 Powiadomienia (${notifications.length})</h3>
+        <h3 style="margin:0" title="Alerty całego portfela (etapy, kamienie milowe, RAG). Twoje osobiste terminy są w dzwonku w prawym górnym rogu.">⚠️ Alerty portfela (${notifications.length})</h3>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary)" title="Ile dni przed terminem pokazywać alert 'zbliża się' (kamienie milowe, zadania urzędowe)">
           Próg (dni): <input type="number" id="fNotifThreshold" min="1" max="365" value="${getNotificationThresholdDays()}" style="width:56px">
         </label>
@@ -1533,8 +1649,8 @@ function projectCardHtml(p) {
       <div class="pc-row"><span>Termin (plan)</span><b>${fmtDate(p.Data_zakonczenia_planowana)}</b></div>
       <div class="pc-row"><span>Postęp</span><b>${fmtPctFraction(p.Procent_postepu)}</b></div>
       <div class="progress-track"><div class="progress-fill" style="width:${num(p.Procent_postepu) * 100}%"></div></div>
-      <div class="pc-row" style="margin-top:8px"><span>Budżet</span><b>${fmtMoney(p.Budzet_wydany, p.Waluta)} / ${fmtMoney(p.Budzet_calkowity, p.Waluta)}</b></div>
-      <div class="progress-track"><div class="progress-fill ${over ? "over" : ""}" style="width:${budPct}%"></div></div>
+      ${num(p.Budzet_calkowity) || num(p.Budzet_wydany) ? `<div class="pc-row" style="margin-top:8px"><span>Budżet</span><b>${fmtMoney(p.Budzet_wydany, p.Waluta)} / ${fmtMoney(p.Budzet_calkowity, p.Waluta)}</b></div>
+      <div class="progress-track"><div class="progress-fill ${over ? "over" : ""}" style="width:${budPct}%"></div></div>` : ""}
       ${projectTags(p).length ? `<div class="tag-chips">${projectTags(p).map(t => `<span class="tag-chip">${esc(t)}</span>`).join("")}</div>` : ""}
     </div>`;
 }
@@ -1717,15 +1833,21 @@ function teamCardHtml(person) {
   const fte = num(person.Dostepnosc_FTE_procent, 100);
   const hrs = workloadHoursInfo(person);
   const cls = hrs.percent > 100 ? "over" : hrs.percent >= 90 ? "warn" : "";
+  // Audyt UX 19.10.2026: godziny/FTE w wiekszosci nieuzupelnione (wszedzie 0%) - liczba otwartych
+  // i zaleglych zadan mowi prowadzacemu wiecej o tym, kto ma za duzo na glowie.
+  const personTickets = ticketsForPerson(person.ID_Osoby).filter(t => !DONE_TICKET_STATUSES.includes(t.Status));
+  const openTasks = personTickets.length, lateTasks = personTickets.filter(isOverdueTicket).length;
+  const wip = personTickets.filter(t => t.Status === "W trakcie").length;
   return `
     <div class="team-card" data-open-person="${esc(person.ID_Osoby)}">
       <div class="tc-name">${esc(person.Imie_i_nazwisko)}</div>
       <div class="tc-role">${esc(person.Stanowisko_Rola)} · ${esc(person.Dzial)}</div>
-      <div class="pc-row"><span>Obciążenie</span><b>${hrs.percent}% / ${fte}%</b></div>
+      <div class="pc-row"><span>Otwarte zadania</span><b>${openTasks}${lateTasks ? ` · <span class="txt-critical">${lateTasks} po terminie</span>` : ""}${wip ? ` · ${wip} w trakcie` : ""}</b></div>
+      <div class="pc-row"><span>Obciążenie godzinowe</span><b>${hrs.percent}% z ${fte}%</b></div>
       <div class="workload-track"><div class="workload-fill ${cls}" style="width:${Math.min(150, hrs.percent) / 1.5}%"></div></div>
       <div class="tc-hours">${hrs.assignedHours.toFixed(0)}h / ${hrs.capacityHours.toFixed(0)}h w tym miesiącu · ${hrs.workDays} dni rob. × ${hrs.dailyCapacityHours.toFixed(2)}h/dzień (${HOURS_PER_DAY}h − ${BREAK_MINUTES_PER_DAY + LUNCH_MINUTES_PER_DAY} min przerw/lunch)</div>
       <div class="tc-projects">
-        ${myAssignments.map(a => `<div>• ${esc(projectName(a.ID_Projektu))} — ${esc(a.Rola_w_projekcie)} (${pctOrDash(a.Procent_zaangazowania)})</div>`).join("") || "<div>Brak aktywnych przypisań.</div>"}
+        ${myAssignments.map(a => `<div>• ${esc(projectName(a.ID_Projektu))} — ${esc(a.Rola_w_projekcie)}${a.Procent_zaangazowania != null && a.Procent_zaangazowania !== "" ? ` (${pctOrDash(a.Procent_zaangazowania)})` : ""}</div>`).join("") || "<div>Brak aktywnych przypisań.</div>"}
       </div>
     </div>`;
 }
@@ -1836,7 +1958,7 @@ let ticketFilters = { projekt: "", osoba: "", statuses: [], onlyOverdue: false, 
   // Feedback 10.09.2026: prowadzacy = wszystkie zadania na projektach, ktorych jest architektem
   // prowadzacym (projekty.Owner), nie tylko przypisane do siebie. horyzonty/klasa/blokada = szybkie
   // filtry "Dzis / Ten tydzien / Na cito / Zablokowane..." dzialajace w kazdym widoku.
-  prowadzacy: null, horyzonty: [], tylkoNaCito: false, tylkoZablokowane: false, lanes: "horyzont" }; // tag/typ/sort: Faza 3 (B2/B6/B10); etap: weekly 23.07.2026
+  prowadzacy: null, horyzonty: [], tylkoNaCito: false, tylkoZablokowane: false, lanes: "brak" }; // tag/typ/sort: Faza 3 (B2/B6/B10); etap: weekly 23.07.2026
 
 // Faza 3 (B2) - wartosc do sortowania listy zadan wg klikanego naglowka kolumny; Termin domyslnie
 // (mirror poprzedniego, na sztywno wpisanego sortowania), reszta pol dopisana obok, nie zamiast.
@@ -1862,7 +1984,7 @@ function ticketCardSimpleHtml(t) {
   const overdue = isOverdueTicket(t);
   return `<div class="kanban-card simple ${overdue ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
     <div class="kc-title">${esc(t.Tytul)}</div>
-    <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)}${overdue ? " · <b class=\"kc-late\">opóźnione</b>" : ""}${ticketServiceClass(t) === "Na cito" ? " · <b class=\"kc-late\">na cito</b>" : ""}</div>
+    <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)} ${dueChipHtml(t)}${ticketServiceClass(t) === "Na cito" ? " <b class=\"kc-late\">na cito</b>" : ""}</div>
     ${editable && nextStepFor(t) ? `<button type="button" class="kc-next" data-tk-next="${esc(t.ID_Tickietu)}">${esc(nextStepFor(t).label)}</button>` : ""}
   </div>`;
 }
@@ -1880,18 +2002,17 @@ function ticketCardHtml(t) {
   return `
     <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" style="--card-tint:var(${cardTintVar})" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
       <div class="kc-title">${esc(t.Tytul)}</div>
-      <div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>
-      <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${t.Data_rozpoczecia instanceof Date ? `${fmtDayMonth(t.Data_rozpoczecia)} → ` : ""}${fmtDate(t.Termin)}</div>
+      ${ticketFilters.projekt ? "" : `<div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>`}
+      <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${t.Data_rozpoczecia instanceof Date ? `${fmtDayMonth(t.Data_rozpoczecia)} → ` : ""}${fmtDate(t.Termin)} ${dueChipHtml(t)}</div>
       ${isBlockedTicket(t) ? `<div class="kc-blocked">⛔ Zablokowane${t.Powod_blokady ? `: ${esc(t.Powod_blokady)}` : ""}</div>` : ""}
-      ${t.ID_Osoby_zglaszajacej ? `<div class="kc-meta">zgłosił: ${esc(personName(t.ID_Osoby_zglaszajacej))}</div>` : ""}
       ${ticketTags(t).length ? `<div class="tag-chips" style="margin-top:4px">${ticketTags(t).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join("")}</div>` : ""}
       <div class="kc-foot">
         ${ticketServiceClass(t) === "Na cito" ? badge("Na cito", "critical") : ticketServiceClass(t) === "Termin staly" ? badge("Termin stały", "serious") : ""}
         ${isSub ? badge("Podwykonawca", "sub") : ""}
         ${isUrzedoweTicket(t) ? badge("Urzędowe", "warning") : ""}
         ${t.Status === "W trakcie" && t.Data_rozpoczecia instanceof Date && t.Data_rozpoczecia <= today0() ? badge(`w toku ${Math.round((today0() - t.Data_rozpoczecia) / 86400000)} dni`, "muted") : ""}
-        ${badge(t.Priorytet || "—", t.Priorytet === "Wysoki" ? "critical" : t.Priorytet === "Niski" ? "muted" : "warning")}
-        ${overdue ? badge("Opóźnione", "critical") : urgentAdmin ? badge("Nieprzekraczalny termin blisko", "critical") : ""}
+        ${t.Priorytet === "Wysoki" ? badge("Priorytet wysoki", "critical") : ""}
+        ${!overdue && urgentAdmin ? badge("Nieprzekraczalny termin blisko", "critical") : ""}
         ${num(t.Liczba_reaktywacji) > 0 ? badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : ""}
       </div>
       ${editable && nextStepFor(t) ? `<button type="button" class="kc-next" data-tk-next="${esc(t.ID_Tickietu)}" title="${esc(nextStepFor(t).hint)}">${esc(nextStepFor(t).label)}</button>` : ""}
@@ -1937,69 +2058,55 @@ function wipStripHtml(list) {
 // Ten tydzien = piatek), osoba albo projektem. Zostaje wpisac tytul i Enter.
 const QUICK_ADD_STATUSES = ["Backlog", "Zaplanowane", "W trakcie"];
 function quickAddFromBoard(status, laneKey) {
-  const mode = ticketFilters.lanes || "horyzont";
+  const mode = ticketFilters.lanes || "brak";
   const seed = { Status: status };
-  if (mode === "horyzont") {
-    if (laneKey === "Dzis") seed.Termin = today0();
-    if (laneKey === "Ten tydzien") {
-      const fri = startOfWeek0(); fri.setDate(fri.getDate() + 4);
-      seed.Termin = fri >= today0() ? fri : endOfWeek0();
-    }
-  }
   const pid = ticketFilters.projekt || (mode === "projekt" ? laneKey : null);
   const assignee = mode === "osoba" && laneKey && laneKey !== "—" && !String(laneKey).startsWith("sub:") && !String(laneKey).startsWith("zewn:") ? laneKey : undefined;
   openTicketForm(pid || null, null, seed, { stayInTickets: true, assignee });
 }
 function renderTicketsKanban(list) {
-  const mode = ticketFilters.lanes || "horyzont";
-  const onBoard = list.filter(t => KANBAN_KOLUMNY.includes(t.Status) && laneKeyOf(t, mode) !== null);
-  const hiddenDone = list.filter(t => DONE_TICKET_STATUSES.includes(t.Status) && ticketHorizon(t) === null).length;
-  let laneKeys;
-  if (mode === "horyzont") laneKeys = HORYZONTY;
-  else {
-    laneKeys = Array.from(new Set(onBoard.map(t => laneKeyOf(t, mode))));
-    laneKeys.sort((a, b) => String(mode === "projekt" ? projectName(a) : personName(a)).localeCompare(String(mode === "projekt" ? projectName(b) : personName(b)), "pl"));
-  }
-  const byLane = new Map(laneKeys.map(k => [k, []]));
+  // Wiersze tylko opcjonalnie wg osoby albo projektu (nie wg czasu - kolejnosc w kolumnie robi to samo).
+  const mode = ["osoba", "projekt"].includes(ticketFilters.lanes) ? ticketFilters.lanes : "brak";
+  const onBoard = list.filter(t => KANBAN_KOLUMNY.includes(t.Status) && isRecentlyDone(t));
+  const hiddenDone = list.filter(t => DONE_TICKET_STATUSES.includes(t.Status) && !isRecentlyDone(t)).length;
   const canAdd = can("create", "zadania_tickety");
-  onBoard.forEach(t => { const k = laneKeyOf(t, mode); if (byLane.has(k)) byLane.get(k).push(t); });
+  const laneKeys = mode === "brak" ? ["all"] : Array.from(new Set(onBoard.map(t => laneKeyOf(t, mode))))
+    .sort((a, b) => String(mode === "projekt" ? projectName(a) : personName(a)).localeCompare(String(mode === "projekt" ? projectName(b) : personName(b)), "pl"));
   const head = KANBAN_KOLUMNY.map(status => {
     const n = onBoard.filter(t => t.Status === status).length;
     const tintVar = statusColorVar(ticketStatusBadge(status));
-    const note = status === "Zrobione" ? `<span class="kb-col-note">ten tydzień</span>` : "";
+    const note = status === "Zrobione" ? `<span class="kb-col-note">ostatnie ${BOARD_DONE_DAYS} dni</span>` : "";
     return `<div class="kb-col-head" style="--col-tint:var(${tintVar})">${esc(statusLabel(status))}${note}<span class="count-pill">${n}</span></div>`;
   }).join("");
   const lanes = laneKeys.map(key => {
-    const items = byLane.get(key) || [];
-    if (!items.length && !(mode === "horyzont" && canAdd && ["Dzis", "Ten tydzien"].includes(key))) return "";
+    const items = mode === "brak" ? onBoard : onBoard.filter(t => laneKeyOf(t, mode) === key);
     const cells = KANBAN_KOLUMNY.map(status => {
       const cellItems = items.filter(t => t.Status === status).sort(ticketBoardSort);
       const tintVar = statusColorVar(ticketStatusBadge(status));
-      const addBtn = canAdd && QUICK_ADD_STATUSES.includes(status) && !(mode === "horyzont" && key === "Opoznione")
-        ? `<button type="button" class="kb-add" data-kb-add="${esc(status)}" data-lane="${esc(key)}" title="Nowe zadanie w tej komórce - etap, termin, osoba lub projekt podstawione z wiersza">+ zadanie</button>` : "";
+      const addBtn = canAdd && QUICK_ADD_STATUSES.includes(status)
+        ? `<button type="button" class="kb-add" data-kb-add="${esc(status)}" data-lane="${esc(key)}" title="Nowe zadanie w tej kolumnie">+ zadanie</button>` : "";
       return `<div class="kb-cell" data-drop-status="${esc(status)}" style="--col-tint:var(${tintVar})">${cellItems.map(ticketCardHtml).join("")}${addBtn}</div>`;
     }).join("");
-    const laneCls = mode === "horyzont" ? `kb-lane-${key.replace(/\s+/g, "-").toLowerCase()}` : "";
-    return `<div class="kb-lane-label ${laneCls}">${laneLabelHtml(key, mode, items)}<span class="count-pill">${items.length}</span></div>${cells}`;
+    return mode === "brak" ? cells
+      : `<div class="kb-lane-label">${laneLabelHtml(key, mode, items)}<span class="count-pill">${items.length}</span></div>${cells}`;
   }).join("");
   return `
     <div class="kb-toolbar">
-      <label class="kpi-sub">Wiersze:
+      <label class="kpi-sub">Grupuj:
         <select id="fTkLanes">
-          <option value="horyzont" ${mode === "horyzont" ? "selected" : ""}>wg terminu (Opóźnione / Dziś / Ten tydzień / Później)</option>
+          <option value="brak" ${mode === "brak" ? "selected" : ""}>bez grupowania</option>
           <option value="osoba" ${mode === "osoba" ? "selected" : ""}>wg osoby (z limitem WIP)</option>
           <option value="projekt" ${mode === "projekt" ? "selected" : ""}>wg projektu</option>
-          <option value="brak" ${mode === "brak" ? "selected" : ""}>bez podziału</option>
         </select>
       </label>
       <label class="kpi-sub" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="fTkSimple" ${ticketFilters.simpleCards ? "checked" : ""}> karty uproszczone</label>
-      <span class="kpi-sub">Przeciągnij między kolumnami = zmiana etapu · upuść na kartę = ustaw kolejność · „Na cito” zawsze na górze · skróty: <kbd>N</kbd> nowe zadanie, <kbd>?</kbd> pomoc</span>
-      ${hiddenDone ? `<span class="kpi-sub">${hiddenDone} starszych zrobionych ukryto (widok Lista)</span>` : ""}
+      <span class="kpi-sub">Najbliższy termin na górze kolumny · przeciągnij kartę do innej kolumny, żeby zmienić etap</span>
+      ${hiddenDone ? `<span class="kpi-sub">· ${hiddenDone} starszych zrobionych w widoku Lista</span>` : ""}
     </div>
     ${mode !== "osoba" ? wipStripHtml(onBoard) : ""}
-    <div class="kb-scroll"><div class="kb-grid">
-      <div class="kb-corner"></div>${head}
-      ${lanes || `<div class="kanban-empty" style="grid-column:1/-1">Brak zadań na tablicy.</div>`}
+    <div class="kb-scroll"><div class="kb-grid ${mode === "brak" ? "no-lanes" : ""}">
+      ${mode === "brak" ? "" : `<div class="kb-corner"></div>`}${head}
+      ${lanes}
     </div></div>`;
 }
 
@@ -2252,6 +2359,13 @@ function listColumnsChooserHtml() {
     ${LIST_COLUMNS.filter(c => !c.always).map(c => `<button type="button" class="status-chip badge ${hidden.has(c.key) ? "badge-muted" : "badge-active active"}" data-tk-col="${c.key}">${esc(c.label)}</button>`).join("")}
   </div>`;
 }
+// Telefon: filtry Zadan schowane pod przyciskiem "Filtry (n)" - inaczej zajmowaly caly ekran
+// przed pierwszym zadaniem (audyt UX 19.10.2026). Na komputerze zawsze widoczne.
+function activeTicketFilterCount() {
+  return [ticketFilters.prowadzacy, ticketFilters.projekt, ticketFilters.osoba, ticketFilters.tag, ticketFilters.typ, ticketFilters.etap]
+    .filter(Boolean).length + ticketFilters.horyzonty.length + ticketFilters.statuses.length
+    + (ticketFilters.tylkoNaCito ? 1 : 0) + (ticketFilters.tylkoZablokowane ? 1 : 0);
+}
 function renderTickets() {
   // Zbior ID_Tickietu dla wybranego etapu policzony RAZ przed petla (nie stageIdsForTicket()
   // per ticket w srodku filter() - to re-skanowaloby caly STATE.taskStages dla kazdego ticketu).
@@ -2282,11 +2396,14 @@ function renderTickets() {
     const va = ticketSortValue(a, ticketFilters.sortField), vb = ticketSortValue(b, ticketFilters.sortField);
     return va < vb ? -dir : va > vb ? dir : 0;
   });
-  const view = ticketFilters.view || "kanban";
+  // Audyt UX 19.10.2026: na telefonie (<700px) tablica 5 kolumn jest nieczytelna - pokazujemy
+  // Liste, nie zmieniajac zapisanego wyboru (na komputerze wraca Kanban).
+  const narrow = window.innerWidth < 700;
+  const view = narrow && (ticketFilters.view || "kanban") === "kanban" ? "lista" : (ticketFilters.view || "kanban");
 
   $("#view-zadania").innerHTML = `
     <div class="section-head">
-      <h2>Zadania (tickety)</h2>
+      <h2>Zadania</h2>
       <div style="display:flex;align-items:center;gap:10px">
         <div class="view-toggle">
           <button type="button" class="view-toggle-btn ${view === "kanban" ? "active" : ""}" data-tk-view="kanban">Kanban</button>
@@ -2294,7 +2411,8 @@ function renderTickets() {
           <button type="button" class="view-toggle-btn ${view === "kalendarz" ? "active" : ""}" data-tk-view="kalendarz">Kalendarz</button>
           <button type="button" class="view-toggle-btn ${view === "gantt" ? "active" : ""}" data-tk-view="gantt">Gantt</button>
         </div>
-        ${can("create", "zadania_tickety") ? `<button data-add-ticket-zadania="${esc(ticketFilters.projekt)}">+ Nowy ticket</button>` : ""}
+        <button type="button" class="secondary mobile-only" data-tk-filters-toggle="1" aria-expanded="false">Filtry${activeTicketFilterCount() ? ` (${activeTicketFilterCount()})` : ""}</button>
+        ${can("create", "zadania_tickety") ? `<button data-add-ticket-zadania="${esc(ticketFilters.projekt)}">+ Nowe zadanie</button>` : ""}
       </div>
     </div>
     <div class="filters">
@@ -2309,7 +2427,7 @@ function renderTickets() {
           const slot = labelColor("Typ_etapu", st.Typ_etapu) || TYPE_COLORS[st.Typ_etapu] || "cat-3";
           return `<button type="button" class="status-chip badge badge-${slot} ${ticketFilters.etap === st.ID_Zadania ? "active" : ""}" data-tk-etap-filter="${esc(st.ID_Zadania)}"><span class="dot" style="background:currentColor"></span>${esc(st.Nazwa_zadania)}</button>`;
         }).join("")}
-      </div>` : `<span class="kpi-sub" style="align-self:center">Wybierz projekt, aby filtrować po etapach/sub-projektach</span>`}
+      </div>` : ""}
       <div class="status-chips" style="width:100%">
         <button type="button" class="status-chip badge badge-muted ${!ticketFilters.horyzonty.length && !ticketFilters.tylkoNaCito && !ticketFilters.tylkoZablokowane ? "active" : ""}" data-tk-horizon-filter="">Każdy termin</button>
         ${HORYZONTY.map(h => `<button type="button" class="status-chip badge badge-${h === "Opoznione" ? "critical" : h === "Dzis" ? "serious" : h === "Ten tydzien" ? "warning" : "muted"} ${ticketFilters.horyzonty.includes(h) ? "active" : ""}" data-tk-horizon-filter="${esc(h)}"><span class="dot" style="background:currentColor"></span>${esc(HORYZONT_LABEL[h])}</button>`).join("")}
@@ -2320,9 +2438,6 @@ function renderTickets() {
         <button type="button" class="status-chip badge badge-muted ${!ticketFilters.statuses.length ? "active" : ""}" data-tk-status-filter="">Wszystkie</button>
         ${STATUSY_TICKIETOW.map(s => `<button type="button" class="status-chip badge badge-${ticketStatusBadge(s)} ${ticketFilters.statuses.includes(s) ? "active" : ""}" data-tk-status-filter="${esc(s)}"><span class="dot" style="background:currentColor"></span>${esc(statusLabel(s))}</button>`).join("")}
       </div>` : ""}
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)">
-        <input type="checkbox" id="fTkOverdue" ${ticketFilters.onlyOverdue ? "checked" : ""}> tylko opóźnione
-      </label>
       <span class="count">${list.length} / ${STATE.tickets.length} zadań</span>
     </div>
     ${ticketFilters.projekt ? projectConversionSummaryHtml(ticketFilters.projekt) : ""}
@@ -2358,7 +2473,8 @@ function renderTickets() {
   $("#fTkOsoba").addEventListener("change", e => { ticketFilters.osoba = e.target.value; renderTickets(); });
   $("#fTkTag").addEventListener("change", e => { ticketFilters.tag = e.target.value; renderTickets(); });
   $("#fTkTyp").addEventListener("change", e => { ticketFilters.typ = e.target.value; renderTickets(); });
-  $("#fTkOverdue").addEventListener("change", e => { ticketFilters.onlyOverdue = e.target.checked; renderTickets(); });
+  // "tylko opóznione" zastapione chipem "Opóźnione" (audyt UX 19.10.2026) - stary filtr zostaje
+  // w logice dla skrotow z karty projektu, ale bez osobnego checkboxa.
 }
 
 const ticketMoveSeq = new Map(); // ID_Tickietu -> numer najnowszego w locie zadania PUT
@@ -2416,36 +2532,9 @@ const KANBAN_MOVE_HANDLERS = { ticket: (id, status, beforeId, cellEl) => moveTic
 // komorce. Kolejnosc numerujemy na nowo (10, 20, 30...) dla wszystkich kart komorki w nowym
 // porzadku i zapisujemy tylko te, ktorym sie zmienila - dzieki temu karty bez Kolejnosci (stare
 // zadania) tez trafiaja dokladnie tam, gdzie je upuszczono.
-async function moveTicketOnBoard(tid, newStatus, beforeId, cellEl) {
-  const t = STATE.tickets.find(x => x.ID_Tickietu === tid);
-  if (!t || !KANBAN_KOLUMNY.includes(newStatus) || !can("update", "zadania_tickety", t)) return;
-  const orderIds = cellEl ? $all(".kanban-card[data-drag-id]", cellEl).map(el => el.getAttribute("data-drag-id")).filter(id => id !== tid) : [];
-  if (beforeId && beforeId !== tid && orderIds.includes(beforeId)) orderIds.splice(orderIds.indexOf(beforeId), 0, tid);
-  else orderIds.push(tid);
-  const updates = [];
-  orderIds.forEach((id, i) => {
-    const tk = STATE.tickets.find(x => x.ID_Tickietu === id);
-    if (!tk || !can("update", "zadania_tickety", tk)) return;
-    const rank = (i + 1) * 10;
-    const patch = {};
-    if (tk.Kolejnosc !== rank) patch.Kolejnosc = rank;
-    const target = id === tid ? effectiveTargetStatus(tk, newStatus) : tk.Status;
-    if (id === tid && tk.Status !== target) Object.assign(patch, statusPatch(tk, target));
-    if (Object.keys(patch).length) updates.push({ tk, patch, prev: Object.fromEntries(Object.keys(patch).map(k => [k, tk[k]])) });
-  });
-  if (!updates.length) return;
-  updates.forEach(u => Object.assign(u.tk, u.patch));
-  renderTickets();
-  const results = await Promise.allSettled(updates.map(u =>
-    apiPut(`/api/zadania_tickety/${u.tk.ID_Tickietu}`, serializeForApi(u.patch, DATE_FIELDS.tickets))));
-  let failed = 0;
-  results.forEach((r, i) => {
-    const u = updates[i];
-    if (r.status === "fulfilled") { reviveDates([r.value], DATE_FIELDS.tickets); Object.assign(u.tk, r.value); }
-    else { Object.assign(u.tk, u.prev); failed++; }
-  });
-  if (failed) alert(`Nie udało się zapisać ${failed} zmian(y) na tablicy — przywrócono poprzedni stan.`);
-  renderTickets();
+async function moveTicketOnBoard(tid, newStatus) {
+  // Kolejnosc w kolumnie wynika z terminu (ticketBoardSort), wiec upuszczenie zmienia tylko etap.
+  return setTicketStatus(tid, newStatus, renderAll);
 }
 document.addEventListener("dragstart", (e) => {
   const card = e.target.closest("[data-drag-kind]");
@@ -3224,7 +3313,7 @@ function openUserForm(uid = null) {
     ${fSelect("Rola", "Rola", [["", "Oczekujące (brak dostępu)"], ["Specjalista", "Architekt"], ["Pracownik_biurowy", "Pracownik biurowy"], ["Architekt_PM", "Architekt Prowadzący"], ["COO", "COO"], ["Admin", "Admin"]], u.Rola || "")}
     ${fSelect("Powiązana osoba z zespołu", "ID_Osoby", unlinkedTeamOptionsPairs(uid), u.ID_Osoby)}
     ${fSelect("Aktywny", "Aktywny", [["Tak", "Tak"], ["Nie", "Nie"]], u.Aktywny === 0 ? "Nie" : "Tak")}
-    <div class="empty-hint full" style="grid-column:1/-1">Role Architekt, Pracownik biurowy i Architekt Prowadzący wymagają powiązanej osoby z zespołu (do niej odnoszą się przydzielone projekty i tickety).</div>
+    <div class="empty-hint full" style="grid-column:1/-1">Role Architekt, Pracownik biurowy i Architekt Prowadzący wymagają powiązanej osoby z zespołu (do niej odnoszą się przydzielone projekty i zadania).</div>
   `;
   openModal(uid ? "Edytuj użytkownika" : "Nowy użytkownik", body, {
     submitLabel: "Zapisz",
@@ -4394,7 +4483,7 @@ function openTicketForm(pid, tid = null, seed = null, opts = {}) {
     ${!tid ? `<label class="f-label full form-again"><span><input type="checkbox" name="_dodajKolejne" ${opts.again ? "checked" : ""}> Po zapisie dodaj kolejne zadanie w tym projekcie (ta sama osoba i etapy)</span></label>` : ""}
     ${ticketCommentsSectionHtml(t, tid)}
   `;
-  openModal(tid ? "Edytuj zadanie (ticket)" : "Nowe zadanie (ticket)", body, {
+  openModal(tid ? "Edytuj zadanie" : "Nowe zadanie", body, {
     wide: true,
     submitLabel: "Zapisz zadanie",
     onSubmit: (data) => saveTicketFromForm(data, pid, tid, opts),
@@ -4488,7 +4577,7 @@ async function saveTicketFromForm(data, pid, tid, opts = {}) {
 }
 
 async function deleteTicket(tid, pid) {
-  if (!confirm("Usunąć to zadanie (ticket)?")) return;
+  if (!confirm("Usunąć to zadanie?")) return;
   if (!await deleteEntity(`/api/zadania_tickety/${tid}`, "zadanie")) return;
   STATE.tickets = STATE.tickets.filter(t => t.ID_Tickietu !== tid);
   STATE.taskStages = STATE.taskStages.filter(e => e.ID_Tickietu !== tid); // mirror ON DELETE CASCADE w schema.sql
@@ -5400,6 +5489,42 @@ async function deleteSubcontractorAssignment(said, pid) {
 // Spotkanie z Monika (12.10.2026): glowny widok projektu = harmonogram + zadania; dane podstawowe
 // (dzialki, inwestor, zespol, podwykonawcy, finanse, checklista, notatki, ryzyka) na osobnej
 // zakladce "Karta projektu". Wybrana zakladka zapamietywana w przegladarce.
+// Zwijane sekcje karty projektu (prosba Adama 19.10.2026: "listy rozwijane dla szczegolow - dane
+// podstawowe, checklista, zadania itd."). Naglowek sekcji (h4 albo .section-head) staje sie
+// klikalny; tresc chowa sie pod nim. Stan per sekcja (po tytule bez licznika) zapamietywany
+// w przegladarce; domyslnie otwarte tylko sekcje, z ktorych korzysta sie codziennie.
+const DP_SECTIONS_OPEN_BY_DEFAULT = ["Dane podstawowe", "Zespół projektowy", "Harmonogram", "Zadania"];
+function dpSectionKey(title) { return title.replace(/\s*\(.*$/, "").trim(); }
+function makeSectionsCollapsible(root) {
+  const state = loadUiPrefs().dpSections || {};
+  $all(".dp-section", root).forEach(sec => {
+    const head = sec.querySelector(":scope > .section-head") || sec.querySelector(":scope > h4");
+    if (!head || sec.querySelector(":scope > .dp-section-body")) return;
+    const titleEl = head.matches("h4") ? head : head.querySelector("h4");
+    if (!titleEl) return;
+    const key = dpSectionKey(titleEl.textContent);
+    const body = document.createElement("div");
+    body.className = "dp-section-body";
+    while (head.nextSibling) body.appendChild(head.nextSibling);
+    sec.appendChild(body);
+    const open = key in state ? state[key] : DP_SECTIONS_OPEN_BY_DEFAULT.includes(key);
+    sec.classList.add("collapsible");
+    sec.classList.toggle("collapsed", !open);
+    head.classList.add("dp-collapse-head");
+    head.setAttribute("data-dp-collapse", key);
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", String(open));
+    titleEl.insertAdjacentHTML("afterbegin", `<span class="dp-caret" aria-hidden="true">▸</span>`);
+  });
+}
+function toggleDpSection(head) {
+  const sec = head.closest(".dp-section");
+  const open = sec.classList.contains("collapsed");
+  sec.classList.toggle("collapsed", !open);
+  head.setAttribute("aria-expanded", String(open));
+  saveUiPrefs({ dpSections: { ...(loadUiPrefs().dpSections || {}), [head.getAttribute("data-dp-collapse")]: open } });
+}
 function setProjectDetailTab(tab) {
   const root = $("#dpContent");
   if (!root) return;
@@ -5473,13 +5598,14 @@ function projectWorkTabHtml(pid) {
   const ganttHtml = dated.length ? buildGantt(dated.map(sg => ({ ...sg })), { groupBy: "projekt", hideGroupHeader: true, stagesOnly: true }) : "";
   const toApprove = allTickets.filter(t => isAwaitingApproval(t) && canApproveTicket(t));
   return `
+    ${toApprove.length ? `<div class="pw-approve-note" data-dp-tab="praca">${badge(`${toApprove.length} do zatwierdzenia`, "serious")} zadania wykonane przez zespół czekają na Twoje „✓ Zatwierdź”.</div>` : ""}
     <div class="dp-section" data-dp-tab="praca">
-      ${toApprove.length ? `<div class="pw-approve-note">${badge(`${toApprove.length} do zatwierdzenia`, "serious")} zadania wykonane przez zespół czekają na Twoje „✓ Zatwierdź”.</div>` : ""}
-      <details class="pw-gantt" ${ganttHtml ? "open" : ""}>
-        <summary><b>Harmonogram</b> <span class="kpi-sub">${stages.length} etapów${dated.length < stages.length ? `, ${stages.length - dated.length} bez dat (edytuj ✎ przy etapie)` : ""}</span></summary>
-        ${ganttHtml || `<div class="kpi-sub" style="padding:6px 0">Żaden etap nie ma jeszcze dat — kliknij ✎ przy etapie poniżej, żeby je wpisać.</div>`}
-      </details>
-      <div class="section-head" style="margin:14px 0 8px">
+      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Harmonogram (${stages.length} etapów)</h4>
+        ${dated.length < stages.length ? `<span class="kpi-sub">${stages.length - dated.length} bez dat — uzupełnij ✎ przy etapie w zadaniach</span>` : ""}</div>
+      ${ganttHtml || `<div class="kpi-sub" style="padding:6px 0">Żaden etap nie ma jeszcze dat — kliknij ✎ przy etapie poniżej, żeby je wpisać.</div>`}
+    </div>
+    <div class="dp-section" data-dp-tab="praca">
+      <div class="section-head" style="margin-bottom:8px">
         <h4 style="margin:0">Zadania (${allTickets.filter(open).length} otwartych)</h4>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <label class="kpi-sub" style="display:flex;align-items:center;gap:4px"><input type="checkbox" data-pw-showdone="1" ${st.showDone ? "checked" : ""}> pokaż zrobione</label>
@@ -5864,6 +5990,7 @@ function openProjectDetail(pid) {
       <button data-print-view="1">Drukuj kartę projektu</button>
     </div>
   `;
+  makeSectionsCollapsible($("#dpContent"));
   setProjectDetailTab(loadUiPrefs().projectTab || "praca");
   $("#overlay").classList.add("open");
   $("#detailPanel").classList.add("open");
@@ -5996,6 +6123,7 @@ function applyInitialView() {
   initialViewApplied = true;
   const prefs = loadUiPrefs();
   if (prefs.ticketFilters) PERSISTED_TICKET_FILTERS.forEach(k => { if (prefs.ticketFilters[k] !== undefined) ticketFilters[k] = prefs.ticketFilters[k]; });
+  if (!["osoba", "projekt"].includes(ticketFilters.lanes)) ticketFilters.lanes = "brak"; // dawne wiersze wg terminu wycofane 19.10.2026
   const role = STATE.me.role;
   const byRole = SPECJALISTA_ROLES.includes(role) ? "mojezadania" : role === "Architekt_PM" ? "zadania" : "przeglad";
   const wanted = prefs.view || byRole;
@@ -6047,6 +6175,7 @@ function renderAll() {
   renderRyzyka();
   renderIdeapool();
   if (FULL_ACCESS_ROLES.includes(STATE.me.role)) renderUsers();
+  renderNotificationBell(); // terminy zadan mogly sie zmienic (zapis, zatwierdzenie, przesuniecie)
   // Kazdy render*() odbudowuje swoj kawalek DOM od zera (innerHTML), wiec [data-roles] trzeba
   // ponownie wymietc na koniec kazdego pelnego przebiegu, nie tylko raz po boot().
   applyRoleGating();
@@ -6234,6 +6363,8 @@ document.addEventListener("keydown", (e) => {
   // (probne "Spacja otwiera picker" psulo pisanie dowolnego tekstu zawierajacego spacje -
   // zweryfikowane bezposrednio). Klik nadal otwiera picker (myszka), Escape nadal zamyka.
   if (e.key === "Escape") { closeDatePicker(); closeMentionSuggestions(); }
+  const dpHead = e.target.closest && e.target.closest("[data-dp-collapse]");
+  if (dpHead && e.target === dpHead && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleDpSection(dpHead); return; }
   if (handleShortcut(e)) return;
   const tagInput = e.target.closest && e.target.closest(".tag-chip-input");
   if (tagInput && (e.key === "Enter" || e.key === ",")) { e.preventDefault(); addTagFromInput(tagInput); return; }
@@ -6244,6 +6375,8 @@ document.addEventListener("keydown", (e) => {
   }
 });
 document.addEventListener("change", (e) => {
+  const dnDays = e.target.closest && e.target.closest("[data-dn-days]");
+  if (dnDays) { try { localStorage.setItem(DEADLINE_DAYS_KEY, dnDays.value); } catch { /* bez pamieci */ } renderNotificationPanel(); renderNotificationBell(); return; }
   const bulkSel = e.target.closest && e.target.closest("[data-bulk-field]");
   if (!bulkSel || !bulkSel.value) return;
   const field = bulkSel.getAttribute("data-bulk-field"), value = bulkSel.value;
@@ -6324,6 +6457,11 @@ document.addEventListener("click", (e) => {
 
   const notifBellBtn = e.target.closest("#notifBellBtn");
   if (notifBellBtn) { toggleNotificationPanel(); return; }
+  const dnOpen = e.target.closest("[data-dn-open]");
+  if (dnOpen) { closeNotificationPanel(); const tk = STATE.tickets.find(t => t.ID_Tickietu === dnOpen.getAttribute("data-dn-open")); if (tk) openTicketForm(tk.ID_Projektu, tk.ID_Tickietu); return; }
+  if (e.target.closest("[data-toast-open]")) { $("#deadlineToast")?.classList.remove("open"); toggleNotificationPanel(); return; }
+  if (e.target.closest("[data-toast-close]")) { $("#deadlineToast")?.classList.remove("open"); return; }
+  if (e.target.closest("[data-dn-days]")) return; // wybor progu w panelu - obslugiwany w "change"
   const notifMarkAll = e.target.closest("[data-notif-mark-all]");
   if (notifMarkAll) { markAllNotificationsRead(); return; }
   const notifItem = e.target.closest("[data-notif-open]");
@@ -6422,6 +6560,12 @@ document.addEventListener("click", (e) => {
   // Kolorowe buttony filtrujace po etapie/sub-projekcie (mirror data-tk-status-filter powyzej),
   // ale pojedynczego wyboru (jeden etap na raz), nie multi-select jak statusy - klik na juz
   // aktywny chip zaznacza go ponownie (bez toggle-off), Wszystkie etapy = "" czysci filtr.
+  const tkFiltersToggle = e.target.closest("[data-tk-filters-toggle]");
+  if (tkFiltersToggle) {
+    const open = $("#view-zadania").classList.toggle("filters-open");
+    tkFiltersToggle.setAttribute("aria-expanded", String(open));
+    return;
+  }
   const tkColBtn = e.target.closest("[data-tk-col]");
   if (tkColBtn) {
     const key = tkColBtn.getAttribute("data-tk-col");
@@ -6459,6 +6603,8 @@ document.addEventListener("click", (e) => {
   if (e.target.closest("[data-bulk-clear]")) { ticketSelection.clear(); renderTickets(); return; }
   const kbAddBtn = e.target.closest("[data-kb-add]");
   if (kbAddBtn) { quickAddFromBoard(kbAddBtn.getAttribute("data-kb-add"), kbAddBtn.getAttribute("data-lane")); return; }
+  const dpCollapse = e.target.closest("[data-dp-collapse]");
+  if (dpCollapse && !e.target.closest("button, a, input, select, label")) { toggleDpSection(dpCollapse); return; }
   const dpTabBtn = e.target.closest("[data-dp-tab-btn]");
   if (dpTabBtn) { setProjectDetailTab(dpTabBtn.getAttribute("data-dp-tab-btn")); return; }
   const pwOsoba = e.target.closest("[data-pw-osoba]");
@@ -6835,9 +6981,17 @@ function generateExecutiveReport() {
 }
 window.addEventListener("afterprint", () => document.body.classList.remove("report-mode"));
 
-$("#btnPrint").addEventListener("click", () => window.print());
-$("#btnExport").addEventListener("click", exportToExcel);
-$("#btnExecReport").addEventListener("click", generateExecutiveReport);
+$("#btnPrint").addEventListener("click", () => { closeMoreMenu(); window.print(); });
+$("#btnExport").addEventListener("click", () => { closeMoreMenu(); exportToExcel(); });
+$("#btnExecReport").addEventListener("click", () => { closeMoreMenu(); generateExecutiveReport(); });
+function closeMoreMenu() { $("#moreMenu")?.classList.remove("open"); $("#btnMore")?.setAttribute("aria-expanded", "false"); }
+$("#btnMore").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const open = !$("#moreMenu").classList.contains("open");
+  $("#moreMenu").classList.toggle("open", open);
+  $("#btnMore").setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("click", (e) => { if (!e.target.closest("#moreMenuWrap")) closeMoreMenu(); });
 $("#btnLogout").addEventListener("click", async () => {
   await apiPost("/api/auth/logout").catch(() => {});
   window.location.reload();
