@@ -1673,29 +1673,33 @@ function projectCardHtml(p) {
     </div>`;
 }
 
+// Grupowanie wg ARCHITEKTA PROWADZACEGO (projekty.Owner) - decyzja Adama 19.10.2026 (wczesniej
+// wg Projektanta glownego). Projekty bez prowadzacego na koncu. Projektant glowny zostaje jako kolumna.
+const NO_OWNER_KEY = "— bez architekta prowadzącego —";
 function renderProjectsTable(list) {
   const groups = new Map();
   list.forEach(p => {
-    const key = p.Kierownik_projektu || "— bez projektanta głównego —";
+    const key = p.Owner || NO_OWNER_KEY;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(p);
   });
-  const keys = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b, "pl"));
+  const keys = Array.from(groups.keys()).sort((a, b) =>
+    (a === NO_OWNER_KEY) - (b === NO_OWNER_KEY) || a.localeCompare(b, "pl"));
   return keys.map(key => {
     const rows = groups.get(key);
     return `
       <div class="table-group">
-        <div class="table-group-head">${esc(key)}<span class="count-pill">${rows.length}</span></div>
+        <div class="table-group-head">${key === NO_OWNER_KEY ? esc(key) : ownerTagHtml(key)}<span class="count-pill">${rows.length}</span></div>
         <div class="panel" style="overflow-x:auto">
           <table class="data-table">
             <thead><tr>
-              <th>Nazwa</th><th>Architekt prowadzący</th><th>Typ</th><th>Status</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
+              <th>Nazwa</th><th>Projektant główny</th><th>Typ</th><th>Status</th><th>Priorytet</th><th>RAG</th><th>Termin (plan)</th><th>Go Live</th><th>Postęp</th><th>Budżet</th>
             </tr></thead>
             <tbody>
               ${rows.map(p => `
                 <tr class="clickable" data-open-project="${esc(p.ID_Projektu)}">
                   <td>${esc(p.Nazwa)}</td>
-                  <td>${ownerTagHtml(p.Owner)}</td>
+                  <td>${esc(p.Kierownik_projektu || "—")}</td>
                   <td>${typeTag(projectPrimaryType(p))}</td>
                   <td>${badge(p.Status || "—", projectStatusClass(p.Status))}</td>
                   <td>${badge(p.Priorytet || "—", priorityBadgeClass(p.Priorytet))}</td>
