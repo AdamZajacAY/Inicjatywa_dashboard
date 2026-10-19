@@ -618,7 +618,7 @@ function deadlineItemHtml(i, seen) {
   return `<button type="button" class="notif-item ${seen.has(i.key) ? "" : "unread"}" data-dn-open="${esc(i.t.ID_Tickietu)}">
     <div class="notif-line"><span class="notif-sev notif-sev-${i.sev}"></span><b>${esc(i.text)}</b> · ${esc(fmtDate(i.t.Termin))}</div>
     <div class="notif-line">${esc(i.t.Tytul)}</div>
-    <div class="notif-meta">${esc(projectName(i.t.ID_Projektu))} · ${esc(ticketAssigneeLabel(i.t))}</div>
+    <div class="notif-meta">${esc(projectName(i.t.ID_Projektu))} · ${assigneeChipHtml(i.t)}</div>
   </button>`;
 }
 function renderNotificationPanel() {
@@ -892,6 +892,21 @@ function stageName(sid) { return STATE.tasks.find(t => t.ID_Zadania === sid)?.Na
 function ticketsForProject(pid) { return STATE.tickets.filter(t => t.ID_Projektu === pid); }
 function ticketsForPerson(oid) { return STATE.tickets.filter(t => t.ID_Osoby_przypisanej === oid); }
 function ticketsForSubcontractor(sid) { return STATE.tickets.filter(t => t.ID_Podwykonawcy === sid); }
+// Wykonujacy zadanie wyrozniony kolorem (prosba Adama 19.10.2026: "dla widocznosci") - kolorowa
+// plakietka z inicjalami/zdjeciem w stalym kolorze danej osoby (ten sam personColorSlot() co
+// architekt prowadzacy w Projektach i na Gancie, wiec osoba ma jedna barwe w calej aplikacji).
+// Osoba z zewnatrz - przerywana obwodka, podwykonawca - kolor podwykonawcow. Tekst (ticketAssigneeLabel)
+// zostaje do sortowania, eksportu i podpowiedzi.
+function assigneeChipHtml(t) {
+  const chips = [];
+  if (t.ID_Podwykonawcy) chips.push(`<span class="assignee-chip sub" title="Podwykonawca">🔧 ${esc(subcontractorName(t.ID_Podwykonawcy))}</span>`);
+  if (t.ID_Osoby_przypisanej) {
+    const name = personName(t.ID_Osoby_przypisanej);
+    chips.push(`<span class="assignee-chip" style="--chip:var(--${personColorSlot(name)})" title="Wykonuje: ${esc(name)}">${avatarCircleHtml(name)}${esc(name)}</span>`);
+  }
+  if (t.Osoba_zewnetrzna) chips.push(`<span class="assignee-chip ext" title="Czekamy na osobę z zewnątrz">⏳ ${esc(t.Osoba_zewnetrzna)}</span>`);
+  return chips.join(" ") || `<span class="assignee-chip none" title="Nikt nie jest przypisany">nieprzypisane</span>`;
+}
 function ticketAssigneeLabel(t) {
   if (t.ID_Podwykonawcy) return "🔧 " + subcontractorName(t.ID_Podwykonawcy);
   const ext = t.Osoba_zewnetrzna ? `⏳ ${t.Osoba_zewnetrzna} (zewn.)` : "";
@@ -1365,7 +1380,7 @@ function renderMyTasks() {
       ${toApprove.map(t => `<div class="dp-list-item approve-row">
         <div style="flex:1;cursor:pointer" data-open-ticket="${esc(t.ID_Tickietu)}">
           <div class="title">${esc(t.Tytul)}</div>
-          <div class="meta">${esc(projectName(t.ID_Projektu))} · ${esc(ticketAssigneeLabel(t))} · wykonane ${fmtDate(t.Data_wykonania)} · termin ${fmtDate(t.Termin)}</div>
+          <div class="meta">${assigneeChipHtml(t)} · ${esc(projectName(t.ID_Projektu))} · wykonane ${fmtDate(t.Data_wykonania)} · termin ${fmtDate(t.Termin)}</div>
         </div>
         <div class="approve-actions">${approveButtonsHtml(t)}</div>
       </div>`).join("")}
@@ -1984,7 +1999,8 @@ function ticketCardSimpleHtml(t) {
   const overdue = isOverdueTicket(t);
   return `<div class="kanban-card simple ${overdue ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
     <div class="kc-title">${esc(t.Tytul)}</div>
-    <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${fmtDate(t.Termin)} ${dueChipHtml(t)}${ticketServiceClass(t) === "Na cito" ? " <b class=\"kc-late\">na cito</b>" : ""}</div>
+    <div class="kc-person">${assigneeChipHtml(t)}</div>
+    <div class="kc-meta">${fmtDate(t.Termin)} ${dueChipHtml(t)}${ticketServiceClass(t) === "Na cito" ? " <b class=\"kc-late\">na cito</b>" : ""}</div>
     ${editable && nextStepFor(t) ? `<button type="button" class="kc-next" data-tk-next="${esc(t.ID_Tickietu)}">${esc(nextStepFor(t).label)}</button>` : ""}
   </div>`;
 }
@@ -2003,7 +2019,8 @@ function ticketCardHtml(t) {
     <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" style="--card-tint:var(${cardTintVar})" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
       <div class="kc-title">${esc(t.Tytul)}</div>
       ${ticketFilters.projekt ? "" : `<div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>`}
-      <div class="kc-meta">${esc(ticketAssigneeLabel(t))} · ${t.Data_rozpoczecia instanceof Date ? `${fmtDayMonth(t.Data_rozpoczecia)} → ` : ""}${fmtDate(t.Termin)} ${dueChipHtml(t)}</div>
+      <div class="kc-person">${assigneeChipHtml(t)}</div>
+      <div class="kc-meta">${t.Data_rozpoczecia instanceof Date ? `${fmtDayMonth(t.Data_rozpoczecia)} → ` : ""}${fmtDate(t.Termin)} ${dueChipHtml(t)}</div>
       ${isBlockedTicket(t) ? `<div class="kc-blocked">⛔ Zablokowane${t.Powod_blokady ? `: ${esc(t.Powod_blokady)}` : ""}</div>` : ""}
       ${ticketTags(t).length ? `<div class="tag-chips" style="margin-top:4px">${ticketTags(t).map(tag => `<span class="tag-chip">${esc(tag)}</span>`).join("")}</div>` : ""}
       <div class="kc-foot">
@@ -2131,7 +2148,7 @@ function renderTicketsAgenda(list) {
       <span class="ag-kind" title="${kind === "start" ? "zaczyna się" : "termin"}">${kind === "start" ? "▶" : "◆"}</span>
       <div class="ag-main" ${can("update", "zadania_tickety", t) ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
         <div class="ag-title">${esc(t.Tytul)}</div>
-        <div class="kpi-sub">${esc(projectName(t.ID_Projektu))} · ${esc(ticketAssigneeLabel(t))}${t.Data_rozpoczecia instanceof Date && kind !== "start" ? ` · od ${fmtDate(t.Data_rozpoczecia)}` : ""}${kind === "start" && t.Termin instanceof Date ? ` · termin ${fmtDate(t.Termin)}` : ""}</div>
+        <div class="kpi-sub">${assigneeChipHtml(t)} · ${esc(projectName(t.ID_Projektu))}${t.Data_rozpoczecia instanceof Date && kind !== "start" ? ` · od ${fmtDate(t.Data_rozpoczecia)}` : ""}${kind === "start" && t.Termin instanceof Date ? ` · termin ${fmtDate(t.Termin)}` : ""}</div>
       </div>
       <div>${approveButtonsHtml(t) || badge(statusLabel(ticketEffectiveStatus(t)), ticketStatusBadge(ticketEffectiveStatus(t)))}</div>
     </div>`;
@@ -2336,7 +2353,7 @@ const LIST_COLUMNS = [
   { key: "Tytul", label: "Zadanie", sort: "Tytul", always: true, cell: t => `<b>${esc(t.Tytul)}</b>${isBlockedTicket(t) ? " " + badge("⛔", "critical") : ""}${ticketServiceClass(t) === "Na cito" ? " " + badge("Na cito", "critical") : ""}` },
   { key: "Projekt", label: "Projekt", sort: "Projekt", cell: t => esc(projectName(t.ID_Projektu)) },
   { key: "Etap", label: "Etap", cell: t => esc(stageIdsForTicket(t.ID_Tickietu).map(stageName).join(", ") || "—") },
-  { key: "Osoba", label: "Osoba", sort: "Osoba", cell: t => esc(ticketAssigneeLabel(t)) },
+  { key: "Osoba", label: "Wykonuje", sort: "Osoba", cell: t => assigneeChipHtml(t) },
   { key: "Start", label: "Start", cell: t => fmtDate(t.Data_rozpoczecia) },
   { key: "Termin", label: "Termin", sort: "Termin", cell: t => `${fmtDate(t.Termin)}${isOverdueTicket(t) ? " " + badge("Opóźnione", "critical") : ""}` },
   { key: "Status", label: "Etap pracy", sort: "Status", cell: t => (approveButtonsHtml(t) || badge(statusLabel(t.Status), ticketStatusBadge(t.Status))) + (num(t.Liczba_reaktywacji) > 0 ? " " + badge(`↻ ${t.Liczba_reaktywacji}`, "muted") : "") },
@@ -5548,7 +5565,7 @@ function projectWorkTabHtml(pid) {
   const chips = [
     `<button type="button" class="team-count-chip ${!st.osoba ? "active" : ""}" data-pw-osoba="">Wszyscy · ${allTickets.filter(open).length}</button>`,
     ...teamIds.sort((a, b) => personName(a).localeCompare(personName(b), "pl")).map(oid =>
-      `<button type="button" class="team-count-chip ${st.osoba === oid ? "active" : ""}" data-pw-osoba="${esc(oid)}">${esc(personName(oid))} · ${countFor(oid)}</button>`),
+      `<button type="button" class="team-count-chip ${st.osoba === oid ? "active" : ""}" data-pw-osoba="${esc(oid)}" style="--chip:var(--${personColorSlot(personName(oid))})">${avatarCircleHtml(personName(oid))}${esc(personName(oid))} · ${countFor(oid)}</button>`),
     extCount ? `<button type="button" class="team-count-chip ${st.osoba === "zewn" ? "active" : ""}" data-pw-osoba="zewn">⏳ z zewnątrz · ${extCount}</button>` : "",
   ].join("");
   const visible = allTickets.filter(t => (st.showDone || open(t))
@@ -5566,7 +5583,7 @@ function projectWorkTabHtml(pid) {
     return `<tr class="${DONE_TICKET_STATUSES.includes(t.Status) ? "row-done" : ""} ${overdue ? "row-overdue" : ""}">
       <td class="pw-check">${doneCheckboxHtml(t, "project")}</td>
       <td class="pw-title" ${can("update", "zadania_tickety", t) ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>${esc(t.Tytul)}${others.length ? ` <span class="kpi-sub">(też w: ${esc(others.join(", "))})</span>` : ""}${isBlockedTicket(t) ? ` ${badge("⛔ " + (t.Powod_blokady || "zablokowane"), "critical")}` : ""}${ticketServiceClass(t) === "Na cito" ? ` ${badge("Na cito", "critical")}` : ""}</td>
-      <td>${esc(ticketAssigneeLabel(t))}</td>
+      <td>${assigneeChipHtml(t)}</td>
       <td class="num">${t.Data_rozpoczecia instanceof Date ? fmtDayMonth(t.Data_rozpoczecia) + " → " : ""}${fmtDate(t.Termin)}${overdue ? ` ${badge("Opóźnione", "critical")}` : ""}</td>
       <td>${approveButtonsHtml(t) || badge(statusLabel(t.Status), ticketStatusBadge(t.Status))}</td>
     </tr>`;
@@ -5576,8 +5593,10 @@ function projectWorkTabHtml(pid) {
     const stageAll = sg ? allTickets.filter(t => stageIdsForTicket(t.ID_Tickietu).includes(sg.ID_Zadania)) : noStage;
     const done = stageAll.filter(t => !open(t)).length;
     const pct = stageAll.length ? Math.round(done / stageAll.length * 100) : 0;
-    // Domyslnie zwiniete: etapy bez otwartych zadan (np. zakonczone PB/PT) - widac to, co trwa.
-    const collapsed = st.collapsed.has(key) || (!st.collapsed.has("!" + key) && !items.some(open) && !st.showDone);
+    // Widok podstawowy (prosba Adama 19.10.2026): WSZYSTKIE etapy zwiniete - w naglowku widac nazwe,
+    // daty, status i postep (np. 4/10); rozwija sie klikiem albo "Rozwiń wszystko". "!" + klucz =
+    // etap rozwiniety przez uzytkownika (pamietane do zmiany projektu).
+    const collapsed = !st.collapsed.has("!" + key);
     return `<div class="pw-stage ${collapsed ? "collapsed" : ""}">
       <div class="pw-stage-head" data-pw-toggle="${esc(key)}">
         <span class="pw-caret">${collapsed ? "▸" : "▾"}</span>
@@ -5609,7 +5628,7 @@ function projectWorkTabHtml(pid) {
         <h4 style="margin:0">Zadania (${allTickets.filter(open).length} otwartych)</h4>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <label class="kpi-sub" style="display:flex;align-items:center;gap:4px"><input type="checkbox" data-pw-showdone="1" ${st.showDone ? "checked" : ""}> pokaż zrobione</label>
-          <button type="button" class="icon-btn" data-pw-expand="1">Rozwiń wszystko</button>
+          <button type="button" class="icon-btn" data-pw-expand="1">${Array.from(st.collapsed).some(k => k.startsWith("!")) ? "Zwiń wszystko" : "Rozwiń wszystko"}</button>
           ${canCreate ? `<button type="button" class="icon-btn" data-copy-tickets="${esc(pid)}" title="Skopiuj listę zadań z innego projektu (jak szablon)">⧉ Kopiuj zadania z projektu…</button>` : ""}
           ${canCreate ? `<button type="button" data-add-ticket="${esc(pid)}">+ Nowe zadanie</button>` : ""}
         </div>
@@ -6619,7 +6638,9 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (e.target.closest("[data-pw-expand]")) {
-    projectWorkState.collapsed = new Set(filteredStagesForLinking(projectWorkState.pid).map(sg => "!" + sg.ID_Zadania).concat(["!_brak"]));
+    const anyOpen = Array.from(projectWorkState.collapsed).some(k => k.startsWith("!"));
+    projectWorkState.collapsed = anyOpen ? new Set()
+      : new Set(filteredStagesForLinking(projectWorkState.pid).map(sg => "!" + sg.ID_Zadania).concat(["!_brak"]));
     openProjectDetail(projectWorkState.pid);
     return;
   }
@@ -6628,6 +6649,7 @@ document.addEventListener("click", (e) => {
   const pwAdd = e.target.closest("[data-pw-add]");
   if (pwAdd) {
     const sid = pwAdd.getAttribute("data-pw-add");
+    projectWorkState.collapsed.add("!" + (sid || "_brak")); // po zapisie widac nowe zadanie w rozwinietym etapie
     openTicketForm(projectWorkState.pid, null, sid ? { _seedStageIds: [sid] } : null,
       { assignee: projectWorkState.osoba && projectWorkState.osoba !== "zewn" ? projectWorkState.osoba : undefined });
     return;
