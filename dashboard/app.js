@@ -2378,6 +2378,21 @@ function listColumnsChooserHtml() {
 }
 // Telefon: filtry Zadan schowane pod przyciskiem "Filtry (n)" - inaczej zajmowaly caly ekran
 // przed pierwszym zadaniem (audyt UX 19.10.2026). Na komputerze zawsze widoczne.
+// Spotkanie z Moniką (12.10.2026): przy wybranym projekcie filtr osob pokazuje tylko jego zespol
+// (przypisania + osoby z zadaniami w projekcie), kazda z liczba otwartych zadan - widac od razu,
+// kto ile ma. Bez projektu: wszyscy, z liczba otwartych zadan w zakresie pozostalych filtrow.
+function personFilterOptions() {
+  const pid = ticketFilters.projekt;
+  const pool = pid
+    ? Array.from(new Set([...assignmentsForProject(pid).map(a => a.ID_Osoby), ...ticketsForProject(pid).map(t => t.ID_Osoby_przypisanej).filter(Boolean)]))
+    : STATE.team.map(t => t.ID_Osoby);
+  if (ticketFilters.osoba && !pool.includes(ticketFilters.osoba)) pool.push(ticketFilters.osoba); // wybrany nie znika po cichu
+  const openFor = (oid) => STATE.tickets.filter(t => t.ID_Osoby_przypisanej === oid && !DONE_TICKET_STATUSES.includes(t.Status)
+    && (!pid || t.ID_Projektu === pid)
+    && (!ticketFilters.prowadzacy || STATE.projectById.get(t.ID_Projektu)?.Owner === ticketFilters.prowadzacy)).length;
+  return pool.map(oid => [oid, `${personName(oid)} · ${openFor(oid)} otwartych`])
+    .sort((a, b) => a[1].localeCompare(b[1], "pl"));
+}
 function activeTicketFilterCount() {
   return [ticketFilters.prowadzacy, ticketFilters.projekt, ticketFilters.osoba, ticketFilters.tag, ticketFilters.typ, ticketFilters.etap]
     .filter(Boolean).length + ticketFilters.horyzonty.length + ticketFilters.statuses.length
@@ -2435,7 +2450,7 @@ function renderTickets() {
     <div class="filters">
       <select id="fTkProwadzacy"><option value="">Wszyscy architekci prowadzący</option>${owners.map(o => `<option ${ticketFilters.prowadzacy === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
       <select id="fTkProj"><option value="">Wszystkie projekty</option>${STATE.projects.filter(p => !ticketFilters.prowadzacy || p.Owner === ticketFilters.prowadzacy).map(p => `<option value="${esc(p.ID_Projektu)}" ${ticketFilters.projekt === p.ID_Projektu ? "selected" : ""}>${esc(p.Nazwa)}</option>`).join("")}</select>
-      <select id="fTkOsoba"><option value="">Wszystkie osoby</option>${STATE.team.map(t => `<option value="${esc(t.ID_Osoby)}" ${ticketFilters.osoba === t.ID_Osoby ? "selected" : ""}>${esc(t.Imie_i_nazwisko)}</option>`).join("")}</select>
+      <select id="fTkOsoba"><option value="">${ticketFilters.projekt ? "Cały zespół projektu" : "Wszystkie osoby"}</option>${personFilterOptions().map(([oid, label]) => `<option value="${esc(oid)}" ${ticketFilters.osoba === oid ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>
       <select id="fTkTag"><option value="">Wszystkie tagi</option>${activeTagLibrary().map(tag => `<option value="${esc(tag)}" ${ticketFilters.tag === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}</select>
       <select id="fTkTyp"><option value="">Urzędowe i wewnętrzne</option><option value="Urzedowe" ${ticketFilters.typ === "Urzedowe" ? "selected" : ""}>Tylko urzędowe</option><option value="Wewnetrzne" ${ticketFilters.typ === "Wewnetrzne" ? "selected" : ""}>Tylko wewnętrzne</option></select>
       ${ticketFilters.projekt ? `<div class="status-chips" style="width:100%">
@@ -3672,6 +3687,7 @@ function openProjectForm(pid = null) {
     ${fTextarea("Dane z planu miejscowego", "Dane_planu_miejscowego", p.Dane_planu_miejscowego)}
 
     <div class="form-section-title">Zakres projektu (karta projektowa)</div>
+    ${fInput("Link do dokumentacji (dysk, SharePoint, folder projektu)", "Link_do_dokumentacji", p.Link_do_dokumentacji, "url", 'placeholder="https://…"')}
     ${fTextarea("Opis / zakres", "Opis", p.Opis)}
     ${fTextarea("Komentarz PMO", "Komentarz", p.Komentarz)}
   `;
@@ -3757,7 +3773,7 @@ async function saveProjectFromForm(data, pid) {
     Powierzchnia_m2: data.Powierzchnia_m2 ? num(data.Powierzchnia_m2) : null,
     Liczba_jednostek: data.Liczba_jednostek ? num(data.Liczba_jednostek) : null,
     Inwestor_Klient: data.Inwestor_Klient, ID_Klienta: data.ID_Klienta, Opis: data.Opis,
-    Link_do_dokumentacji: existing.Link_do_dokumentacji || "",
+    Link_do_dokumentacji: (data.Link_do_dokumentacji || "").trim() || null,
     Data_ostatniej_aktualizacji: new Date(),
     Komentarz: data.Komentarz,
     Wymagania_PFU: data.Wymagania_PFU, Dane_planu_miejscowego: data.Dane_planu_miejscowego,
@@ -5542,6 +5558,8 @@ function toggleDpSection(head) {
   head.setAttribute("aria-expanded", String(open));
   saveUiPrefs({ dpSections: { ...(loadUiPrefs().dpSections || {}), [head.getAttribute("data-dp-collapse")]: open } });
 }
+// Tylko http(s) - pole jest wolnym tekstem, a link trafia do href (bez "javascript:" itp.).
+function safeHttpUrl(u) { const v = String(u || "").trim(); return /^https?:\/\//i.test(v) ? v : ""; }
 function setProjectDetailTab(tab) {
   const root = $("#dpContent");
   if (!root) return;
@@ -5551,7 +5569,7 @@ function setProjectDetailTab(tab) {
 }
 // Stan listy zadan w karcie projektu (w pamieci karty przegladarki): filtr osoby, pokazywanie
 // zrobionych, zwiniete etapy.
-const projectWorkState = { pid: null, osoba: "", showDone: false, collapsed: new Set() };
+const projectWorkState = { pid: null, osoba: "", showDone: false, collapsed: new Set(), showAllStages: false };
 function projectWorkTabHtml(pid) {
   if (projectWorkState.pid !== pid) { projectWorkState.pid = pid; projectWorkState.osoba = ""; projectWorkState.collapsed = new Set(); }
   const st = projectWorkState;
@@ -5571,10 +5589,19 @@ function projectWorkTabHtml(pid) {
   const visible = allTickets.filter(t => (st.showDone || open(t))
     && (!st.osoba || (st.osoba === "zewn" ? (!t.ID_Osoby_przypisanej && t.Osoba_zewnetrzna) : t.ID_Osoby_przypisanej === st.osoba)));
   // Zadania wg etapow (akordeon). Zadanie przypiete do kilku etapow pokazujemy w kazdym, z dopiskiem.
-  const stages = filteredStagesForLinking(pid).slice().sort((a, b) =>
+  const allStages = filteredStagesForLinking(pid).slice().sort((a, b) =>
     (a.Data_start_plan?.getTime() ?? Infinity) - (b.Data_start_plan?.getTime() ?? Infinity));
+  // Spotkanie z Moniką (12.10.2026): przy wielu etapach z dokumentacji inwestora (np. 42) widok
+  // rozdmuchuje sie - powyzej 8 etapow chowamy etapy zakonczone/anulowane BEZ otwartych zadan
+  // (zadne otwarte zadanie nie znika), z przyciskiem "pokaż zakończone etapy (n)".
+  const MANY_STAGES = 8;
+  const stageClosed = (sg) => ["Zakonczone", "Anulowany"].includes(sg.Status)
+    && !allTickets.some(t => open(t) && stageIdsForTicket(t.ID_Tickietu).includes(sg.ID_Zadania));
+  const hideClosed = allStages.length > MANY_STAGES && !st.showAllStages;
+  const stages = hideClosed ? allStages.filter(sg => !stageClosed(sg)) : allStages;
+  const hiddenStages = allStages.length - stages.length;
   const groups = stages.map(sg => ({ stage: sg, items: visible.filter(t => stageIdsForTicket(t.ID_Tickietu).includes(sg.ID_Zadania)) }));
-  const noStage = visible.filter(t => !stageIdsForTicket(t.ID_Tickietu).some(id => stages.some(sg => sg.ID_Zadania === id)));
+  const noStage = visible.filter(t => !stageIdsForTicket(t.ID_Tickietu).some(id => allStages.some(sg => sg.ID_Zadania === id)));
   if (noStage.length) groups.push({ stage: null, items: noStage });
   const canCreate = can("create", "zadania_tickety", { ID_Projektu: pid });
   const rowHtml = (t, sg) => {
@@ -5619,8 +5646,9 @@ function projectWorkTabHtml(pid) {
   return `
     ${toApprove.length ? `<div class="pw-approve-note" data-dp-tab="praca">${badge(`${toApprove.length} do zatwierdzenia`, "serious")} zadania wykonane przez zespół czekają na Twoje „✓ Zatwierdź”.</div>` : ""}
     <div class="dp-section" data-dp-tab="praca">
-      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Harmonogram (${stages.length} etapów)</h4>
-        ${dated.length < stages.length ? `<span class="kpi-sub">${stages.length - dated.length} bez dat — uzupełnij ✎ przy etapie w zadaniach</span>` : ""}</div>
+      <div class="section-head" style="margin-bottom:8px"><h4 style="margin:0">Harmonogram (${allStages.length} etapów)</h4>
+        ${dated.length < stages.length ? `<span class="kpi-sub">${stages.length - dated.length} bez dat — uzupełnij ✎ przy etapie w zadaniach</span>` : ""}
+        ${allStages.length > MANY_STAGES ? `<button type="button" class="icon-btn" data-pw-allstages="1">${st.showAllStages ? "Ukryj zakończone etapy" : `Pokaż zakończone etapy (${hiddenStages})`}</button>` : ""}</div>
       ${ganttHtml || `<div class="kpi-sub" style="padding:6px 0">Żaden etap nie ma jeszcze dat — kliknij ✎ przy etapie poniżej, żeby je wpisać.</div>`}
     </div>
     <div class="dp-section" data-dp-tab="praca">
@@ -5743,16 +5771,21 @@ function openProjectDetail(pid) {
     <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:10px;padding-right:36px">
       <div class="type-tag" style="margin-bottom:6px">${typeTag(projectPrimaryType(p))} &nbsp;·&nbsp; ${esc(p.Segment || "")}</div>
       <div class="item-actions" style="position:static">
-        <button class="icon-btn" data-goto-tasks="${esc(pid)}" title="Przejdź do zakładki Zadania, przefiltrowanej do tego projektu">Zadania →</button>
-        <button class="icon-btn" data-goto-gantt="${esc(pid)}" title="Przejdź do Harmonogramu, przefiltrowanego do tego projektu">Harmonogram →</button>
+        ${safeHttpUrl(p.Link_do_dokumentacji) ? `<a class="icon-btn" href="${esc(safeHttpUrl(p.Link_do_dokumentacji))}" target="_blank" rel="noopener noreferrer" title="Dokumentacja projektu">📁 Dokumentacja ↗</a>` : ""}
         ${can("update", "projekty", p) ? `<button class="icon-btn" data-edit-project="${esc(pid)}">Edytuj</button>` : ""}
+        <div class="dp-more-wrap">
+        <button type="button" class="icon-btn" data-dp-more="1" aria-haspopup="true" title="Pozostałe akcje">⋯ Więcej</button>
+        <div class="dp-more-menu" role="menu">
+        <button class="more-menu-item" data-goto-tasks="${esc(pid)}" title="Przejdź do zakładki Zadania, przefiltrowanej do tego projektu">Zadania tego projektu (Kanban/Lista) →</button>
+        <button class="more-menu-item" data-goto-gantt="${esc(pid)}" title="Przejdź do Harmonogramu, przefiltrowanego do tego projektu">Pełny harmonogram →</button>
         ${(STATE.me.role === "Architekt_PM" && p.Owner === STATE.me.name) || FULL_ACCESS_ROLES.includes(STATE.me.role)
-          ? `<button class="icon-btn" data-release-project="${esc(pid)}" title="Usuwa Ciebie jako architekta prowadzącego/projektanta głównego i zdejmuje Twoje przypisanie - projekt wraca do stanu nieprzypisanego">Zwolnij projekt</button>` : ""}
+          ? `<button class="more-menu-item" data-release-project="${esc(pid)}" title="Usuwa Ciebie jako architekta prowadzącego/projektanta głównego i zdejmuje Twoje przypisanie - projekt wraca do stanu nieprzypisanego">Zwolnij projekt</button>` : ""}
         ${FULL_ACCESS_ROLES.includes(STATE.me.role)
-          ? `<button class="icon-btn" data-assign-project="${esc(pid)}" title="Ustawia wskazaną osobę jako architekta prowadzącego/projektanta głównego i tworzy jej przypisanie do projektu - np. przy odejściu poprzedniego prowadzącego">Przypisz projekt →</button>` : ""}
+          ? `<button class="more-menu-item" data-assign-project="${esc(pid)}" title="Ustawia wskazaną osobę jako architekta prowadzącego/projektanta głównego i tworzy jej przypisanie do projektu - np. przy odejściu poprzedniego prowadzącego">Przypisz projekt →</button>` : ""}
         ${FULL_ACCESS_ROLES.includes(STATE.me.role)
-          ? `<button class="icon-btn" data-merge-projects="${esc(pid)}" title="Przenosi wszystkie sub-projekty/zadania/przypisania innych projektów pod ten (master) i usuwa opróżnione wiersze źródłowe - nieodwracalne">Połącz projekty →</button>` : ""}
-        ${can("delete", "projekty", p) ? `<button class="icon-btn danger" data-delete-project="${esc(pid)}">Usuń</button>` : ""}
+          ? `<button class="more-menu-item" data-merge-projects="${esc(pid)}" title="Przenosi wszystkie sub-projekty/zadania/przypisania innych projektów pod ten (master) i usuwa opróżnione wiersze źródłowe - nieodwracalne">Połącz projekty →</button>` : ""}
+        ${can("delete", "projekty", p) ? `<button class="more-menu-item danger" data-delete-project="${esc(pid)}">Usuń projekt</button>` : ""}
+        </div></div>
       </div>
     </div>
     <h2>${esc(p.Nazwa)}</h2>
@@ -5808,6 +5841,9 @@ function openProjectDetail(pid) {
     <div class="dp-section" data-dp-tab="karta">
       <h4>Dane podstawowe</h4>
       <div class="dp-grid">
+        <div style="grid-column:1/-1"><div class="k">Dokumentacja</div><div class="v">${safeHttpUrl(p.Link_do_dokumentacji)
+          ? `<a href="${esc(safeHttpUrl(p.Link_do_dokumentacji))}" target="_blank" rel="noopener noreferrer">📁 Otwórz dokumentację projektu ↗</a>`
+          : `<span class="kpi-sub">brak linku — dodaj w „Edytuj”</span>`}</div></div>
         ${p.Sygnatura ? `<div><div class="k">Sygnatura</div><div class="v">${esc(p.Sygnatura)}</div></div>` : ""}
         ${p.Symbol_projektu ? `<div><div class="k">Symbol projektu</div><div class="v">${esc(p.Symbol_projektu)}</div></div>` : ""}
         ${p.Nazwa_zamierzenia_budowlanego ? `<div style="grid-column:1/-1"><div class="k">Nazwa zamierzenia budowlanego</div><div class="v">${esc(p.Nazwa_zamierzenia_budowlanego)}</div></div>` : ""}
@@ -6622,6 +6658,8 @@ document.addEventListener("click", (e) => {
   if (e.target.closest("[data-bulk-clear]")) { ticketSelection.clear(); renderTickets(); return; }
   const kbAddBtn = e.target.closest("[data-kb-add]");
   if (kbAddBtn) { quickAddFromBoard(kbAddBtn.getAttribute("data-kb-add"), kbAddBtn.getAttribute("data-lane")); return; }
+  const dpMore = e.target.closest("[data-dp-more]");
+  if (dpMore) { dpMore.parentElement.querySelector(".dp-more-menu").classList.toggle("open"); return; }
   const dpCollapse = e.target.closest("[data-dp-collapse]");
   if (dpCollapse && !e.target.closest("button, a, input, select, label")) { toggleDpSection(dpCollapse); return; }
   const dpTabBtn = e.target.closest("[data-dp-tab-btn]");
@@ -6644,6 +6682,7 @@ document.addEventListener("click", (e) => {
     openProjectDetail(projectWorkState.pid);
     return;
   }
+  if (e.target.closest("[data-pw-allstages]")) { projectWorkState.showAllStages = !projectWorkState.showAllStages; openProjectDetail(projectWorkState.pid); return; }
   const pwShowDone = e.target.closest("[data-pw-showdone]");
   if (pwShowDone) { projectWorkState.showDone = pwShowDone.checked; openProjectDetail(projectWorkState.pid); return; }
   const pwAdd = e.target.closest("[data-pw-add]");
@@ -7014,6 +7053,9 @@ $("#btnMore").addEventListener("click", (e) => {
   $("#btnMore").setAttribute("aria-expanded", String(open));
 });
 document.addEventListener("click", (e) => { if (!e.target.closest("#moreMenuWrap")) closeMoreMenu(); });
+// Menu "⋯ Więcej" w karcie projektu zamyka sie po kazdym kliknieciu poza przyciskiem, ktory je otwiera
+// (takze po wyborze pozycji) - faza capture, zanim glowny handler otworzy formularz/przejdzie dalej.
+document.addEventListener("click", (e) => { if (!e.target.closest("[data-dp-more]")) $all(".dp-more-menu.open").forEach(m => m.classList.remove("open")); }, true);
 $("#btnLogout").addEventListener("click", async () => {
   await apiPost("/api/auth/logout").catch(() => {});
   window.location.reload();

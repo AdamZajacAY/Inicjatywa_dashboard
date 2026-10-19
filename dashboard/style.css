@@ -975,3 +975,13 @@ html, body { overflow-x: clip; }
 .team-count-chip { display: inline-flex; align-items: center; gap: 5px; }
 .team-count-chip[style*="--chip"] { border-color: color-mix(in srgb, var(--chip) 45%, var(--border)); }
 .team-count-chip .avatar-circle { width: 18px; height: 18px; font-size: 8.5px; }
+
+/* ---------- Karta projektu: menu "⋯ Więcej" w naglowku (sprawdzenie uwag Moniki, 19.10.2026) */
+.dp-more-wrap { position: relative; display: inline-block; }
+.dp-more-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 270px; display: none;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 6px;
+}
+.dp-more-menu.open { display: block; }
+.more-menu-item.danger { color: var(--status-critical); }
+a.icon-btn { text-decoration: none; display: inline-flex; align-items: center; }
