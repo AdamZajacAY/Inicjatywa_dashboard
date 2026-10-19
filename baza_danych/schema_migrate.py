@@ -842,3 +842,16 @@ def ensure_ticket_kanban_v2(db_path):
         conn.commit()
     finally:
         conn.close()
+
+
+def ensure_ticket_approval_columns(db_path):
+    """Spotkanie z Monika (12.10.2026): workflow "wykonanie -> zatwierdzenie". Wykonawca odhacza
+    zadanie (Status "Do przegladu", Data_wykonania = dzien odhaczenia), prowadzacy potwierdza
+    (Status "Zrobione", ID_Osoby_zatwierdzajacej). Terminowosc liczona z Data_wykonania, wiec
+    czekanie na zatwierdzenie nie psuje statystyk wykonawcy. Osoba_zewnetrzna - zadanie, na ktore
+    czekamy od kogos spoza zespolu (inwestor, urzad) - wolny tekst, poza statystykami zespolu."""
+    _ensure_columns(db_path, "zadania_tickety", {
+        "Data_wykonania": "TEXT",
+        "ID_Osoby_zatwierdzajacej": "TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL",
+        "Osoba_zewnetrzna": "TEXT",
+    })

@@ -349,6 +349,19 @@ zespół w dashboardzie.
     we wszystkich widokach; w Liście zaznaczanie wielu zadań i zmiana etapu/osoby/klasy/terminu naraz;
   - zakładka i filtry zapamiętywane w przeglądarce; skróty: `N` nowe zadanie, `K/L/C/G` widoki,
     `Z/M/P` zakładki, `?` pomoc.
+  - **Wykonanie → zatwierdzenie** (spotkanie z Moniką, 12.10.2026): wykonawca odhacza zadanie (trafia do
+    „Do przeglądu” z datą wykonania), „Zrobione” potwierdza Architekt Prowadzący/COO/Admin („✓ Zatwierdź”
+    / „↩ Zwróć”; lista „Do zatwierdzenia” w Moich zadaniach). Serwer nie pozwala Architektowi/Pracownikowi
+    biurowemu samemu zamknąć zadania. Terminowość liczy się z daty wykonania, nie zatwierdzenia;
+    zadanie czekające na zatwierdzenie nie jest „opóźnione”.
+  - **Lista** z kolumnami do wyboru (domyślnie: zadanie, projekt, osoba, termin, etap pracy) i odhaczaniem;
+    **Kalendarz** w trybie „Miesiąc” albo „Dni pod sobą” (zaległe + 2 tygodnie); **Kanban** z opcją
+    „karty uproszczone”; zadanie może czekać na **osobę z zewnątrz** (inwestor, urząd).
+- **Karta projektu** ma dwie zakładki: **Praca** (domyślna — harmonogram etapów, zadania pogrupowane wg
+  etapów w zwijanych sekcjach z odhaczaniem, licznik otwartych zadań każdej osoby z zespołu jako filtr,
+  „+ zadanie” w etapie, „⧉ Kopiuj zadania z projektu…” — dowolny projekt jako szablon, z dopasowaniem
+  etapów po nazwie i przesunięciem dat) oraz **Karta projektu** (dane podstawowe, działki, zespół,
+  podwykonawcy, finanse, checklista, notatki, ryzyka, szczegóły etapów z dokumentacji).
 - **Ideapool** — zgłaszanie pomysłów (każda rola). **Inwestorzy** — klienci i kontakty, pobieranie z CEIDG/KRS.
 - **Harmonogram / Gantt** — oś czasu etapów, **grupowana wg projektu lub wg osoby** (przełącznik),
   filtrowana po typie/odpowiedzialnym; kliknięcie w etap otwiera go do edycji.

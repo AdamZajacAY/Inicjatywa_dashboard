@@ -55,6 +55,7 @@ from baza_danych.schema_migrate import (
     ensure_meeting_note_attendee_columns,
     ensure_tagi_biblioteka_table, ensure_seed_tagi_biblioteka,
     ensure_harmonogram_archive_column, ensure_ticket_pin_column, ensure_ticket_kanban_v2,
+    ensure_ticket_approval_columns,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -150,6 +151,7 @@ ensure_seed_tagi_biblioteka(DB_PATH)  # jw. - musi biec PO powyzszej, zasiewa is
 ensure_harmonogram_archive_column(DB_PATH)  # jw. - Archiwalny na harmonogram, ukrywa stary etap z checkboxa/chipow, zostawia w Gantcie
 ensure_ticket_pin_column(DB_PATH)  # jw. - Data_przypiecia_dzis na zadania_tickety, "Moje zadania"/widok Dzisiaj
 ensure_ticket_kanban_v2(DB_PATH)  # jw. - statusy Kanban v2 + klasa uslugi/blokada/kolejnosc (feedback 10.09.2026)
+ensure_ticket_approval_columns(DB_PATH)  # jw. - wykonanie -> zatwierdzenie, osoba z zewnatrz (spotkanie 12.10.2026)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -904,8 +906,27 @@ def _sync_ticket_stages(conn, row, user):
     conn.commit()
 
 
+DONE_TICKET_STATUSES = {"Zrobione", "Zarchiwizowane"}
+
+
+def validate_ticket_approval(data, existing):
+    # Spotkanie z Monika (12.10.2026): wykonawca odhacza zadanie (-> "Do przegladu"), a "Zrobione"
+    # potwierdza prowadzacy. Architekt/Pracownik biurowy nie moze wiec sam przeniesc zadania do
+    # Zrobione/Zarchiwizowane (moze edytowac zadanie, ktore juz tam jest). Przy zatwierdzeniu
+    # serwer sam zapisuje, kto zatwierdzil - nie ufamy w tym frontendowi.
+    new_status = data.get("Status")
+    old_status = existing.get("Status") if existing else None
+    if new_status in DONE_TICKET_STATUSES and old_status not in DONE_TICKET_STATUSES:
+        if g.user["Rola"] in SPECJALISTA_ROLES:
+            return ("Wykonanie zadania zatwierdza architekt prowadzący — oznacz zadanie jako wykonane "
+                    "(trafi do „Do przeglądu”), prowadzący je potwierdzi.")
+        data["ID_Osoby_zatwierdzajacej"] = g.user.get("ID_Osoby")
+    return None
+
+
 TABLE_VALIDATORS = {
     "users": validate_user_payload,
+    "zadania_tickety": validate_ticket_approval,
 }
 TABLE_CREATE_DEFAULTS = {
     # Konta zakladane przez create_admin.py i logowanie Google juz stempluja to przy INSERT -

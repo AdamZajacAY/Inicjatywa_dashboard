@@ -800,3 +800,74 @@ kbd {
 }
 .shortcut-row { padding: 4px 0; font-size: 13px; color: var(--text-secondary); }
 .shortcut-row kbd { margin-right: 8px; }
+
+/* ---------- Spotkanie z Moniką (12.10.2026): karta projektu = Praca / Karta projektu */
+.dp-tabs { display: flex; gap: 4px; margin: 10px 0 4px; border-bottom: 1px solid var(--border); }
+.dp-tab-btn {
+  padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: transparent;
+  border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); margin-bottom: -1px;
+}
+.dp-tab-btn.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+#dpContent[data-tab="praca"] [data-dp-tab="karta"],
+#dpContent[data-tab="karta"] [data-dp-tab="praca"] { display: none; }
+.pw-approve-note { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 10px; }
+.pw-gantt > summary { cursor: pointer; padding: 4px 0 8px; }
+.team-count-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.team-count-chip {
+  font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
+}
+.team-count-chip.active { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+.pw-stage { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; background: var(--surface-1); overflow: hidden; }
+.pw-stage-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; font-size: 13px; }
+.pw-stage-head:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.pw-caret { width: 12px; color: var(--text-muted); }
+.pw-progress { width: 70px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--text-muted) 20%, transparent); overflow: hidden; }
+.pw-progress-fill { display: block; height: 100%; background: var(--status-good); }
+.pw-stage-actions { margin-left: auto; display: flex; gap: 4px; }
+.pw-table { margin: 0; border-top: 1px solid var(--border); }
+.pw-table td { padding: 7px 10px; font-size: 13px; vertical-align: middle; }
+.pw-title { cursor: pointer; font-weight: 600; }
+.pw-title:hover { color: var(--accent); }
+.pw-check { width: 34px; text-align: center; }
+tr.row-done td { color: var(--text-muted); }
+tr.row-done .pw-title, tr.row-done td b { text-decoration: line-through; font-weight: 500; }
+tr.row-overdue td:first-child { box-shadow: inset 3px 0 0 var(--status-critical); }
+
+/* Odhaczanie: pusty = do zrobienia, ◐ = wykonane (czeka na zatwierdzenie), ✓ = zrobione */
+.done-box {
+  width: 20px; height: 20px; border-radius: 5px; border: 1.5px solid var(--text-muted); background: var(--surface-1);
+  cursor: pointer; font-size: 12px; line-height: 1; padding: 0; color: #fff; display: inline-flex; align-items: center; justify-content: center;
+}
+.done-box:hover { border-color: var(--accent); }
+.done-box.awaiting { background: color-mix(in srgb, var(--status-serious) 22%, var(--surface-1)); border-color: var(--status-serious); color: var(--status-serious); }
+.done-box.done { background: var(--status-good); border-color: var(--status-good); }
+.done-box-ro { display: inline-block; width: 20px; text-align: center; color: var(--status-good); }
+.icon-btn.approve { border-color: var(--status-good); color: var(--status-good); font-weight: 700; }
+.approve-row { display: flex; align-items: center; gap: 10px; }
+.approve-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.approve-section h4 { color: var(--status-serious); }
+
+/* Lista: wybor kolumn */
+.col-chooser { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.tk-list td { vertical-align: middle; }
+
+/* Kalendarz "dni pod soba" */
+.ag-list { display: flex; flex-direction: column; gap: 8px; }
+.ag-day { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); }
+.ag-day.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.ag-day.past { opacity: .7; }
+.ag-day.overdue { border-color: var(--status-critical); margin-bottom: 10px; }
+.ag-date { font-size: 13px; font-weight: 700; color: var(--text-primary); padding-top: 2px; }
+.ag-day.overdue .ag-date { color: var(--status-critical); }
+.ag-items { display: flex; flex-direction: column; gap: 6px; }
+.ag-row { display: grid; grid-template-columns: 24px 16px 1fr auto; align-items: center; gap: 8px; }
+.ag-kind { color: var(--text-muted); font-size: 12px; }
+.ag-main { cursor: pointer; min-width: 0; }
+.ag-title { font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
+.ag-row.row-done .ag-title { text-decoration: line-through; color: var(--text-muted); }
+@media (max-width: 640px) { .ag-day { grid-template-columns: 1fr; } }
+
+/* Kanban: karty uproszczone */
+.kanban-card.simple .kc-title { font-size: 14.5px; line-height: 1.3; }
+.kanban-card .kc-late { color: var(--status-critical); }

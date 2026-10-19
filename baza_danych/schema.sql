@@ -241,7 +241,13 @@ CREATE TABLE IF NOT EXISTS zadania_tickety (
   Klasa_uslugi TEXT,
   Zablokowane TEXT,
   Powod_blokady TEXT,
-  Kolejnosc REAL
+  Kolejnosc REAL,
+  -- Wykonanie -> zatwierdzenie (spotkanie 12.10.2026): Data_wykonania = kiedy wykonawca odhaczyl
+  -- (podstawa terminowosci), ID_Osoby_zatwierdzajacej = kto potwierdzil "Zrobione".
+  -- Osoba_zewnetrzna = na kogo spoza zespolu czekamy (inwestor, urzad) - wolny tekst.
+  Data_wykonania TEXT,
+  ID_Osoby_zatwierdzajacej TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
+  Osoba_zewnetrzna TEXT
 );
 
 CREATE TABLE IF NOT EXISTS komentarze_tickety (
