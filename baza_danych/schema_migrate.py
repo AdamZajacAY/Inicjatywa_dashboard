@@ -855,3 +855,11 @@ def ensure_ticket_approval_columns(db_path):
         "ID_Osoby_zatwierdzajacej": "TEXT REFERENCES zespol(ID_Osoby) ON DELETE SET NULL",
         "Osoba_zewnetrzna": "TEXT",
     })
+
+
+def ensure_user_ui_preferences_column(db_path):
+    """Spotkanie z Monika (12.10.2026) + decyzja Adama (19.10.2026): preferowany widok (zakladka,
+    widok Zadan, kolumny Listy, tryb kalendarza, zwiniete sekcje karty projektu) zapamietany na
+    KONCIE, nie tylko w przegladarce - po zalogowaniu z innego komputera/telefonu wszystko jest tak,
+    jak osoba to ustawila. JSON, zapisywany wylacznie przez PUT /api/auth/preferencje (wlasne konto)."""
+    _ensure_columns(db_path, "users", {"Preferencje_UI": "TEXT"})

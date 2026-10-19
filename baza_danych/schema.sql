@@ -478,6 +478,8 @@ CREATE TABLE IF NOT EXISTS users (
   Google_Sub TEXT UNIQUE,          -- stabilny identyfikator 'sub' z Google; NULL = konto haslowe
   Rola TEXT,                       -- NULL=Oczekujace | Specjalista | Architekt_PM | COO | Admin
   ID_Osoby TEXT UNIQUE REFERENCES zespol(ID_Osoby) ON DELETE SET NULL,
+  -- Preferencje widoku zapisane na koncie (JSON) - tylko przez PUT /api/auth/preferencje.
+  Preferencje_UI TEXT,
   Aktywny INTEGER NOT NULL DEFAULT 1,
   Data_utworzenia TEXT,
   Data_ostatniego_logowania TEXT

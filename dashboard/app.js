@@ -528,7 +528,8 @@ async function loadFromApi() {
   STATE.tagLibrary = data.tagLibrary || [];
   STATE.meetingNotes = data.meetingNotes || [];
   STATE.me = {
-    role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email,
+    role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email, id: data.me.id,
+    prefs: data.me.prefs || {},
     assignedProjectIds: data.me.assignedProjectIds || [],
   };
   // users/backups nie wchodza w sklad /api/bootstrap (widoczne tylko dla COO/Admin, po co
@@ -6164,8 +6165,24 @@ function closeDetail() {
 // po kazdym wejsciu od nowa wybierac "Zadania" -> "Wojtek F" -> "wg osoby". Pierwsze wejscie:
 // widok wg roli (zespol -> Moje zadania, prowadzacy -> Zadania, zarzad -> Przeglad).
 const UI_PREFS_KEY = "ip_ui_prefs_v1";
-function loadUiPrefs() { try { return JSON.parse(localStorage.getItem(UI_PREFS_KEY) || "{}"); } catch { return {}; } }
-function saveUiPrefs(patch) { try { localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ ...loadUiPrefs(), ...patch })); } catch { /* prywatne okno - bez pamieci */ } }
+// Preferencje zyja na KONCIE (decyzja 19.10.2026: PUT /api/auth/preferencje, wczytywane z /api/bootstrap
+// przy logowaniu) - z innego komputera/telefonu widok jest taki, jak osoba go ustawila. localStorage
+// to kopia robocza (per konto), zeby kazda zmiana nie czekala na siec; zapis na serwer z opoznieniem.
+function uiPrefsKey() { return STATE.me?.id ? `${UI_PREFS_KEY}:${STATE.me.id}` : UI_PREFS_KEY; }
+function loadUiPrefs() {
+  let local = {};
+  try { local = JSON.parse(localStorage.getItem(uiPrefsKey()) || "{}"); } catch { /* prywatne okno */ }
+  return { ...(STATE.me?.prefs || {}), ...local };
+}
+let uiPrefsSaveTimer = null;
+function saveUiPrefs(patch) {
+  const next = { ...loadUiPrefs(), ...patch };
+  try { localStorage.setItem(uiPrefsKey(), JSON.stringify(next)); } catch { /* prywatne okno - bez pamieci */ }
+  if (STATE.me) STATE.me.prefs = next;
+  if (!STATE.me?.id) return;
+  clearTimeout(uiPrefsSaveTimer);
+  uiPrefsSaveTimer = setTimeout(() => apiPut("/api/auth/preferencje", next).catch(() => { /* kopia lokalna zostaje */ }), 1500);
+}
 const PERSISTED_TICKET_FILTERS = ["view", "lanes", "prowadzacy", "horyzonty", "tylkoNaCito", "tylkoZablokowane", "typ",
   "hiddenCols", "calMode", "simpleCards"];
 function persistTicketFilters() {
@@ -6176,6 +6193,16 @@ let initialViewApplied = false;
 function applyInitialView() {
   if (initialViewApplied) return;
   initialViewApplied = true;
+  if (STATE.me?.prefs && Object.keys(STATE.me.prefs).length) {
+    try { localStorage.setItem(uiPrefsKey(), JSON.stringify(STATE.me.prefs)); } catch { /* prywatne okno */ }
+  } else {
+    // Pierwsze logowanie po wprowadzeniu preferencji na koncie: przenies ustawienia zapisane
+    // wczesniej w tej przegladarce (stary, wspolny klucz) na konto, zeby nikt ich nie stracil.
+    try {
+      const legacy = localStorage.getItem(UI_PREFS_KEY);
+      if (legacy && !localStorage.getItem(uiPrefsKey())) { localStorage.setItem(uiPrefsKey(), legacy); saveUiPrefs({}); }
+    } catch { /* prywatne okno */ }
+  }
   const prefs = loadUiPrefs();
   if (prefs.ticketFilters) PERSISTED_TICKET_FILTERS.forEach(k => { if (prefs.ticketFilters[k] !== undefined) ticketFilters[k] = prefs.ticketFilters[k]; });
   if (!["osoba", "projekt"].includes(ticketFilters.lanes)) ticketFilters.lanes = "brak"; // dawne wiersze wg terminu wycofane 19.10.2026

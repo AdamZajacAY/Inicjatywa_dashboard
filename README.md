@@ -348,7 +348,9 @@ zespół w dashboardzie.
     „+ zadanie” w kolumnie;
   - filtr **architekta prowadzącego** i szybkie filtry (Dziś / Ten tydzień / Na cito / Zablokowane)
     we wszystkich widokach; w Liście zaznaczanie wielu zadań i zmiana etapu/osoby/klasy/terminu naraz;
-  - zakładka i filtry zapamiętywane w przeglądarce; skróty: `N` nowe zadanie, `K/L/C/G` widoki,
+  - zakładka, widok, kolumny Listy, tryb kalendarza i zwinięte sekcje zapamiętywane **na koncie**
+    (`users.Preferencje_UI`, zapis tylko własnych ustawień przez `PUT /api/auth/preferencje`) — po
+    zalogowaniu z innego komputera/telefonu widok jest taki sam; skróty: `N` nowe zadanie, `K/L/C/G` widoki,
     `Z/M/P` zakładki, `?` pomoc.
   - **Wykonanie → zatwierdzenie** (spotkanie z Moniką, 12.10.2026): wykonawca odhacza zadanie (trafia do
     „Do przeglądu” z datą wykonania), „Zrobione” potwierdza Architekt Prowadzący/COO/Admin („✓ Zatwierdź”

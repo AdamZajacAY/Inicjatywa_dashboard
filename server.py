@@ -55,7 +55,7 @@ from baza_danych.schema_migrate import (
     ensure_meeting_note_attendee_columns,
     ensure_tagi_biblioteka_table, ensure_seed_tagi_biblioteka,
     ensure_harmonogram_archive_column, ensure_ticket_pin_column, ensure_ticket_kanban_v2,
-    ensure_ticket_approval_columns,
+    ensure_ticket_approval_columns, ensure_user_ui_preferences_column,
 )
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -152,6 +152,7 @@ ensure_harmonogram_archive_column(DB_PATH)  # jw. - Archiwalny na harmonogram, u
 ensure_ticket_pin_column(DB_PATH)  # jw. - Data_przypiecia_dzis na zadania_tickety, "Moje zadania"/widok Dzisiaj
 ensure_ticket_kanban_v2(DB_PATH)  # jw. - statusy Kanban v2 + klasa uslugi/blokada/kolejnosc (feedback 10.09.2026)
 ensure_ticket_approval_columns(DB_PATH)  # jw. - wykonanie -> zatwierdzenie, osoba z zewnatrz (spotkanie 12.10.2026)
+ensure_user_ui_preferences_column(DB_PATH)  # jw. - preferencje widoku zapisane na koncie (19.10.2026)
 STARTUP_BACKUP_NOTE = backup_on_startup()
 # Wypisane tu, nie tylko w main() ponizej - main() nie jest wolane pod gunicornem/Render
 # (ktory tylko importuje "server:app"), wiec bez tego ewentualny nieudany backup przy
@@ -470,7 +471,7 @@ FINANCIAL_FIELDS = {
 # Pola bezwarunkowo usuwane z kazdej odpowiedzi GET i niemozliwe do ustawienia przez
 # parse_payload (patrz wyzej) - nawet Admin nie widzi tego w JSON-ie, hasla ustawiaja
 # wylacznie dedykowane endpointy /api/auth/change-password i /api/users/<id>/reset-password.
-ALWAYS_STRIP_FIELDS = {"users": ["Haslo_Hash", "Google_Sub"]}
+ALWAYS_STRIP_FIELDS = {"users": ["Haslo_Hash", "Google_Sub", "Preferencje_UI"]}
 
 
 def assigned_project_ids(conn, person_id):
@@ -1227,6 +1228,17 @@ def get_current_user():
     return dict(row)
 
 
+def _user_ui_prefs(row):
+    raw = dict(row).get("Preferencje_UI")
+    if not raw:
+        return {}
+    try:
+        prefs = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return prefs if isinstance(prefs, dict) else {}
+
+
 def public_user(row):
     return {
         "id": row["ID_Uzytkownika"],
@@ -1235,6 +1247,7 @@ def public_user(row):
         "role": row["Rola"],
         "personId": row["ID_Osoby"],
         "pending": row["Rola"] is None,
+        "prefs": _user_ui_prefs(row),
     }
 
 
@@ -1340,6 +1353,26 @@ def auth_logout():
 @app.route("/api/auth/me")
 def auth_me():
     return jsonify(public_user(g.user))
+
+
+UI_PREFS_MAX_BYTES = 8000
+
+
+@app.route("/api/auth/preferencje", methods=["PUT"])
+def auth_ui_preferences():
+    # Preferencje widoku zalogowanej osoby (19.10.2026) - zapis WYLACZNIE wlasnego konta (bez ID w
+    # sciezce, bez mozliwosci wskazania innego uzytkownika). Tylko obiekt JSON o ograniczonym
+    # rozmiarze; tresc to ustawienia interfejsu, nie dane projektowe, wiec bez dalszej walidacji pol.
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Preferencje muszą być obiektem JSON."}), 400
+    raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    if len(raw.encode("utf-8")) > UI_PREFS_MAX_BYTES:
+        return jsonify({"error": "Za duże preferencje."}), 400
+    conn = get_db()
+    conn.execute("UPDATE users SET Preferencje_UI = ? WHERE ID_Uzytkownika = ?", (raw, g.user["ID_Uzytkownika"]))
+    conn.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/auth/change-password", methods=["POST"])
