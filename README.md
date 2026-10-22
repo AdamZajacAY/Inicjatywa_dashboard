@@ -92,7 +92,8 @@ ma dostępu do żadnych danych, dopóki COO albo Admin nie nada mu jednej z 3 r�
 | Rola | Zakres |
 |---|---|
 | **Architekt** (wartość `Specjalista` w bazie) | Podgląd **wyłącznie projektów, do których jest przypisany**, bez danych finansowych. W tych projektach: zakłada zadania; edytuje zadania, które **wykonuje, w których pomaga albo które zgłosił** (przekazać zadanie innej osobie może tylko zgłaszający lub prowadzący); **podgląd i komentowanie każdego zadania** projektu; **zgłasza notatki ze spotkań** (status „Nowa”, do akceptacji prowadzącego) i **problemy/ryzyka** (status „Otwarte”). Odhaczone zadanie trafia do „Do przeglądu” — „Zrobione” zatwierdza prowadzący. |
-| **Pracownik biurowy** (wartość `Pracownik_biurowy`) | Dokładnie te same uprawnienia co Architekt. |
+| **Pracownik biurowy** (wartość `Pracownik_biurowy`) | Dokładnie te same uprawnienia co Architekt. Obie role **odhaczają pozycje checklisty** swoich projektów (treść, „wymagane”, dodawanie i usuwanie — prowadzący). |
+| **Konto techniczne** (wartość `Kopia`) | Wyłącznie pobranie kopii bazy (`GET /api/backup/pobierz`) — do nocnej kopii na komputer; brak dostępu do aplikacji. |
 | **Architekt Prowadzący** (wartość `Architekt_PM`) | Podgląd **całego portfela**, pola finansowe ukryte. **Pełne zarządzanie tylko w projektach, które prowadzi** — gdzie ma w zespole rolę „Kierownik projektu”/„Właściciel” albo jest wpisany jako architekt prowadzący (dane projektu, etapy, zespół, zadania, zatwierdzanie). W cudzym projekcie, w którym jest członkiem zespołu, ma prawa jak Architekt (audyt 22.10.2026). Zakłada projekty (zostaje ich prowadzącym), dodaje i poprawia osoby w Zespole (bez stawek i pól kadrowych), dodaje/edytuje podwykonawców; nie usuwa projektów ani podwykonawców. |
 | Uwaga | Ustawienie architekta prowadzącego w formularzu projektu automatycznie dodaje go do zespołu jako „Kierownik projektu”, a poprzedniego prowadzącego zostawia w zespole jako „Członek zespołu”. |
 | **COO / Admin** | Pełny dostęp do wszystkiego, łącznie z zarządzaniem kontami/rolami i backupami. Te dwie role mają identyczne uprawnienia — różnią się tylko etykietą. |
@@ -170,6 +171,12 @@ zwykłego kopiowania pliku). Trzy sposoby uruchomienia:
 (COO/Admin) albo `python3 baza_danych/pobierz_backup_produkcji.py --url https://<appka>.onrender.com --email <admin>`
 (zapis do `baza_danych/backups_produkcja/`, ze sprawdzeniem `integrity_check`; pod cron hasło przez
 `IP_BACKUP_PASSWORD`). Raport jakości danych na pobranej kopii: `python3 baza_danych/audyt_danych.py`.
+
+**Automatyczna nocna kopia produkcji (od 22.10.2026):** w Użytkownikach załóż konto z rolą „Konto techniczne —
+tylko kopia bazy” (może się zalogować i pobrać kopię, nic więcej), potem raz w Terminalu
+`bash baza_danych/instaluj_kopie_nocna.sh` — hasło trafia do pęku kluczy macOS, zadanie launchd pobiera kopię
+codziennie o 21:30 (po wybudzeniu, jeśli Mac spał) do `~/Kopie_Inicjatywa_produkcja/` (log: `kopia.log`).
+`audyt_danych.py` bierze najnowszą kopię z obu miejsc.
 
 - **Automatycznie przy starcie** `python3 server.py` — jedna kopia na każde uruchomienie serwera.
 - **Ręcznie z dashboardu** — przycisk „Backup teraz” w zakładce Użytkownicy (COO/Admin).
