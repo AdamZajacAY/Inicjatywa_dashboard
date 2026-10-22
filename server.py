@@ -400,7 +400,10 @@ FULL_ACCESS_ROLES = {"COO", "Admin"}
 # "Specjalista" w kazdym miejscu z osobna (patrz komentarz przy PORTFOLIO_RESTRICTED_ROLES
 # ponizej - dokladnie to ryzyko, ktore ten zbior ma zapobiec).
 SPECJALISTA_ROLES = {"Specjalista", "Pracownik_biurowy"}
-VALID_ROLES = {None, "Architekt_PM", "COO", "Admin"} | SPECJALISTA_ROLES
+# "Kopia" (decyzja Adama 22.10.2026) - konto techniczne do automatycznej nocnej kopii bazy na
+# komputer: moze sie zalogowac i pobrac kopie (GET /api/backup/pobierz), nic wiecej (patrz load_user).
+BACKUP_ONLY_ROLE = "Kopia"
+VALID_ROLES = {None, "Architekt_PM", "COO", "Admin", BACKUP_ONLY_ROLE} | SPECJALISTA_ROLES
 # Role, ktorych odczyt jest zawezony do wlasnych projektow (patrz scoped_rows()) - jedna
 # definicja zamiast wielu niezaleznych porownan do literalu "Specjalista" (audyt: latwo
 # dopisac druga zawezona role w jednym miejscu i przeoczyc drugie).
@@ -532,6 +535,10 @@ def _member_can_write(conn, user, action, table, row):
         return False
     if table == "ryzyka_i_problemy":
         return action == "create" and (row.get("Status") or "Otwarte") == "Otwarte"
+    if table == "checklisty_projektow":
+        # Decyzja Adama 22.10.2026: zespol odhacza pozycje checklisty ("Wykonano") - tresc,
+        # "wymagane", dodawanie i usuwanie zostaja dla prowadzacego (validate_checklist_change).
+        return action == "update"
     return False
 
 
@@ -1018,9 +1025,22 @@ def validate_ticket_approval(data, existing):
     return None
 
 
+def validate_checklist_change(data, existing):
+    # Czlonek zespolu (nie prowadzacy projektu) zmienia na checkliscie wylacznie "Wykonano".
+    if g.user["Rola"] in FULL_ACCESS_ROLES:
+        return None
+    pid = (existing or {}).get("ID_Projektu") or data.get("ID_Projektu")
+    if g.user["Rola"] == "Architekt_PM" and pid in led_project_ids(get_db(), g.user):
+        return None
+    if set(data) - {"Wykonano"}:
+        return "Na checkliście możesz tylko odhaczyć wykonanie — pozostałe zmiany wprowadza architekt prowadzący."
+    return None
+
+
 TABLE_VALIDATORS = {
     "users": validate_user_payload,
     "zadania_tickety": validate_ticket_approval,
+    "checklisty_projektow": validate_checklist_change,
 }
 TABLE_CREATE_DEFAULTS = {
     # Konta zakladane przez create_admin.py i logowanie Google juz stempluja to przy INSERT -
@@ -1432,6 +1452,8 @@ def load_user():
         return
     if g.user["Rola"] is None:
         abort(403)  # konto Oczekujace - zero dostepu do danych, dopoki COO/Admin nie nada roli
+    if g.user["Rola"] == BACKUP_ONLY_ROLE and request.path != "/api/backup/pobierz":
+        abort(403)  # konto techniczne kopii: wylacznie pobranie kopii bazy
 
 
 @app.route("/api/auth/config")
@@ -2241,7 +2263,7 @@ def backup_download():
     # Swieza kopia CALEJ bazy do pobrania (COO/Admin) - zeby produkcyjna baza z Render byla zawsze
     # takze lokalnie (decyzja uzytkownika 12.10.2026). Tylko odczyt: kopia powstaje przez ten sam
     # create_backup() (online-backup + integrity_check) co przycisk "Backup teraz".
-    if g.user["Rola"] not in FULL_ACCESS_ROLES:
+    if g.user["Rola"] not in FULL_ACCESS_ROLES and g.user["Rola"] != BACKUP_ONLY_ROLE:
         abort(403)
     try:
         dest_path = create_backup()

@@ -32,7 +32,9 @@ ACTIVE_TICKET_EXCLUDED = ("Zrobione", "Zarchiwizowane")
 def pick_db():
     if len(sys.argv) > 1:
         return sys.argv[1]
-    prod = sorted(glob.glob(os.path.join(HERE, "backups_produkcja", "*.db")))
+    # najnowsza kopia produkcji: reczne pobrania (backups_produkcja/) albo kopie nocne (~/Kopie_Inicjatywa_produkcja/)
+    prod = glob.glob(os.path.join(HERE, "backups_produkcja", "*.db")) + glob.glob(os.path.expanduser("~/Kopie_Inicjatywa_produkcja/*.db"))
+    prod.sort(key=os.path.getmtime)
     return prod[-1] if prod else os.path.join(HERE, "baza_projektow.db")
 
 

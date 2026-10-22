@@ -87,6 +87,7 @@ function memberCan(action, table, row) {
     return false;
   }
   if (table === "ryzyka_i_problemy") return action === "create";
+  if (table === "checklisty_projektow") return action === "update"; // odhaczanie; "wymagane"/treść - prowadzący
   return false;
 }
 function can(action, table, row) {
@@ -510,7 +511,7 @@ function reindex() {
 
 // Etykiety wyswietlane uzytkownikowi - celowo inne niz wewnetrzne wartosci Rola w bazie
 // (Specjalista/Architekt_PM), zeby nie ruszac danych/logiki uprawnien przy zmianie nazewnictwa.
-const ROLE_LABELS = { Specjalista: "Architekt", Pracownik_biurowy: "Pracownik biurowy", Architekt_PM: "Architekt Prowadzący", COO: "COO", Admin: "Admin" };
+const ROLE_LABELS = { Specjalista: "Architekt", Pracownik_biurowy: "Pracownik biurowy", Architekt_PM: "Architekt Prowadzący", COO: "COO", Admin: "Admin", Kopia: "Konto techniczne (kopia bazy)" };
 
 function showDashboard() {
   $("#emptyState").style.display = "none";
@@ -790,8 +791,12 @@ function showLoginScreen(googleEnabled) {
   }
 }
 
-function showPendingScreen(me) {
-  $("#emptyState").innerHTML = `
+function showPendingScreen(me, technical = false) {
+  $("#emptyState").innerHTML = technical ? `
+    <h2>Konto techniczne</h2>
+    <p>To konto (<b>${esc(me.email)}</b>) służy wyłącznie do automatycznego pobierania kopii bazy danych
+       i nie ma dostępu do aplikacji.</p>
+    <button class="secondary" id="btnPendingLogout">Wyloguj</button>` : `
     <h2>Konto oczekuje na zatwierdzenie</h2>
     <p>Zalogowano jako <b>${esc(me.email)}</b>, ale administrator jeszcze nie nadał Ci roli w systemie.
        Skontaktuj się z Adminem lub COO, żeby uzyskać dostęp.</p>
@@ -3374,7 +3379,7 @@ function openUserForm(uid = null) {
   const body = `
     ${fInput("E-mail *", "Email", u.Email, "email", "required")}
     ${fInput("Imię i nazwisko", "Imie_i_nazwisko", u.Imie_i_nazwisko)}
-    ${fSelect("Rola", "Rola", [["", "Oczekujące (brak dostępu)"], ["Specjalista", "Architekt"], ["Pracownik_biurowy", "Pracownik biurowy"], ["Architekt_PM", "Architekt Prowadzący"], ["COO", "COO"], ["Admin", "Admin"]], u.Rola || "")}
+    ${fSelect("Rola", "Rola", [["", "Oczekujące (brak dostępu)"], ["Specjalista", "Architekt"], ["Pracownik_biurowy", "Pracownik biurowy"], ["Architekt_PM", "Architekt Prowadzący"], ["Kopia", "Konto techniczne — tylko kopia bazy"], ["COO", "COO"], ["Admin", "Admin"]], u.Rola || "")}
     ${fSelect("Powiązana osoba z zespołu", "ID_Osoby", unlinkedTeamOptionsPairs(uid), u.ID_Osoby)}
     ${fSelect("Aktywny", "Aktywny", [["Tak", "Tak"], ["Nie", "Nie"]], u.Aktywny === 0 ? "Nie" : "Tak")}
     <div class="empty-hint full" style="grid-column:1/-1">Role Architekt, Pracownik biurowy i Architekt Prowadzący wymagają powiązanej osoby z zespołu (do niej odnoszą się przydzielone projekty i zadania).</div>
@@ -3711,8 +3716,6 @@ function openProjectForm(pid = null) {
     <div class="form-section-title">Lokalizacja</div>
     ${fInput("Adres / lokalizacja", "Lokalizacja_Adres", p.Lokalizacja_Adres)}
     ${fInput("Miasto", "Miasto", p.Miasto)}
-    ${fInput("Powierzchnia (m²)", "Powierzchnia_m2", p.Powierzchnia_m2, "number", "min=0")}
-    ${fInput("Liczba jednostek", "Liczba_jednostek", p.Liczba_jednostek, "number", "min=0")}
     ${fInput("Inwestor (opis, jeśli brak w rejestrze)", "Inwestor_Klient", p.Inwestor_Klient)}
     ${fSelect("Inwestor (z rejestru)", "ID_Klienta", clientOptionsPairs(), p.ID_Klienta)}
 
@@ -3813,8 +3816,10 @@ async function saveProjectFromForm(data, pid) {
     Lokalizacja_Adres: data.Lokalizacja_Adres, Miasto: data.Miasto,
     Kraj: data.Kraj, Wojewodztwo: data.Wojewodztwo, Powiat: data.Powiat, Gmina: data.Gmina,
     Miejscowosc: data.Miejscowosc, Ulica: data.Ulica, Kod_pocztowy: data.Kod_pocztowy,
-    Powierzchnia_m2: data.Powierzchnia_m2 ? num(data.Powierzchnia_m2) : null,
-    Liczba_jednostek: data.Liczba_jednostek ? num(data.Liczba_jednostek) : null,
+    // Pola ukryte w formularzu (decyzja 22.10.2026 - nieuzywane w biurze projektowym); istniejace
+    // wartosci w bazie zostaja nietkniete, zamiast byc nadpisane pustym przy kazdym zapisie.
+    Powierzchnia_m2: existing.Powierzchnia_m2 ?? null,
+    Liczba_jednostek: existing.Liczba_jednostek ?? null,
     Inwestor_Klient: data.Inwestor_Klient, ID_Klienta: data.ID_Klienta, Opis: data.Opis,
     Link_do_dokumentacji: (data.Link_do_dokumentacji || "").trim() || null,
     Data_ostatniej_aktualizacji: new Date(),
@@ -5913,8 +5918,7 @@ function openProjectDetail(pid) {
         <div><div class="k">Zakończenie (rzeczywiste)</div><div class="v">${fmtDate(p.Data_zakonczenia_rzeczywista)}</div></div>
         <div><div class="k">Data „Go Live”</div><div class="v">${fmtDate(p.Data_go_live)}</div></div>
         <div><div class="k">Inwestor</div><div class="v">${p.ID_Klienta && STATE.clientById.get(p.ID_Klienta) ? `<span class="clickable" data-open-client="${esc(p.ID_Klienta)}" style="cursor:pointer;text-decoration:underline">${esc(STATE.clientById.get(p.ID_Klienta).Nazwa)}</span>` : esc(p.Inwestor_Klient) || "—"}</div></div>
-        <div><div class="k">Powierzchnia</div><div class="v">${p.Powierzchnia_m2 != null ? p.Powierzchnia_m2.toLocaleString("pl-PL") + " m²" : "—"}</div></div>
-        <div><div class="k">Liczba jednostek</div><div class="v">${p.Liczba_jednostek ?? "—"}</div></div>
+
         ${formatLokalizacjaUrzedowa(p) ? `<div style="grid-column:1/-1"><div class="k">Lokalizacja urzędowa</div><div class="v">${esc(formatLokalizacjaUrzedowa(p))}</div></div>` : ""}
       </div>
     </div>
@@ -6018,7 +6022,7 @@ function openProjectDetail(pid) {
           </div>
           <div style="display:flex;align-items:flex-start;gap:10px">
             <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);white-space:nowrap;margin-top:2px" title="Wymagane dla tego projektu - zaznaczenie tworzy powiązane zadanie">
-              <input type="checkbox" data-toggle-checklist-required="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}" ${c.Wymagany === "Tak" ? "checked" : ""} ${can("update", "checklisty_projektow", c) ? "" : "disabled"}>
+              <input type="checkbox" data-toggle-checklist-required="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}" ${c.Wymagany === "Tak" ? "checked" : ""} ${isProjectLead(pid) ? "" : "disabled"}>
               wymagane
             </label>
             <input type="checkbox" data-toggle-checklist="${esc(c.ID_Pozycji)}" data-project="${esc(pid)}" ${c.Wykonano === "Tak" ? "checked" : ""} ${can("update", "checklisty_projektow", c) ? "" : "disabled"} style="margin-top:3px" title="Wykonane">
@@ -7161,6 +7165,7 @@ async function boot() {
       throw e;
     }
     if (me.pending) { showPendingScreen(me); return; }
+    if (me.role === "Kopia") { showPendingScreen(me, true); return; }
     await loadFromApi();
     // Brak websocketow - odpytywanie co 45s to jedyny sposob na wykrycie nowej wzmianki od
     // innej osoby bez recznego odswiezenia calej strony (ten sam kompromis "eventually
