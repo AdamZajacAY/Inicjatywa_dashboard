@@ -985,3 +985,7 @@ html, body { overflow-x: clip; }
 .dp-more-menu.open { display: block; }
 .more-menu-item.danger { color: var(--status-critical); }
 a.icon-btn { text-decoration: none; display: inline-flex; align-items: center; }
+
+/* ---------- Audyt 22.10.2026: puste pola wymagane podswietlone po probie zapisu */
+#modalForm.was-validated :invalid { border-color: var(--status-critical) !important; box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-critical) 18%, transparent); }
+#modalForm :disabled { opacity: .75; cursor: not-allowed; }

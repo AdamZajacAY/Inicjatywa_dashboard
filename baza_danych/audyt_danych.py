@@ -119,6 +119,16 @@ def main():
                       "AND (Data_start_plan IS NULL OR Data_start_plan='') AND COALESCE(Archiwalny,'')<>'Tak'")
     section("Etapy 'W trakcie' bez daty startu (nie widac ich na Gancie)", stage_nodates,
             lambda r: f"{r['ID_Zadania']} [{r['ID_Projektu']}] {r['Nazwa_zadania']}")
+    # Od 22.10.2026 pelne prawa w projekcie ma tylko prowadzacy: rola "Kierownik projektu"/"Wlasciciel"
+    # w przypisaniach albo Owner = imie i nazwisko z Zespolu. Projekt, w ktorym zadne z tych nie
+    # zachodzi, nie ma prowadzacego z prawem edycji (poza COO/Admin).
+    no_lead = q("""SELECT p.ID_Projektu, p.Nazwa, p.Owner FROM projekty p
+                   WHERE COALESCE(p.Owner,'') <> ''
+                     AND NOT EXISTS (SELECT 1 FROM zespol z WHERE z.Imie_i_nazwisko = p.Owner)
+                     AND NOT EXISTS (SELECT 1 FROM przypisania a WHERE a.ID_Projektu = p.ID_Projektu
+                                     AND a.Rola_w_projekcie IN ('Kierownik projektu','Wlasciciel'))""")
+    section("Projekty bez prowadzącego z prawem edycji (Owner nie pasuje do Zespołu i brak 'Kierownika projektu')", no_lead,
+            lambda r: f"{r['ID_Projektu']} {r['Nazwa']} — Owner: {r['Owner']!r}")
     no_owner = q("SELECT ID_Projektu, Nazwa FROM projekty WHERE (Owner IS NULL OR Owner='') AND COALESCE(Status,'')<>'Zakonczony'")
     section("Projekty bez architekta prowadzacego", no_owner, lambda r: f"{r['ID_Projektu']} {r['Nazwa']}")
 

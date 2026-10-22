@@ -486,6 +486,55 @@ def assigned_project_ids(conn, person_id):
     return {r["ID_Projektu"] for r in rows}
 
 
+# Audyt uprawnien (22.10.2026, U1): PELNE zarzadzanie projektem ma tylko jego PROWADZACY - osoba
+# z rola "Kierownik projektu"/"Wlasciciel" w przypisaniach albo wpisana jako architekt prowadzacy
+# (projekty.Owner = jej imie i nazwisko z kartoteki zespolu). Architekt Prowadzacy, ktory w cudzym
+# projekcie jest tylko czlonkiem zespolu, ma tam te same prawa co architekt (_member_can_write) -
+# wczesniej mogl m.in. usunac prowadzacego z zespolu i zatwierdzac zadania kolegow.
+LEAD_PROJECT_ROLES = ("Kierownik projektu", "Wlasciciel")
+
+
+def led_project_ids(conn, user):
+    oid = user.get("ID_Osoby")
+    if not oid:
+        return set()
+    placeholders = ",".join("?" * len(LEAD_PROJECT_ROLES))
+    led = {r[0] for r in conn.execute(
+        f"SELECT DISTINCT ID_Projektu FROM przypisania WHERE ID_Osoby = ? AND Rola_w_projekcie IN ({placeholders})",
+        (oid, *LEAD_PROJECT_ROLES))}
+    person = conn.execute("SELECT Imie_i_nazwisko FROM zespol WHERE ID_Osoby = ?", (oid,)).fetchone()
+    if person and person[0]:
+        led |= {r[0] for r in conn.execute("SELECT ID_Projektu FROM projekty WHERE Owner = ?", (person[0],))}
+    return led
+
+
+def _member_can_write(conn, user, action, table, row):
+    """Prawa czlonka zespolu w projekcie, do ktorego jest przypisany (architekt, pracownik biurowy,
+    architekt prowadzacy w cudzym projekcie). Audyt 22.10.2026 (U4): oprocz wlasnych zadan zespol
+    moze tez zglosic notatke ze spotkania (do akceptacji prowadzacego) i problem/ryzyko, a zadanie
+    edytuje takze wspomagajacy i zglaszajacy - nie tylko wykonawca."""
+    me = user.get("ID_Osoby")
+    if not me or row.get("ID_Projektu") not in assigned_project_ids(conn, me):
+        return False
+    if table == "zadania_tickety":
+        if action == "create":
+            return True
+        if action == "update":
+            return me in (row.get("ID_Osoby_przypisanej"), row.get("ID_Osoby_wspomagajacej"), row.get("ID_Osoby_zglaszajacej"))
+        return False
+    if table == "notatki_spotkan":
+        if action == "create":
+            return (row.get("Status") or "Nowa") == "Nowa"
+        if action == "update":
+            # wlasna notatka (dopisywanie punktow, poprawki) do czasu akceptacji przez prowadzacego
+            author = user.get("Imie_i_nazwisko") or user.get("Email")
+            return row.get("Autor") == author and (row.get("Status") or "Nowa") == "Nowa"
+        return False
+    if table == "ryzyka_i_problemy":
+        return action == "create" and (row.get("Status") or "Otwarte") == "Otwarte"
+    return False
+
+
 def scoped_rows(conn, user, table, rows, allowed=None):
     # Specjalista czytal dotad CALY portfel (redagowane byly tylko pola finansowe) - zaweniete
     # na wprost zadanie uzytkownika do wlasnych projektow (przez przypisania), zeby nazwa
@@ -524,16 +573,10 @@ def can_write(conn, user, action, table, row):
     if scope in ("admin_only", None):
         return False
     if user["Rola"] in SPECJALISTA_ROLES:
-        if table != "zadania_tickety" or action == "delete":
-            return False
-        if action == "create":
-            return row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"])
-        # edycja tylko wlasnego ticketu W PROJEKCIE, do ktorego jest przypisany - bez drugiego
-        # warunku Specjalista mogl "reparent'owac" wlasny ticket (zmienic ID_Projektu) do
-        # DOWOLNEGO projektu w systemie, bo re-check w item() po zmianie zakresu i tak sprawdza
-        # tylko ID_Osoby_przypisanej, ktore sie nie zmienia w takim ataku
-        return (row.get("ID_Osoby_przypisanej") == user["ID_Osoby"]
-                and row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"]))
+        # Wszystko w obrebie projektu, do ktorego osoba jest przypisana (ID_Projektu sprawdzane
+        # w _member_can_write - takze na obrazie PO zmianie, wiec zadania nie da sie "przeniesc"
+        # do obcego projektu).
+        return _member_can_write(conn, user, action, table, row)
     if user["Rola"] == "Architekt_PM":
         if table in ("klienci", "kontakty_klienta"):
             # Klienci/kontakty: zarzadzanie (create/update/delete) zarezerwowane dla
@@ -550,22 +593,25 @@ def can_write(conn, user, action, table, row):
             # decyzja, nie przypadkiem.
             return False
         if table == "zespol":
-            # Architekt prowadzacy moze dodac NOWA osobe do zespolu (np. onboarding czlonka
-            # wlasnego projektu) - na wprost zyczenie uzytkownika (2026-07-15), "pelne
-            # zarzadzanie swoim projektem, w tym dodawanie czlonkow do zespolu". Edycja/usuniecie
-            # ISTNIEJACYCH rekordow kolegow (stawka godzinowa, dostepnosc FTE) zostaje
-            # zarezerwowane dla COO/Admin - create-only nie odsłania ani nie nadpisuje cudzych
-            # danych HR (a Stawka_godzinowa i tak jest redagowana na odczycie, patrz
-            # FINANCIAL_FIELDS, wiec nawet wlasny nowo-utworzony wpis architekt widzi bez stawki).
-            return action == "create"
+            # Audyt 22.10.2026 (U5): dodanie ORAZ edycja danych kontaktowych/stanowiska (np.
+            # poprawka literowki) - pola finansowe i kadrowe sa wycinane z zapisu przez
+            # strip_financial_fields_for_restricted_role/PM_LOCKED_PERSON_FIELDS. Usuniecie - nie.
+            # Dodawanie osob (2026-07-15: "pelne zarzadzanie swoim projektem, w tym dodawanie czlonkow
+            # do zespolu") + od 22.10.2026 edycja; stawka godzinowa i pola kadrowe nadal tylko COO/Admin.
+            return action in ("create", "update")
         if table == "projekty" and action == "delete":
             return False  # kaskadowe usuniecie zbyt ryzykowne nawet dla wlasnego projektu
         if table == "podwykonawcy":
             return action != "delete"  # wspolna biblioteka - usuwanie tylko COO/Admin
         if table == "projekty" and action == "create":
             return True  # nowy projekt - brak jeszcze wlasciciela na tym etapie
-        return row.get("ID_Projektu") in assigned_project_ids(conn, user["ID_Osoby"])
+        if row.get("ID_Projektu") in led_project_ids(conn, user):
+            return True
+        return _member_can_write(conn, user, action, table, row)
     return False
+
+
+PM_LOCKED_PERSON_FIELDS = ("Dostepnosc_FTE_procent", "Aktywny", "Data_dolaczenia")
 
 
 def strip_financial_fields_for_restricted_role(user, table, data):
@@ -579,6 +625,10 @@ def strip_financial_fields_for_restricted_role(user, table, data):
     if user["Rola"] in FINANCIAL_RESTRICTED_ROLES:
         for field in FINANCIAL_FIELDS.get(table, ()):
             data.pop(field, None)
+    # Audyt 22.10.2026 (U5): Architekt Prowadzacy poprawia dane osob (np. literowke), ale nie
+    # pola kadrowe - dostepnosc FTE, aktywnosc, data dolaczenia zostaja dla COO/Admin.
+    if user["Rola"] == "Architekt_PM" and table == "zespol" and request.method == "PUT":
+        data = {k: v for k, v in data.items() if k not in PM_LOCKED_PERSON_FIELDS}
     return data
 
 
@@ -865,6 +915,36 @@ def _generate_checklist_task_if_required(conn, row, user):
     row["ID_Tickietu"] = tid
 
 
+def _sync_owner_assignment(conn, new_row, user, old_owner=None):
+    """Audyt 22.10.2026 (U3): uprawnienia licza sie z przypisan, a architekt prowadzacy (Owner) to
+    tekst - po ustawieniu/zmianie prowadzacego w formularzu projektu dodajemy go do zespolu jako
+    "Kierownik projektu" (albo podnosimy jego role), a poprzedniego prowadzacego zostawiamy w
+    zespole jako "Czlonek zespolu" - jeden prowadzacy, nikt nie traci dostepu do historii."""
+    owner = new_row.get("Owner")
+    pid = new_row.get("ID_Projektu")
+    if owner and owner != old_owner:
+        person = conn.execute("SELECT ID_Osoby FROM zespol WHERE Imie_i_nazwisko = ?", (owner,)).fetchone()
+        if person:
+            existing = conn.execute("SELECT ID_Przypisania, Rola_w_projekcie FROM przypisania WHERE ID_Projektu = ? AND ID_Osoby = ?",
+                                    (pid, person[0])).fetchone()
+            if existing is None:
+                aid = next_id(conn, "przypisania", "ID_Przypisania", "ASG", 3)
+                conn.execute("INSERT INTO przypisania (ID_Przypisania, ID_Projektu, ID_Osoby, Rola_w_projekcie, Status) VALUES (?, ?, ?, ?, ?)",
+                             (aid, pid, person[0], "Kierownik projektu", "Aktywny"))
+            elif existing[1] not in LEAD_PROJECT_ROLES:
+                conn.execute("UPDATE przypisania SET Rola_w_projekcie = 'Kierownik projektu', Status = 'Aktywny' WHERE ID_Przypisania = ?", (existing[0],))
+    if old_owner and old_owner != owner:
+        prev = conn.execute("SELECT ID_Osoby FROM zespol WHERE Imie_i_nazwisko = ?", (old_owner,)).fetchone()
+        if prev:
+            conn.execute("UPDATE przypisania SET Rola_w_projekcie = 'Czlonek zespolu' WHERE ID_Projektu = ? AND ID_Osoby = ? AND Rola_w_projekcie = 'Kierownik projektu'",
+                         (pid, prev[0]))
+    conn.commit()
+
+
+def _projekty_update_side_effects(conn, new_row, user):
+    _sync_owner_assignment(conn, new_row, user, old_owner=(g.get("_existing_row") or {}).get("Owner"))
+
+
 def _projekty_create_side_effects(conn, new_row, user):
     # Kazdy z trzech efektow osobno w try/except - ten sam powod co try/except wokol calego
     # wywolania w collection() (rzadka kolizja next_id() bez blokady, patrz jego docstring):
@@ -883,6 +963,10 @@ def _projekty_create_side_effects(conn, new_row, user):
         _instantiate_checklist_for_new_project(conn, new_row, user)
     except Exception as e:
         print(f"_instantiate_checklist_for_new_project blad: {e}")
+    try:
+        _sync_owner_assignment(conn, new_row, user)
+    except Exception as e:
+        print(f"_sync_owner_assignment blad: {e}")
 
 
 def _sync_ticket_stages(conn, row, user):
@@ -917,11 +1001,20 @@ def validate_ticket_approval(data, existing):
     # serwer sam zapisuje, kto zatwierdzil - nie ufamy w tym frontendowi.
     new_status = data.get("Status")
     old_status = existing.get("Status") if existing else None
+    pid = data.get("ID_Projektu") or (existing or {}).get("ID_Projektu")
+    is_full = g.user["Rola"] in FULL_ACCESS_ROLES
+    is_lead = is_full or (g.user["Rola"] == "Architekt_PM" and pid in led_project_ids(get_db(), g.user))
     if new_status in DONE_TICKET_STATUSES and old_status not in DONE_TICKET_STATUSES:
-        if g.user["Rola"] in SPECJALISTA_ROLES:
-            return ("Wykonanie zadania zatwierdza architekt prowadzący — oznacz zadanie jako wykonane "
-                    "(trafi do „Do przeglądu”), prowadzący je potwierdzi.")
+        if not is_lead:
+            return ("Wykonanie zadania zatwierdza architekt prowadzący tego projektu — oznacz zadanie jako "
+                    "wykonane (trafi do „Do przeglądu”), prowadzący je potwierdzi.")
         data["ID_Osoby_zatwierdzajacej"] = g.user.get("ID_Osoby")
+    # Wspomagajacy/zglaszajacy moga edytowac zadanie (U4), ale przekazac je innej osobie albo do
+    # innego projektu moze tylko prowadzacy lub osoba, ktora zadanie zglosila.
+    if existing and not is_lead and existing.get("ID_Osoby_zglaszajacej") != g.user.get("ID_Osoby"):
+        for field in ("ID_Osoby_przypisanej", "ID_Osoby_wspomagajacej", "ID_Projektu"):
+            if field in data and data[field] != existing.get(field):
+                return "Przekazać zadanie innej osobie może architekt prowadzący albo osoba, która je zgłosiła."
     return None
 
 
@@ -963,6 +1056,7 @@ TABLE_CREATE_SIDE_EFFECTS = {
 # zadania_etapy przy edycji ticketu (Faza 1) + auto-generowanie zadania z checklisty (Faza 4,
 # C2), ten sam wzorzec co powyzsze.
 TABLE_UPDATE_SIDE_EFFECTS = {
+    "projekty": _projekty_update_side_effects,
     "zadania_tickety": _sync_ticket_stages,
     "checklisty_projektow": _generate_checklist_task_if_required,
 }
@@ -1154,6 +1248,31 @@ NUMERIC_RANGES = {
 }
 
 
+# Audyt 22.10.2026: serwer przyjmowal "2026-13-45" i "jutro" jako date oraz zadanie bez tytulu -
+# formularze aplikacji tego nie przepuszcza, ale import/skrypt/API juz tak. Data: RRRR-MM-DD,
+# opcjonalnie z godzina (znaczniki czasu jak Data_utworzenia). Pola wymagane: przy tworzeniu
+# musza byc podane i niepuste, przy edycji - nie moga zostac wyczyszczone.
+_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?)?$")
+
+
+def _valid_date_value(value):
+    m = _DATE_RE.match(str(value))
+    if not m:
+        return False
+    try:
+        datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return True
+    except ValueError:
+        return False
+
+
+REQUIRED_TEXT_FIELDS = {
+    "projekty": ("Nazwa",), "zadania_tickety": ("Tytul",), "harmonogram": ("Nazwa_zadania",),
+    "kamienie_milowe": ("Nazwa_kamienia",), "ryzyka_i_problemy": ("Opis",), "checklisty_projektow": ("Tresc",),
+    "podwykonawcy": ("Nazwa",), "klienci": ("Nazwa",), "zespol": ("Imie_i_nazwisko",), "notatki_spotkan": ("Tytul",),
+}
+
+
 def validate_field_types_and_ranges(conn, table, data):
     """Zwraca komunikat bledu (string) albo None. Liczby walidowane generycznie na podstawie
     zadeklarowanego typu kolumny (REAL/INTEGER) w schema.sql - nie osobna, rowna sie latwa do
@@ -1167,6 +1286,13 @@ def validate_field_types_and_ranges(conn, table, data):
                 float(value)
             except (TypeError, ValueError):
                 return f"Pole {field} musi być liczbą (otrzymano: {value!r})."
+    for field, value in data.items():
+        if (field.startswith("Data") or field == "Termin") and value not in (None, ""):
+            if not _valid_date_value(value):
+                return f"Pole {field} musi być datą w formacie RRRR-MM-DD (otrzymano: {value!r})."
+    for field in REQUIRED_TEXT_FIELDS.get(table, ()):
+        if field in data and not str(data[field] or "").strip():
+            return f"Pole {field} nie może być puste."
     for field, valid_values in ENUM_FIELDS.get(table, {}).items():
         if field in data and data[field] is not None and data[field] not in valid_values:
             return f"Nieprawidłowa wartość pola {field}: {data[field]!r}."
@@ -1537,6 +1663,7 @@ def bootstrap():
         result["notePoints"] = []
     result["me"] = public_user(g.user)
     result["me"]["assignedProjectIds"] = sorted(allowed_projects)
+    result["me"]["ledProjectIds"] = sorted(led_project_ids(conn, g.user))
     return jsonify(result)
 
 
@@ -1559,6 +1686,9 @@ def collection(table):
     data = strip_computed_fields(table, data)
     if not can_write(conn, g.user, "create", table, data):
         abort(403)
+    missing = [f for f in REQUIRED_TEXT_FIELDS.get(table, ()) if not str(data.get(f) or "").strip()]
+    if missing:
+        return jsonify({"error": f"Uzupełnij wymagane pole: {', '.join(missing)}."}), 400
     error = validate_field_types_and_ranges(conn, table, data)
     if error:
         return jsonify({"error": error}), 400
@@ -1676,6 +1806,7 @@ def item(table, item_id):
     if cur.rowcount == 0:
         abort(404)
     new_row = {**existing, **data}
+    g._existing_row = existing  # dla efektow ubocznych potrzebujacych stanu SPRZED zmiany (np. poprzedni prowadzacy)
     update_side_effect = TABLE_UPDATE_SIDE_EFFECTS.get(table)
     if update_side_effect:
         try:
@@ -1889,7 +2020,9 @@ def ticket_comments(ticket_id):
         ).fetchall()
         return jsonify([dict(r) for r in rows])
 
-    if not can_write(conn, g.user, "update", "zadania_tickety", ticket):
+    # Audyt 22.10.2026 (U2): komentowac moze kazdy, kto WIDZI zadanie (ten sam zakres co odczyt),
+    # nie tylko osoba z prawem edycji - komentarze i @wzmianki to kanal komunikacji zespolu.
+    if not scoped_rows(conn, g.user, "zadania_tickety", [ticket]):
         abort(403)
     data = request.get_json(force=True, silent=True) or {}
     tresc = str(data.get("Tresc") or "").strip()
@@ -2185,6 +2318,13 @@ def person_avatar(item_id):
         return "", 204
 
     file = request.files.get("photo")
+    # Audyt 22.10.2026: rozszerzenie .png nie wystarczy - sprawdzamy sygnature pliku (PNG/JPEG/GIF/WebP).
+    if file:
+        head = file.stream.read(12)
+        file.stream.seek(0)
+        if not (head.startswith(b"\x89PNG") or head.startswith(b"\xff\xd8\xff") or head[:6] in (b"GIF87a", b"GIF89a")
+                or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")):
+            return jsonify({"error": "Plik nie jest obrazem (dozwolone: PNG, JPG, GIF, WebP)."}), 400
     if not file or not file.filename:
         return jsonify({"error": "Brak pliku zdjęcia."}), 400
     ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""

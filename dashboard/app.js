@@ -65,6 +65,30 @@ const FINANCIAL_RESTRICTED_ROLES = [...SPECJALISTA_ROLES, "Architekt_PM"];
 // itd. juz przychodzi zawezone (albo nie) z /api/bootstrap, bez potrzeby filtrowania w JS.
 const PORTFOLIO_RESTRICTED_ROLES = [...SPECJALISTA_ROLES];
 
+// Audyt uprawnien 22.10.2026 - mirror led_project_ids()/_member_can_write() z server.py.
+// Prowadzacy projektu = COO/Admin albo Architekt Prowadzacy z rola "Kierownik projektu"/"Wlasciciel"
+// w zespole projektu albo wpisany jako architekt prowadzacy. Pozostali przypisani = czlonkowie.
+function isProjectLead(pid) {
+  if (FULL_ACCESS_ROLES.includes(STATE.me.role)) return true;
+  return STATE.me.role === "Architekt_PM" && (STATE.me.ledProjectIds || []).includes(pid);
+}
+function memberCan(action, table, row) {
+  if (!row) return action === "create"; // przycisk na zbiorczej zakladce - serwer sprawdzi projekt
+  if (!STATE.me.assignedProjectIds.includes(row.ID_Projektu)) return false;
+  const me = STATE.me.personId;
+  if (table === "zadania_tickety") {
+    if (action === "create") return true;
+    if (action === "update") return [row.ID_Osoby_przypisanej, row.ID_Osoby_wspomagajacej, row.ID_Osoby_zglaszajacej].includes(me);
+    return false;
+  }
+  if (table === "notatki_spotkan") {
+    if (action === "create") return true;
+    if (action === "update") return row.Autor === (STATE.me.name || STATE.me.email) && (row.Status || "Nowa") === "Nowa";
+    return false;
+  }
+  if (table === "ryzyka_i_problemy") return action === "create";
+  return false;
+}
 function can(action, table, row) {
   const role = STATE.me.role;
   if (FULL_ACCESS_ROLES.includes(role)) return true;
@@ -77,20 +101,16 @@ function can(action, table, row) {
   }
   const scope = TABLE_SCOPE[table];
   if (scope === "admin_only" || !scope) return false;
-  if (SPECJALISTA_ROLES.includes(role)) {
-    if (table !== "zadania_tickety" || action === "delete") return false;
-    // brak row (np. przycisk na zbiorczej zakladce Zadania, bez wybranego projektu) - pokaz;
-    // z konkretnym projektem w kontekscie (karta projektu) - tylko jesli to jeden z jej/jego projektow
-    if (action === "create") return row ? STATE.me.assignedProjectIds.includes(row.ID_Projektu) : true;
-    return row && row.ID_Osoby_przypisanej === STATE.me.personId && STATE.me.assignedProjectIds.includes(row.ID_Projektu);
-  }
+  if (SPECJALISTA_ROLES.includes(role)) return memberCan(action, table, row);
   if (role === "Architekt_PM") {
     if (table === "klienci" || table === "kontakty_klienta") return false;
-    if (table === "zespol") return action === "create"; // dodanie nowej osoby - tak, edycja/usuniecie kolegow - nie (mirror can_write())
+    if (table === "zespol") return action === "create" || action === "update"; // od 22.10.2026 tez poprawki danych (bez pol kadrowych/finansowych)
     if (table === "projekty" && action === "delete") return false;
     if (table === "podwykonawcy") return action !== "delete";
     if (table === "projekty" && action === "create") return true;
-    return row ? STATE.me.assignedProjectIds.includes(row.ID_Projektu) : true;
+    if (!row) return true; // przycisk bez kontekstu projektu (np. zbiorcza zakladka) - serwer i tak sprawdzi
+    if (isProjectLead(row.ID_Projektu)) return true;
+    return memberCan(action, table, row);
   }
   return false; // rola jeszcze nie przypisana (Oczekujące) - nigdy nie powinno tu dotrzec
 }
@@ -529,6 +549,7 @@ async function loadFromApi() {
   STATE.meetingNotes = data.meetingNotes || [];
   STATE.me = {
     role: data.me.role, personId: data.me.personId, name: data.me.name, email: data.me.email, id: data.me.id,
+    ledProjectIds: data.me.ledProjectIds || [],
     prefs: data.me.prefs || {},
     assignedProjectIds: data.me.assignedProjectIds || [],
   };
@@ -960,8 +981,9 @@ function isOverdueTicket(t) {
 // zatwierdzenie nie psuje statystyk. Serwer pilnuje tego samego (validate_ticket_approval).
 function isAwaitingApproval(t) { return t.Status === "Do przegladu" && t.Data_wykonania instanceof Date; }
 function canApproveTicket(t) {
-  if (FULL_ACCESS_ROLES.includes(STATE.me.role)) return true;
-  return STATE.me.role === "Architekt_PM" && can("update", "zadania_tickety", t);
+  // Zatwierdza tylko prowadzacy TEGO projektu (audyt 22.10.2026, U1) - nie kazdy Architekt
+  // Prowadzacy przypisany do projektu jako czlonek zespolu.
+  return isProjectLead(t.ID_Projektu);
 }
 // Docelowy etap po uwzglednieniu uprawnien: architekt "konczacy" zadanie odda je do zatwierdzenia.
 function effectiveTargetStatus(t, newStatus) {
@@ -2004,7 +2026,7 @@ function tkSortIndicator(field) {
 function ticketCardSimpleHtml(t) {
   const editable = can("update", "zadania_tickety", t);
   const overdue = isOverdueTicket(t);
-  return `<div class="kanban-card simple ${overdue ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+  return `<div class="kanban-card simple ${overdue ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" data-open-ticket="${esc(t.ID_Tickietu)}">
     <div class="kc-title">${esc(t.Tytul)}</div>
     <div class="kc-person">${assigneeChipHtml(t)}</div>
     <div class="kc-meta">${fmtDate(t.Termin)} ${dueChipHtml(t)}${ticketServiceClass(t) === "Na cito" ? " <b class=\"kc-late\">na cito</b>" : ""}</div>
@@ -2023,7 +2045,7 @@ function ticketCardHtml(t) {
   // input co juz uzywany do lewego akcentu ".overdue" ponizej.
   const cardTintVar = statusColorVar(ticketStatusBadge(ticketEffectiveStatus(t)));
   return `
-    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" style="--card-tint:var(${cardTintVar})" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+    <div class="kanban-card ${isSub ? "subcontractor" : ""} ${overdue || urgentAdmin ? "overdue" : ""} ${isBlockedTicket(t) ? "blocked" : ""}" style="--card-tint:var(${cardTintVar})" draggable="${editable}" data-drag-kind="ticket" data-drag-id="${esc(t.ID_Tickietu)}" data-open-ticket="${esc(t.ID_Tickietu)}">
       <div class="kc-title">${esc(t.Tytul)}</div>
       ${ticketFilters.projekt ? "" : `<div class="kc-meta">${esc(projectName(t.ID_Projektu))}</div>`}
       <div class="kc-person">${assigneeChipHtml(t)}</div>
@@ -2153,7 +2175,7 @@ function renderTicketsAgenda(list) {
   const row = (t, kind) => `<div class="ag-row ${DONE_TICKET_STATUSES.includes(t.Status) ? "row-done" : ""}">
       ${doneCheckboxHtml(t, "agenda")}
       <span class="ag-kind" title="${kind === "start" ? "zaczyna się" : "termin"}">${kind === "start" ? "▶" : "◆"}</span>
-      <div class="ag-main" ${can("update", "zadania_tickety", t) ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+      <div class="ag-main" data-open-ticket="${esc(t.ID_Tickietu)}">
         <div class="ag-title">${esc(t.Tytul)}</div>
         <div class="kpi-sub">${assigneeChipHtml(t)} · ${esc(projectName(t.ID_Projektu))}${t.Data_rozpoczecia instanceof Date && kind !== "start" ? ` · od ${fmtDate(t.Data_rozpoczecia)}` : ""}${kind === "start" && t.Termin instanceof Date ? ` · termin ${fmtDate(t.Termin)}` : ""}</div>
       </div>
@@ -2432,6 +2454,9 @@ function renderTickets() {
     return true;
   }).sort((a, b) => {
     const dir = ticketFilters.sortDir === "desc" ? -1 : 1;
+    // Zadania bez terminu zawsze na koncu listy - w obu kierunkach sortowania (audyt 22.10.2026).
+    if ((ticketFilters.sortField || "Termin") === "Termin" && !(a.Termin instanceof Date) !== !(b.Termin instanceof Date))
+      return a.Termin instanceof Date ? -1 : 1;
     const va = ticketSortValue(a, ticketFilters.sortField), vb = ticketSortValue(b, ticketFilters.sortField);
     return va < vb ? -dir : va > vb ? dir : 0;
   });
@@ -2492,7 +2517,7 @@ function renderTickets() {
         </tr></thead>
         <tbody>
           ${list.map(t => `
-            <tr class="${can("update", "zadania_tickety", t) ? "clickable" : ""} ${DONE_TICKET_STATUSES.includes(t.Status) ? "row-done" : ""}" ${can("update", "zadania_tickety", t) ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>
+            <tr class="clickable ${DONE_TICKET_STATUSES.includes(t.Status) ? "row-done" : ""}" data-open-ticket="${esc(t.ID_Tickietu)}">
               <td class="tk-sel">${can("update", "zadania_tickety", t) ? `<input type="checkbox" data-tk-select="${esc(t.ID_Tickietu)}" ${ticketSelection.has(t.ID_Tickietu) ? "checked" : ""}>` : ""}</td>
               <td class="pw-check">${doneCheckboxHtml(t, "list")}</td>
               ${visibleListColumns().map(c => `<td class="${c.num ? "num" : ""}">${c.cell(t)}</td>`).join("")}
@@ -2857,7 +2882,7 @@ function buildGantt(tasks, opts = {}) {
       const ticketRows = (!collapsed && plottable.length) ? plottable.map(tk => {
         const editable = can("update", "zadania_tickety", tk); // mirror ticketCardHtml - tylko edytowalne zadania sa klikalne
         return `
-      <div class="gantt-row gantt-row-ticket" ${editable ? `data-open-ticket="${esc(tk.ID_Tickietu)}"` : ""} title="${editable ? "Kliknij, aby edytować zadanie" : esc(tk.Tytul)}">
+      <div class="gantt-row gantt-row-ticket" data-open-ticket="${esc(tk.ID_Tickietu)}" title="${editable ? "Kliknij, aby edytować zadanie" : esc(tk.Tytul)}">
         <div class="gantt-label-col" title="${esc(tk.Tytul)}">${esc(tk.Tytul)}</div>
         <div class="gantt-track">${ticketGanttMarkupFor(tk, tMin, totalMs)}</div>
       </div>`;
@@ -3430,6 +3455,8 @@ async function triggerBackupNow() {
 let modalSubmitHandler = null;
 
 function openModal(title, bodyHtml, { onSubmit, submitLabel = "Zapisz", wide = false } = {}) {
+  $("#modalSubmit").style.display = "";
+  $("#modalForm").classList.remove("was-validated");
   $("#modalTitle").textContent = title;
   $("#modalBody").innerHTML = bodyHtml;
   $("#modalSubmit").textContent = submitLabel;
@@ -3446,6 +3473,8 @@ function closeModal() {
   $("#modalBox").classList.remove("open");
   modalSubmitHandler = null;
 }
+// Podswietlenie pustych pol wymaganych dopiero po probie zapisu (nie od razu po otwarciu formularza).
+$("#modalForm").addEventListener("invalid", () => $("#modalForm").classList.add("was-validated"), true);
 $("#modalForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!modalSubmitHandler) return;
@@ -3518,7 +3547,12 @@ $("#modalForm").addEventListener("input", (e) => {
   }
 });
 
+// Audyt 22.10.2026: pola oznaczone gwiazdka nie mialy atrybutu required - o brakach informowalo
+// dopiero okienko po kliknieciu "Zapisz". Teraz gwiazdka = pole wymagane w przegladarce (podswietlone
+// na czerwono i wskazane od razu przy probie zapisu).
+function withRequired(label, extra) { return / \*$/.test(label) && !/\brequired\b/.test(extra) ? `${extra} required` : extra; }
 function fInput(label, name, value, type = "text", extra = "") {
+  extra = withRequired(label, extra);
   if (type === "date") {
     const d = value instanceof Date ? value : parseDateInput(value);
     const v = dateDisplayVal(d);
@@ -3531,9 +3565,11 @@ function optionsHtml(pairsList, selected) {
   return pairsList.map(([v, l]) => `<option value="${esc(v)}" ${v === selected ? "selected" : ""}>${esc(l)}</option>`).join("");
 }
 function fSelect(label, name, options, selected, extra = "") {
+  extra = withRequired(label, extra);
   return `<label class="f-label">${esc(label)}<select name="${name}" ${extra}>${optionsHtml(options, selected)}</select></label>`;
 }
 function fTextarea(label, name, value, extra = "") {
+  extra = withRequired(label, extra);
   return `<label class="f-label full">${esc(label)}<textarea name="${name}" rows="3" ${extra}>${esc(value ?? "")}</textarea></label>`;
 }
 function tagChipHtml(tag) {
@@ -3984,6 +4020,9 @@ async function removeAvatar(personId) {
 function openTeamForm(oid = null, seedDzial = null) {
   const t = oid ? STATE.teamById.get(oid) : { Dzial: seedDzial };
   if (!requireExisting(t, "osoba")) return;
+  // Architekt Prowadzacy poprawia dane istniejacej osoby, ale nie pola kadrowe (audyt 22.10.2026, U5);
+  // stawka godzinowa - tylko zarzad (pole finansowe).
+  const hrLocked = !FULL_ACCESS_ROLES.includes(STATE.me.role) && !!oid;
   const body = `
     ${avatarSectionHtml(t, oid)}
     ${fInput("Imię i nazwisko *", "Imie_i_nazwisko", t.Imie_i_nazwisko, "text", "required")}
@@ -3991,9 +4030,9 @@ function openTeamForm(oid = null, seedDzial = null) {
     ${fSelect("Dział", "Dzial", pairs(DZIALY), t.Dzial)}
     ${fInput("Email", "Email", t.Email, "email")}
     ${fInput("Telefon", "Telefon", t.Telefon)}
-    ${fInput("Dostępność FTE (%)", "Dostepnosc_FTE_procent", t.Dostepnosc_FTE_procent ?? 100, "number", "min=0 max=100")}
-    ${fInput("Stawka godzinowa (PLN/h)", "Stawka_godzinowa", t.Stawka_godzinowa, "number", "min=0 step=0.01")}
-    ${fSelect("Aktywny", "Aktywny", [["Tak", "Tak"], ["Nie", "Nie"]], t.Aktywny || "Tak")}
+    ${fInput("Dostępność FTE (%)", "Dostepnosc_FTE_procent", t.Dostepnosc_FTE_procent ?? 100, "number", `min=0 max=100 ${hrLocked ? "disabled" : ""}`)}
+    ${fInput("Stawka godzinowa (PLN/h)", "Stawka_godzinowa", t.Stawka_godzinowa, "number", `min=0 step=0.01 ${hrLocked || FINANCIAL_RESTRICTED_ROLES.includes(STATE.me.role) ? "disabled" : ""}`)}
+    ${fSelect("Aktywny", "Aktywny", [["Tak", "Tak"], ["Nie", "Nie"]], t.Aktywny || "Tak", hrLocked ? "disabled" : "")}
   `;
   openModal(oid ? "Edytuj osobę" : "Nowa osoba w zespole", body, {
     submitLabel: "Zapisz osobę",
@@ -4367,7 +4406,8 @@ async function addTicketComment(tid) {
 // type="button" (nie submit modala) z osobnym handlerem, nie modalSubmitHandler.
 function ticketCommentsSectionHtml(t, tid) {
   if (!tid) return "";
-  const editable = can("update", "zadania_tickety", t);
+  // Komentowac moze kazdy, kto widzi zadanie (audyt 22.10.2026, U2) - mirror ticket_comments() w server.py.
+  const editable = true;
   return `
     <div class="form-section-title">Komentarze</div>
     <div class="comment-list" data-comments-list="${esc(tid)}">Wczytywanie…</div>
@@ -4523,11 +4563,20 @@ function openTicketForm(pid, tid = null, seed = null, opts = {}) {
     ${!tid ? `<label class="f-label full form-again"><span><input type="checkbox" name="_dodajKolejne" ${opts.again ? "checked" : ""}> Po zapisie dodaj kolejne zadanie w tym projekcie (ta sama osoba i etapy)</span></label>` : ""}
     ${ticketCommentsSectionHtml(t, tid)}
   `;
-  openModal(tid ? "Edytuj zadanie" : "Nowe zadanie", body, {
+  openModal(opts.readOnly ? "Zadanie (podgląd)" : tid ? "Edytuj zadanie" : "Nowe zadanie", body, {
     wide: true,
     submitLabel: "Zapisz zadanie",
     onSubmit: (data) => saveTicketFromForm(data, pid, tid, opts),
   });
+  if (opts.readOnly) {
+    // Podglad (audyt 22.10.2026, U2): pola tylko do odczytu, bez zapisu - ale komentarz mozna dodac.
+    $all("#modalForm input, #modalForm select, #modalForm textarea").forEach(el => {
+      if (!el.matches("[data-comment-input]")) el.disabled = true;
+    });
+    $all("#modalForm [data-duplicate-ticket]").forEach(el => el.remove());
+    $("#modalSubmit").style.display = "none";
+    $("#modalBody").insertAdjacentHTML("afterbegin", `<div class="empty-hint full" style="grid-column:1/-1">Podgląd — zadanie edytuje wykonawca, osoba wspomagająca, zgłaszający albo prowadzący projektu. Możesz dodać komentarz (np. z @wzmianką).</div>`);
+  }
   if (tid) loadTicketComments(tid);
   // bez ustalonego projektu (formularz otwarty z zakladki Zadania) - po wybraniu projektu
   // zawez liste "Przypisana osoba"/"Wspomagający" do zespolu przypisanego do tego projektu
@@ -4658,7 +4707,7 @@ function openRiskForm(pid, rid = null) {
     ${fSelect("Priorytet", "Priorytet", pairs(PRIORYTETY), r.Priorytet)}
     ${fSelect("Właściciel", "ID_Osoby_wlasciciela", teamOptionsPairs(), r.ID_Osoby_wlasciciela)}
     ${fTextarea("Plan mitygacji", "Plan_mitygacji", r.Plan_mitygacji)}
-    ${fSelect("Status", "Status", pairs(STATUS_RYZYKA), r.Status || "Otwarte")}
+    ${fSelect("Status", "Status", isProjectLead(pid) ? pairs(STATUS_RYZYKA) : [["Otwarte", "Otwarte (zgłoszenie do prowadzącego)"]], r.Status || "Otwarte")}
   `;
   openModal(rid ? "Edytuj ryzyko / problem" : "Nowe ryzyko / problem", body, {
     wide: true,
@@ -5616,7 +5665,7 @@ function projectWorkTabHtml(pid) {
     const overdue = isOverdueTicket(t);
     return `<tr class="${DONE_TICKET_STATUSES.includes(t.Status) ? "row-done" : ""} ${overdue ? "row-overdue" : ""}">
       <td class="pw-check">${doneCheckboxHtml(t, "project")}</td>
-      <td class="pw-title" ${can("update", "zadania_tickety", t) ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""}>${esc(t.Tytul)}${others.length ? ` <span class="kpi-sub">(też w: ${esc(others.join(", "))})</span>` : ""}${isBlockedTicket(t) ? ` ${badge("⛔ " + (t.Powod_blokady || "zablokowane"), "critical")}` : ""}${ticketServiceClass(t) === "Na cito" ? ` ${badge("Na cito", "critical")}` : ""}</td>
+      <td class="pw-title" data-open-ticket="${esc(t.ID_Tickietu)}">${esc(t.Tytul)}${others.length ? ` <span class="kpi-sub">(też w: ${esc(others.join(", "))})</span>` : ""}${isBlockedTicket(t) ? ` ${badge("⛔ " + (t.Powod_blokady || "zablokowane"), "critical")}` : ""}${ticketServiceClass(t) === "Na cito" ? ` ${badge("Na cito", "critical")}` : ""}</td>
       <td>${assigneeChipHtml(t)}</td>
       <td class="num">${t.Data_rozpoczecia instanceof Date ? fmtDayMonth(t.Data_rozpoczecia) + " → " : ""}${fmtDate(t.Termin)}${overdue ? ` ${badge("Opóźnione", "critical")}` : ""}</td>
       <td>${approveButtonsHtml(t) || badge(statusLabel(t.Status), ticketStatusBadge(t.Status))}</td>
@@ -5987,7 +6036,7 @@ function openProjectDetail(pid) {
         return `
         <div class="dp-list-item">
           <div class="item-actions">
-            ${editableNote && n.Status !== "Zaakceptowana" ? `<button class="icon-btn" data-approve-meeting-note="${esc(n.ID_Notatki)}" data-project="${esc(pid)}">Zatwierdź</button>` : ""}
+            ${isProjectLead(pid) && n.Status !== "Zaakceptowana" ? `<button class="icon-btn" data-approve-meeting-note="${esc(n.ID_Notatki)}" data-project="${esc(pid)}">Zatwierdź</button>` : ""}
             ${can("delete", "notatki_spotkan", n) ? `<button class="icon-btn danger" data-delete-meeting-note="${esc(n.ID_Notatki)}" data-project="${esc(pid)}">Usuń</button>` : ""}
           </div>
           <div class="title">${esc(n.Tytul || "Notatka ze spotkania")} ${badge(n.Status, meetingNoteStatusBadge(n.Status))}</div>
@@ -6152,7 +6201,7 @@ function openSubcontractorDetail(sid) {
         </div>
       </div>
       ${tickets.map(t => { const editable = can("update", "zadania_tickety", t); return `
-        <div class="dp-list-item ${editable ? "clickable" : ""}" ${editable ? `data-open-ticket="${esc(t.ID_Tickietu)}"` : ""} style="cursor:${editable ? "pointer" : "default"};margin-top:10px">
+        <div class="dp-list-item ${editable ? "clickable" : ""}" data-open-ticket="${esc(t.ID_Tickietu)}" style="cursor:${editable ? "pointer" : "default"};margin-top:10px">
           <div class="title">${esc(t.ID_Tickietu)} — ${esc(t.Tytul)} ${badge(statusLabel(ticketEffectiveStatus(t)), ticketStatusBadge(ticketEffectiveStatus(t)))}</div>
           <div class="meta">${esc(projectName(t.ID_Projektu))} · termin ${fmtDate(t.Termin)}${t.Wycena_podwykonawcy ? " · wycena " + fmtMoney(t.Wycena_podwykonawcy) : ""}</div>
         </div>`; }).join("") || `<div class="empty-hint" style="margin-top:10px">Brak zadań przypisanych do tego podwykonawcy.</div>`}
@@ -6769,7 +6818,7 @@ document.addEventListener("click", (e) => {
   const reactivateBtn = e.target.closest("[data-reactivate-ticket]");
   if (reactivateBtn) { reactivateTicket(reactivateBtn.getAttribute("data-reactivate-ticket")); return; }
   const openTicketRow = e.target.closest("[data-open-ticket]");
-  if (openTicketRow) { const tkid = openTicketRow.getAttribute("data-open-ticket"); const tk = STATE.tickets.find(x => x.ID_Tickietu === tkid); if (tk) { openTicketForm(tk.ID_Projektu, tkid, null, { stayInTickets: !!openTicketRow.closest("#view-zadania") }); return; } }
+  if (openTicketRow) { const tkid = openTicketRow.getAttribute("data-open-ticket"); const tk = STATE.tickets.find(x => x.ID_Tickietu === tkid); if (tk) { openTicketForm(tk.ID_Projektu, tkid, null, { stayInTickets: !!openTicketRow.closest("#view-zadania"), readOnly: !can("update", "zadania_tickety", tk) }); return; } }
 
   const addRisk = e.target.closest("[data-add-risk]");
   if (addRisk) { openRiskForm(addRisk.getAttribute("data-add-risk")); return; }
