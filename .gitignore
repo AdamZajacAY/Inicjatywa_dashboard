@@ -26,3 +26,10 @@ baza_danych/oauth_config.json
 # Stan lokalny Claude Code
 .claude/
 baza_danych/backups_produkcja/
+
+# Dokumenty robocze z realnymi danymi/ustaleniami firmy (raport portfela, notatki z warsztatu) -
+# trzymane lokalnie / jako prywatne artefakty, nie w historii gita (ta sama zasada co dane wyzej)
+analiza/raport_portfolio.html
+analiza/dokumentacja_techniczna.html
+IP_Dashboard_Mapa_zmian.md
+IP_Dashboard_Prompt_ClaudeCode.md
